@@ -3,7 +3,9 @@
 #
 
 ##
-# = Miscellanea
+# ***********
+# Miscellanea
+# ***********
 ##
 
 { 'include': 'common.json' }
@@ -21,7 +23,7 @@
 #     "@dbus-display" or the name of a character device (e.g. from
 #     -chardev id=XXXX)
 #
-# @fdname: file descriptor name previously passed via 'getfd' command
+# @fdname: file descriptor name previously passed via `getfd` command
 #
 # @skipauth: whether to skip authentication.  Only applies to "vnc"
 #     and "spice" protocols
@@ -56,8 +58,6 @@
 #
 # Return the name information of a guest.
 #
-# Returns: @NameInfo of the guest
-#
 # Since: 0.14
 #
 # .. qmp-example::
@@ -85,6 +85,11 @@
 # @poll-shrink: how many ns will be removed from polling time, 0 means
 #     that it's not configured (since 2.9)
 #
+# @poll-weight: the weight factor for adaptive polling.
+#     Determines how much the current event interval contributes to
+#     the next polling time calculation.  Valid values are 1 or
+#     greater (since 11.1)
+#
 # @aio-max-batch: maximum number of requests in a batch for the AIO
 #     engine, 0 means that the engine will use its default (since 6.1)
 #
@@ -96,18 +101,19 @@
            'poll-max-ns': 'int',
            'poll-grow': 'int',
            'poll-shrink': 'int',
+           'poll-weight': 'int',
            'aio-max-batch': 'int' } }
 
 ##
 # @query-iothreads:
 #
-# Returns a list of information about each iothread.
+# Return a list of information about each iothread.
 #
 # .. note:: This list excludes the QEMU main loop thread, which is not
 #    declared using the ``-object iothread`` command-line option.  It
 #    is always the main thread of the process.
 #
-# Returns: a list of @IOThreadInfo for each iothread
+# Returns: a list of info for each iothread
 #
 # Since: 2.0
 #
@@ -117,11 +123,19 @@
 #     <- { "return": [
 #              {
 #                 "id":"iothread0",
-#                 "thread-id":3134
+#                 "thread-id":3134,
+#                 "poll-max-ns":32768,
+#                 "poll-grow":0,
+#                 "poll-shrink":0,
+#                 "aio-max-batch":0
 #              },
 #              {
 #                 "id":"iothread1",
-#                 "thread-id":3135
+#                 "thread-id":3135,
+#                 "poll-max-ns":32768,
+#                 "poll-grow":0,
+#                 "poll-shrink":0,
+#                 "aio-max-batch":0
 #              }
 #           ]
 #        }
@@ -222,13 +236,13 @@
 # .. note:: This command only exists as a stop-gap.  Its use is highly
 #    discouraged.  The semantics of this command are not guaranteed:
 #    this means that command names, arguments and responses can change
-#    or be removed at ANY time.  Applications that rely on long term
-#    stability guarantees should NOT use this command.
+#    or be removed at **any** time.  Applications that rely on long
+#    term stability guarantees should **not** use this command.
 #
 #    Known limitations:
 #
 #    * This command is stateless, this means that commands that depend
-#      on state information (such as getfd) might not work.
+#      on state information (such as `getfd`) might not work.
 #
 #    * Commands that prompt the user for data don't currently work.
 #
@@ -241,7 +255,8 @@
 { 'command': 'human-monitor-command',
   'data': {'command-line': 'str', '*cpu-index': 'int'},
   'returns': 'str',
-  'features': [ 'savevm-monitor-nodes' ] }
+  'features': [ 'savevm-monitor-nodes' ],
+  'if': 'CONFIG_HMP' }
 
 ##
 # @getfd:
@@ -255,7 +270,7 @@
 # .. note:: If @fdname already exists, the file descriptor assigned to
 #    it will be closed and replaced by the received file descriptor.
 #
-#    The 'closefd' command can be used to explicitly close the file
+#    The `closefd` command can be used to explicitly close the file
 #    descriptor when it is no longer needed.
 #
 # .. qmp-example::
@@ -282,7 +297,7 @@
 # .. note:: If @fdname already exists, the file descriptor assigned to
 #    it will be closed and replaced by the received file descriptor.
 #
-#    The 'closefd' command can be used to explicitly close the file
+#    The `closefd` command can be used to explicitly close the file
 #    descriptor when it is no longer needed.
 #
 # .. qmp-example::
@@ -331,9 +346,6 @@
 # @fdset-id: The ID of the fd set to add the file descriptor to.
 #
 # @opaque: A free-form string that can be used to describe the fd.
-#
-# Returns:
-#     @AddfdInfo
 #
 # Errors:
 #     - If file descriptor was not received, GenericError
@@ -415,8 +427,6 @@
 #
 # Return information describing all fd sets.
 #
-# Returns: A list of @FdsetInfo
-#
 # Since: 1.2
 #
 # .. note:: The list of fd sets is shared by all monitor connections.
@@ -480,7 +490,7 @@
 #
 # @name: parameter name
 #
-# @type: parameter @CommandLineParameterType
+# @type: parameter `CommandLineParameterType`
 #
 # @help: human readable text string, not suitable for parsing.
 #
@@ -502,7 +512,7 @@
 #
 # @option: option name
 #
-# @parameters: an array of @CommandLineParameterInfo
+# @parameters: an array of `CommandLineParameterInfo`
 #
 # Since: 1.5
 ##
@@ -516,8 +526,7 @@
 #
 # @option: option name
 #
-# Returns: list of @CommandLineOptionInfo for all options (or for the
-#     given @option).
+# Returns: list of objects for all options (or for the given @option).
 #
 # Errors:
 #     - if the given @option doesn't exist

@@ -14,8 +14,8 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ * along with this program; if not, see
+ * <https://www.gnu.org/licenses/>.
  *
  * split out pci bus specific stuff from pci.[hc] to pci_bridge.[hc]
  * Copyright (c) 2009 Isaku Yamahata <yamahata at valinux co jp>
@@ -104,7 +104,9 @@ typedef struct PXBPCIEDev {
     PXBDev parent_obj;
 } PXBPCIEDev;
 
+#define TYPE_PXB_PCIE_BUS "pxb-pcie-bus"
 #define TYPE_PXB_CXL_BUS "pxb-cxl-bus"
+#define TYPE_PXB_PCIE_DEV "pxb-pcie"
 #define TYPE_PXB_DEV "pxb"
 OBJECT_DECLARE_SIMPLE_TYPE(PXBDev, PXB_DEV)
 
@@ -139,11 +141,11 @@ void pci_bridge_reset(DeviceState *qdev);
 void pci_bridge_initfn(PCIDevice *pci_dev, const char *typename);
 void pci_bridge_exitfn(PCIDevice *pci_dev);
 
-void pci_bridge_dev_plug_cb(HotplugHandler *hotplug_dev, DeviceState *dev,
+void pci_bridge_dev_plug_cb(const HotplugHandler *hotplug_dev, DeviceState *dev,
                             Error **errp);
-void pci_bridge_dev_unplug_cb(HotplugHandler *hotplug_dev, DeviceState *dev,
+void pci_bridge_dev_unplug_cb(const HotplugHandler *hotplug_dev, DeviceState *dev,
                               Error **errp);
-void pci_bridge_dev_unplug_request_cb(HotplugHandler *hotplug_dev,
+void pci_bridge_dev_unplug_request_cb(const HotplugHandler *hotplug_dev,
                                       DeviceState *dev, Error **errp);
 
 /*

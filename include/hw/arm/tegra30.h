@@ -5,7 +5,7 @@
 #include "hw/intc/arm_gic.h"
 #include "hw/cpu/a9mpcore.h"
 #include "target/arm/cpu.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "hw/misc/tegra30_apb_misc.h"
 #include "hw/misc/tegra30_clk.h"
 #include "hw/misc/tegra30_pmc.h"

@@ -3,10 +3,12 @@
 #include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qapi/qapi-visit-qom.h"
-#include "qapi/qmp/qobject.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qobject.h"
+#include "qobject/qbool.h"
+#include "qobject/qdict.h"
 #include "qapi/qmp/qerror.h"
-#include "qapi/qmp/qjson.h"
+#include "qobject/qjson.h"
+#include "qobject/qstring.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qobject-output-visitor.h"
 #include "qom/object_interfaces.h"
@@ -18,123 +20,33 @@
 #include "qapi/opts-visitor.h"
 #include "qemu/config-file.h"
 #include "qemu/keyval.h"
+#include "trace.h"
 
 bool user_creatable_complete(UserCreatable *uc, Error **errp)
 {
     UserCreatableClass *ucc = USER_CREATABLE_GET_CLASS(uc);
-    Error *err = NULL;
-
-    if (ucc->complete) {
-        ucc->complete(uc, &err);
-        error_propagate(errp, err);
-    }
-    return !err;
-}
-
-bool user_creatable_can_be_deleted(UserCreatable *uc)
-{
-
-    UserCreatableClass *ucc = USER_CREATABLE_GET_CLASS(uc);
-
-    if (ucc->can_be_deleted) {
-        return ucc->can_be_deleted(uc);
-    } else {
-        return true;
-    }
-}
-
-static void object_set_properties_from_qdict(Object *obj, const QDict *qdict,
-                                             Visitor *v, Error **errp)
-{
-    const QDictEntry *e;
-
-    if (!visit_start_struct(v, NULL, NULL, 0, errp)) {
-        return;
-    }
-    for (e = qdict_first(qdict); e; e = qdict_next(qdict, e)) {
-        if (!object_property_set(obj, e->key, v, errp)) {
-            goto out;
-        }
-    }
-    visit_check_struct(v, errp);
-out:
-    visit_end_struct(v, NULL);
-}
-
-void object_set_properties_from_keyval(Object *obj, const QDict *qdict,
-                                       bool from_json, Error **errp)
-{
-    Visitor *v;
-    if (from_json) {
-        v = qobject_input_visitor_new(QOBJECT(qdict));
-    } else {
-        v = qobject_input_visitor_new_keyval(QOBJECT(qdict));
-    }
-    object_set_properties_from_qdict(obj, qdict, v, errp);
-    visit_free(v);
-}
-
-Object *user_creatable_add_type(const char *type, const char *id,
-                                const QDict *qdict,
-                                Visitor *v, Error **errp)
-{
     ERRP_GUARD();
-    Object *obj;
-    ObjectClass *klass;
-    Error *local_err = NULL;
 
-    if (id != NULL && !id_wellformed(id)) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "id", "an identifier");
-        error_append_hint(errp, "Identifiers consist of letters, digits, "
-                          "'-', '.', '_', starting with a letter.\n");
-        return NULL;
+    trace_user_creatable_complete(uc, object_get_typename(OBJECT(uc)));
+    if (ucc->complete) {
+        ucc->complete(uc, errp);
     }
+    return !*errp;
+}
 
-    klass = module_object_class_by_name(type);
-    if (!klass) {
-        error_setg(errp, "invalid object type: %s", type);
-        return NULL;
-    }
+bool user_creatable_prepare_delete(UserCreatable *uc, Error **errp)
+{
+    UserCreatableClass *ucc = USER_CREATABLE_GET_CLASS(uc);
+    bool ret = true;
 
-    if (!object_class_dynamic_cast(klass, TYPE_USER_CREATABLE)) {
-        error_setg(errp, "object type '%s' isn't supported by object-add",
-                   type);
-        return NULL;
+    trace_user_creatable_prepare_delete(uc, object_get_typename(OBJECT(uc)));
+    if (ucc->prepare_delete) {
+        ret = ucc->prepare_delete(uc, errp);
     }
-
-    if (object_class_is_abstract(klass)) {
-        error_setg(errp, "object type '%s' is abstract", type);
-        return NULL;
-    }
-
-    assert(qdict);
-    obj = object_new_with_class(klass);
-    object_set_properties_from_qdict(obj, qdict, v, &local_err);
-    if (local_err) {
-        goto out;
-    }
-
-    if (id != NULL) {
-        object_property_try_add_child(object_get_objects_root(),
-                                      id, obj, &local_err);
-        if (local_err) {
-            goto out;
-        }
-    }
-
-    if (!user_creatable_complete(USER_CREATABLE(obj), &local_err)) {
-        if (id != NULL) {
-            object_property_del(object_get_objects_root(), id);
-        }
-        goto out;
-    }
-out:
-    if (local_err) {
-        error_propagate(errp, local_err);
-        object_unref(obj);
-        return NULL;
-    }
-    return obj;
+    trace_user_creatable_prepare_delete_result(
+        uc, object_get_typename(OBJECT(uc)),
+        *errp ? error_get_pretty(*errp) : NULL);
+    return ret;
 }
 
 void user_creatable_add_qapi(ObjectOptions *options, Error **errp)
@@ -142,7 +54,6 @@ void user_creatable_add_qapi(ObjectOptions *options, Error **errp)
     Visitor *v;
     QObject *qobj;
     QDict *props;
-    Object *obj;
 
     v = qobject_output_visitor_new(&qobj);
     visit_type_ObjectOptions(v, NULL, &options, &error_abort);
@@ -154,9 +65,9 @@ void user_creatable_add_qapi(ObjectOptions *options, Error **errp)
     qdict_del(props, "id");
 
     v = qobject_input_visitor_new(QOBJECT(props));
-    obj = user_creatable_add_type(ObjectType_str(options->qom_type),
-                                  options->id, props, v, errp);
-    object_unref(obj);
+    object_new_with_props_from_qdict(ObjectType_str(options->qom_type),
+                                     object_get_objects_root(),
+                                     options->id, props, v, errp);
     qobject_unref(qobj);
     visit_free(v);
 }
@@ -177,9 +88,25 @@ char *object_property_help(const char *name, const char *type,
         g_string_append(str, description);
     }
     if (defval) {
-        g_autofree char *def_json = g_string_free(qobject_to_json(defval),
-                                                  false);
-        g_string_append_printf(str, " (default: %s)", def_json);
+        g_autofree char *def_json = NULL;
+        const char *def;
+
+        switch (qobject_type(defval)) {
+        case QTYPE_QSTRING:
+            def = qstring_get_str(qobject_to(QString, defval));
+            break;
+
+        case QTYPE_QBOOL:
+            def = qbool_get_bool(qobject_to(QBool, defval)) ? "on" : "off";
+            break;
+
+        default:
+            def_json = g_string_free(qobject_to_json(defval), false);
+            def = def_json;
+            break;
+        }
+
+        g_string_append_printf(str, " (default: %s)", def);
     }
 
     return g_string_free(str, false);
@@ -331,8 +258,7 @@ bool user_creatable_del(const char *id, Error **errp)
         return false;
     }
 
-    if (!user_creatable_can_be_deleted(USER_CREATABLE(obj))) {
-        error_setg(errp, "object '%s' is in use, can not be deleted", id);
+    if (!user_creatable_prepare_delete(USER_CREATABLE(obj), errp)) {
         return false;
     }
 

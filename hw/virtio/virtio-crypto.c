@@ -20,9 +20,9 @@
 
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-crypto.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "standard-headers/linux/virtio_ids.h"
-#include "sysemu/cryptodev-vhost.h"
+#include "system/cryptodev-vhost.h"
 
 #define VIRTIO_CRYPTO_VM_VERSION 1
 
@@ -214,6 +214,12 @@ virtio_crypto_create_asym_session(VirtIOCrypto *vcrypto,
          && (keytype != VIRTIO_CRYPTO_AKCIPHER_KEY_TYPE_PRIVATE)) {
         error_report("unsupported asym keytype: %d", keytype);
         return -VIRTIO_CRYPTO_NOTSUPP;
+    }
+
+    if (unlikely(keylen > vcrypto->conf.max_size)) {
+        error_report("virtio-crypto length of akcipher key is too large: %u",
+                     keylen);
+        return -VIRTIO_CRYPTO_ERR;
     }
 
     if (keylen) {
@@ -767,10 +773,17 @@ virtio_crypto_handle_asym_req(VirtIOCrypto *vcrypto,
     uint32_t len;
     uint8_t *src = NULL;
     uint8_t *dst = NULL;
+    uint64_t max_len;
 
     asym_op_info = g_new0(CryptoDevBackendAsymOpInfo, 1);
     src_len = ldl_le_p(&req->para.src_data_len);
     dst_len = ldl_le_p(&req->para.dst_data_len);
+
+    max_len = (uint64_t)src_len + dst_len;
+    if (unlikely(max_len > vcrypto->conf.max_size)) {
+        virtio_error(vdev, "virtio-crypto asym request is too large");
+        goto err;
+    }
 
     if (src_len > 0) {
         src = g_malloc0(src_len);
@@ -1101,10 +1114,9 @@ static void virtio_crypto_device_unrealize(DeviceState *dev)
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(dev);
     VirtIOCryptoQueue *q;
-    int i, max_queues;
+    int i;
 
-    max_queues = vcrypto->multiqueue ? vcrypto->max_queues : 1;
-    for (i = 0; i < max_queues; i++) {
+    for (i = 0; i < vcrypto->max_queues; i++) {
         virtio_delete_queue(vcrypto->vqs[i].dataq);
         q = &vcrypto->vqs[i];
         qemu_bh_delete(q->dataq_bh);
@@ -1128,10 +1140,9 @@ static const VMStateDescription vmstate_virtio_crypto = {
     },
 };
 
-static Property virtio_crypto_properties[] = {
+static const Property virtio_crypto_properties[] = {
     DEFINE_PROP_LINK("cryptodev", VirtIOCrypto, conf.cryptodev,
                      TYPE_CRYPTODEV_BACKEND, CryptoDevBackend *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void virtio_crypto_get_config(VirtIODevice *vdev, uint8_t *config)
@@ -1198,11 +1209,12 @@ static void virtio_crypto_vhost_status(VirtIOCrypto *c, uint8_t status)
     }
 }
 
-static void virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
+static int virtio_crypto_set_status(VirtIODevice *vdev, uint8_t status)
 {
     VirtIOCrypto *vcrypto = VIRTIO_CRYPTO(vdev);
 
     virtio_crypto_vhost_status(vcrypto, status);
+    return 0;
 }
 
 static void virtio_crypto_guest_notifier_mask(VirtIODevice *vdev, int idx,
@@ -1265,7 +1277,7 @@ static struct vhost_dev *virtio_crypto_get_vhost(VirtIODevice *vdev)
     return &vhost_crypto->dev;
 }
 
-static void virtio_crypto_class_init(ObjectClass *klass, void *data)
+static void virtio_crypto_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);

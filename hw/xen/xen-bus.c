@@ -9,17 +9,18 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/uuid.h"
-#include "hw/qdev-properties.h"
-#include "hw/sysbus.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "hw/xen/xen.h"
 #include "hw/xen/xen-backend.h"
 #include "hw/xen/xen-legacy-backend.h" /* xen_be_init() */
 #include "hw/xen/xen-bus.h"
 #include "hw/xen/xen-bus-helper.h"
 #include "monitor/monitor.h"
+#include "monitor/hmp.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
-#include "sysemu/sysemu.h"
+#include "qobject/qdict.h"
+#include "system/system.h"
 #include "net/net.h"
 #include "trace.h"
 
@@ -100,13 +101,15 @@ abort:
     qemu_xen_xs_transaction_end(xenbus->xsh, tid, true);
 }
 
-static void xen_bus_print_dev(Monitor *mon, DeviceState *dev, int indent)
+#ifdef CONFIG_HMP
+static void xen_bus_print_dev(MonitorHMP *hmp, DeviceState *dev, int indent)
 {
     XenDevice *xendev = XEN_DEVICE(dev);
 
-    monitor_printf(mon, "%*sname = '%s' frontend_id = %u\n",
-                   indent, "", xendev->name, xendev->frontend_id);
+    monitor_hmp_printf(hmp, "%*sname = '%s' frontend_id = %u\n",
+                       indent, "", xendev->name, xendev->frontend_id);
 }
+#endif
 
 static char *xen_bus_get_dev_path(DeviceState *dev)
 {
@@ -156,8 +159,8 @@ again:
             !strcmp(key[i], "hotplug-status"))
             continue;
 
-        if (xs_node_scanf(xenbus->xsh, tid, path, key[i], NULL, "%ms",
-                          &val) == 1) {
+        val = xs_node_read(xenbus->xsh, tid, NULL, NULL, "%s/%s", path, key[i]);
+        if (val) {
             qdict_put_str(opts, key[i], val);
             free(val);
         }
@@ -353,10 +356,10 @@ static void xen_bus_realize(BusState *bus, Error **errp)
             xs_node_watch(xenbus->xsh, node, key, xen_bus_backend_changed,
                           xenbus, &local_err);
         if (local_err) {
-            /* This need not be treated as a hard error so don't propagate */
-            error_reportf_err(local_err,
-                              "failed to set up '%s' enumeration watch: ",
-                              type[i]);
+            warn_reportf_err(local_err,
+                             "failed to set up '%s' enumeration watch: ",
+                             type[i]);
+            local_err = NULL;
         }
 
         g_free(node);
@@ -371,7 +374,7 @@ fail:
     g_free(key);
 }
 
-static void xen_bus_unplug_request(HotplugHandler *hotplug,
+static void xen_bus_unplug_request(const HotplugHandler *hotplug,
                                    DeviceState *dev,
                                    Error **errp)
 {
@@ -380,12 +383,14 @@ static void xen_bus_unplug_request(HotplugHandler *hotplug,
     xen_device_unplug(xendev, errp);
 }
 
-static void xen_bus_class_init(ObjectClass *class, void *data)
+static void xen_bus_class_init(ObjectClass *class, const void *data)
 {
     BusClass *bus_class = BUS_CLASS(class);
     HotplugHandlerClass *hotplug_class = HOTPLUG_HANDLER_CLASS(class);
 
+#ifdef CONFIG_HMP
     bus_class->print_dev = xen_bus_print_dev;
+#endif
     bus_class->get_dev_path = xen_bus_get_dev_path;
     bus_class->realize = xen_bus_realize;
     bus_class->unrealize = xen_bus_unrealize;
@@ -399,7 +404,7 @@ static const TypeInfo xen_bus_type_info = {
     .instance_size = sizeof(XenBus),
     .class_size = sizeof(XenBusClass),
     .class_init = xen_bus_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_HOTPLUG_HANDLER },
         { }
     },
@@ -648,6 +653,16 @@ int xen_device_frontend_scanf(XenDevice *xendev, const char *key,
     va_end(ap);
 
     return rc;
+}
+
+char *xen_device_frontend_read(XenDevice *xendev, const char *key)
+{
+    XenBus *xenbus = XEN_BUS(qdev_get_parent_bus(DEVICE(xendev)));
+
+    g_assert(xenbus->xsh);
+
+    return xs_node_read(xenbus->xsh, XBT_NULL, NULL, NULL, "%s/%s",
+                        xendev->frontend_path, key);
 }
 
 static void xen_device_frontend_set_state(XenDevice *xendev,
@@ -1092,13 +1107,12 @@ unrealize:
     xen_device_unrealize(dev);
 }
 
-static Property xen_device_props[] = {
+static const Property xen_device_props[] = {
     DEFINE_PROP_UINT16("frontend-id", XenDevice, frontend_id,
                        DOMID_INVALID),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void xen_device_class_init(ObjectClass *class, void *data)
+static void xen_device_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dev_class = DEVICE_CLASS(class);
 

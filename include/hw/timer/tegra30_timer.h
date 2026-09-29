@@ -2,8 +2,8 @@
 #define HW_TIMER_TEGRA30_TIMER_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
-#include "hw/ptimer.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/ptimer.h"
 
 /**
  * @name Constants

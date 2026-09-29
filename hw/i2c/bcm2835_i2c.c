@@ -27,7 +27,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/i2c/bcm2835_i2c.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 
 static void bcm2835_i2c_update_interrupt(BCM2835I2CState *s)
@@ -222,7 +222,7 @@ static void bcm2835_i2c_realize(DeviceState *dev, Error **errp)
     s->bus = i2c_init_bus(dev, NULL);
 
     memory_region_init_io(&s->iomem, OBJECT(dev), &bcm2835_i2c_ops, s,
-                          TYPE_BCM2835_I2C, 0x24);
+                          TYPE_BCM2835_I2C, 0x20);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 }
@@ -258,7 +258,7 @@ static const VMStateDescription vmstate_bcm2835_i2c = {
     }
 };
 
-static void bcm2835_i2c_class_init(ObjectClass *klass, void *data)
+static void bcm2835_i2c_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

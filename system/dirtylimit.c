@@ -13,16 +13,14 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qapi/qapi-commands-migration.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/error.h"
-#include "sysemu/dirtyrate.h"
-#include "sysemu/dirtylimit.h"
-#include "monitor/hmp.h"
-#include "monitor/monitor.h"
-#include "exec/memory.h"
+#include "system/dirtyrate.h"
+#include "system/dirtylimit.h"
+#include "system/memory.h"
 #include "exec/target_page.h"
-#include "hw/boards.h"
-#include "sysemu/kvm.h"
+#include "hw/core/boards.h"
+#include "system/kvm.h"
 #include "trace.h"
 #include "migration/misc.h"
 
@@ -80,8 +78,7 @@ static void vcpu_dirty_rate_stat_collect(void)
     int i = 0;
     int64_t period = DIRTYLIMIT_CALC_TIME_MS;
 
-    if (migrate_dirty_limit() &&
-        migration_is_active()) {
+    if (migrate_dirty_limit() && migration_is_running()) {
         period = migrate_vcpu_dirty_limit_period();
     }
 
@@ -124,7 +121,7 @@ static void *vcpu_dirty_rate_stat_thread(void *opaque)
 int64_t vcpu_dirty_rate_get(int cpu_index)
 {
     DirtyRateVcpu *rates = vcpu_dirty_rate_stat->stat.rates;
-    return qatomic_read_i64(&rates[cpu_index].dirty_rate);
+    return qatomic_read(&rates[cpu_index].dirty_rate);
 }
 
 void vcpu_dirty_rate_stat_start(void)
@@ -338,8 +335,6 @@ static void dirtylimit_adjust_throttle(CPUState *cpu)
     if (!dirtylimit_done(quota, current)) {
         dirtylimit_set_throttle(cpu, quota, current);
     }
-
-    return;
 }
 
 void dirtylimit_process(void)
@@ -494,21 +489,6 @@ void qmp_cancel_vcpu_dirty_limit(bool has_cpu_index,
     dirtylimit_state_unlock();
 }
 
-void hmp_cancel_vcpu_dirty_limit(Monitor *mon, const QDict *qdict)
-{
-    int64_t cpu_index = qdict_get_try_int(qdict, "cpu_index", -1);
-    Error *err = NULL;
-
-    qmp_cancel_vcpu_dirty_limit(!!(cpu_index != -1), cpu_index, &err);
-    if (err) {
-        hmp_handle_error(mon, err);
-        return;
-    }
-
-    monitor_printf(mon, "[Please use 'info vcpu_dirty_limit' to query "
-                   "dirty limit for virtual CPU]\n");
-}
-
 void qmp_set_vcpu_dirty_limit(bool has_cpu_index,
                               int64_t cpu_index,
                               uint64_t dirty_rate,
@@ -549,23 +529,6 @@ void qmp_set_vcpu_dirty_limit(bool has_cpu_index,
     }
 
     dirtylimit_state_unlock();
-}
-
-void hmp_set_vcpu_dirty_limit(Monitor *mon, const QDict *qdict)
-{
-    int64_t dirty_rate = qdict_get_int(qdict, "dirty_rate");
-    int64_t cpu_index = qdict_get_try_int(qdict, "cpu_index", -1);
-    Error *err = NULL;
-
-    if (dirty_rate < 0) {
-        error_setg(&err, "invalid dirty page limit %" PRId64, dirty_rate);
-        goto out;
-    }
-
-    qmp_set_vcpu_dirty_limit(!!(cpu_index != -1), cpu_index, dirty_rate, &err);
-
-out:
-    hmp_handle_error(mon, err);
 }
 
 /* Return the max throttle time of each virtual CPU */
@@ -648,30 +611,4 @@ static struct DirtyLimitInfoList *dirtylimit_query_all(void)
 struct DirtyLimitInfoList *qmp_query_vcpu_dirty_limit(Error **errp)
 {
     return dirtylimit_query_all();
-}
-
-void hmp_info_vcpu_dirty_limit(Monitor *mon, const QDict *qdict)
-{
-    DirtyLimitInfoList *info;
-    g_autoptr(DirtyLimitInfoList) head = NULL;
-    Error *err = NULL;
-
-    if (!dirtylimit_in_service()) {
-        monitor_printf(mon, "Dirty page limit not enabled!\n");
-        return;
-    }
-
-    head = qmp_query_vcpu_dirty_limit(&err);
-    if (err) {
-        hmp_handle_error(mon, err);
-        return;
-    }
-
-    for (info = head; info != NULL; info = info->next) {
-        monitor_printf(mon, "vcpu[%"PRIi64"], limit rate %"PRIi64 " (MB/s),"
-                            " current rate %"PRIi64 " (MB/s)\n",
-                            info->value->cpu_index,
-                            info->value->limit_rate,
-                            info->value->current_rate);
-    }
 }

@@ -12,13 +12,15 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/ppc/ppc4xx.h"
 #include "hw/pci-host/ppc4xx.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci.h"
-#include "sysemu/reset.h"
-#include "cpu.h"
+#include "exec/cpu-common.h"
+#include "system/physmem.h"
+#include "system/reset.h"
+#include "target/ppc/cpu.h"
 #include "ppc440.h"
 
 /*****************************************************************************/
@@ -605,9 +607,9 @@ static void dcr_write_dma(void *opaque, int dcrn, uint32_t val)
                     width = 1 << ((val & DMA0_CR_PW) >> 25);
                     xferlen = count * width;
                     wlen = rlen = xferlen;
-                    rptr = cpu_physical_memory_map(dma->ch[chnl].sa, &rlen,
+                    rptr = physical_memory_map(dma->ch[chnl].sa, &rlen,
                                                    false);
-                    wptr = cpu_physical_memory_map(dma->ch[chnl].da, &wlen,
+                    wptr = physical_memory_map(dma->ch[chnl].da, &wlen,
                                                    true);
                     if (rptr && rlen == xferlen && wptr && wlen == xferlen) {
                         if (!(val & DMA0_CR_DEC) &&
@@ -630,10 +632,10 @@ static void dcr_write_dma(void *opaque, int dcrn, uint32_t val)
                         }
                     }
                     if (wptr) {
-                        cpu_physical_memory_unmap(wptr, wlen, 1, didx);
+                        physical_memory_unmap(wptr, wlen, 1, didx);
                     }
                     if (rptr) {
-                        cpu_physical_memory_unmap(rptr, rlen, 0, sidx);
+                        physical_memory_unmap(rptr, rlen, 0, sidx);
                     }
                 }
             }
@@ -1020,15 +1022,14 @@ static void ppc460ex_pcie_realize(DeviceState *dev, Error **errp)
     ppc460ex_pcie_register_dcrs(s);
 }
 
-static Property ppc460ex_pcie_props[] = {
+static const Property ppc460ex_pcie_props[] = {
     DEFINE_PROP_INT32("busnum", PPC460EXPCIEState, num, -1),
     DEFINE_PROP_INT32("dcrn-base", PPC460EXPCIEState, dcrn_base, -1),
     DEFINE_PROP_LINK("cpu", PPC460EXPCIEState, cpu, TYPE_POWERPC_CPU,
                      PowerPCCPU *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void ppc460ex_pcie_class_init(ObjectClass *klass, void *data)
+static void ppc460ex_pcie_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

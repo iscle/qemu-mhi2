@@ -12,7 +12,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/unimp.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -21,14 +21,10 @@
 static uint64_t unimp_read(void *opaque, hwaddr offset, unsigned size)
 {
     UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
-    CPUState *cpu = qemu_get_cpu(0);
-    CPUClass *cc = CPU_GET_CLASS(cpu);
-    uint32_t pc = cc->get_pc(cpu);
 
     qemu_log_mask(LOG_UNIMP, "%s: unimplemented device read  "
-                  "(size %d, offset 0x%0*" HWADDR_PRIx ")",
+                  "(size %d, offset 0x%0*" HWADDR_PRIx ")\n",
                   s->name, size, s->offset_fmt_width, offset);
-    printf(" @ pc 0x%x\n", pc);
     return 0;
 }
 
@@ -36,15 +32,11 @@ static void unimp_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
     UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
-    CPUState *cpu = qemu_get_cpu(0);
-    CPUClass *cc = CPU_GET_CLASS(cpu);
-    uint32_t pc = cc->get_pc(cpu);
 
     qemu_log_mask(LOG_UNIMP, "%s: unimplemented device write "
                   "(size %d, offset 0x%0*" HWADDR_PRIx
-                  ", value 0x%0*" PRIx64 ")",
+                  ", value 0x%0*" PRIx64 ")\n",
                   s->name, size, s->offset_fmt_width, offset, size << 1, value);
-    printf(" @ pc 0x%x\n", pc);
 }
 
 static const MemoryRegionOps unimp_ops = {
@@ -78,13 +70,12 @@ static void unimp_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->iomem);
 }
 
-static Property unimp_properties[] = {
+static const Property unimp_properties[] = {
     DEFINE_PROP_UINT64("size", UnimplementedDeviceState, size, 0),
     DEFINE_PROP_STRING("name", UnimplementedDeviceState, name),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void unimp_class_init(ObjectClass *klass, void *data)
+static void unimp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

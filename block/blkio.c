@@ -11,15 +11,15 @@
 #include "qemu/osdep.h"
 #include <blkio.h>
 #include "block/block_int.h"
-#include "exec/memory.h"
-#include "exec/cpu-common.h" /* for qemu_ram_get_fd() */
+#include "system/memory.h"
+#include "system/ramblock.h"
 #include "qemu/defer-call.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/module.h"
-#include "sysemu/block-backend.h"
-#include "exec/memory.h" /* for ram_block_discard_disable() */
+#include "system/block-backend.h"
+#include "system/memory.h" /* for ram_block_discard_disable() */
 
 #include "block/block-io.h"
 
@@ -124,7 +124,7 @@ blkio_do_alloc_bounce_buffer(BDRVBlkioState *s, BlkioBounceBuf *bounce,
                              int64_t bytes)
 {
     void *addr = s->bounce_pool.addr;
-    BlkioBounceBuf *cur = NULL;
+    BlkioBounceBuf *cur;
     BlkioBounceBuf *prev = NULL;
     ptrdiff_t space;
 
@@ -937,9 +937,8 @@ static int64_t coroutine_fn blkio_co_getlength(BlockDriverState *bs)
     uint64_t capacity;
     int ret;
 
-    WITH_QEMU_LOCK_GUARD(&s->blkio_lock) {
-        ret = blkio_get_uint64(s->blkio, "capacity", &capacity);
-    }
+    QEMU_LOCK_GUARD(&s->blkio_lock);
+    ret = blkio_get_uint64(s->blkio, "capacity", &capacity);
     if (ret < 0) {
         return -ret;
     }

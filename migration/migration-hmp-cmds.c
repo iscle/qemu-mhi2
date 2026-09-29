@@ -15,204 +15,290 @@
 
 #include "qemu/osdep.h"
 #include "block/qapi.h"
+#include "block/block-global-state.h"
 #include "migration/snapshot.h"
 #include "monitor/hmp.h"
+#include "monitor/hmp-completion.h"
 #include "monitor/monitor.h"
+#include "monitor/monitor-internal.h"
+#include "monitor/monitor-hmp-internal.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-migration.h"
 #include "qapi/qapi-visit-migration.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/string-input-visitor.h"
 #include "qapi/string-output-visitor.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/sockets.h"
-#include "sysemu/runstate.h"
+#include "system/runstate.h"
 #include "ui/qemu-spice.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "options.h"
 #include "migration.h"
 
-static void migration_global_dump(Monitor *mon)
+static void migration_global_dump(MonitorHMP *hmp)
 {
     MigrationState *ms = migrate_get_current();
 
-    monitor_printf(mon, "globals:\n");
-    monitor_printf(mon, "store-global-state: %s\n",
-                   ms->store_global_state ? "on" : "off");
-    monitor_printf(mon, "only-migratable: %s\n",
-                   only_migratable ? "on" : "off");
-    monitor_printf(mon, "send-configuration: %s\n",
-                   ms->send_configuration ? "on" : "off");
-    monitor_printf(mon, "send-section-footer: %s\n",
-                   ms->send_section_footer ? "on" : "off");
-    monitor_printf(mon, "clear-bitmap-shift: %u\n",
-                   ms->clear_bitmap_shift);
+    monitor_hmp_printf(hmp, "Globals:\n");
+    monitor_hmp_printf(hmp, "  store-global-state: %s\n",
+                       ms->store_global_state ? "on" : "off");
+    monitor_hmp_printf(hmp, "  only-migratable: %s\n",
+                       only_migratable ? "on" : "off");
+    monitor_hmp_printf(hmp, "  send-configuration: %s\n",
+                       ms->send_configuration ? "on" : "off");
+    monitor_hmp_printf(hmp, "  send-section-footer: %s\n",
+                       ms->send_section_footer ? "on" : "off");
+    monitor_hmp_printf(hmp, "  send-switchover-start: %s\n",
+                       ms->send_switchover_start ? "on" : "off");
+    monitor_hmp_printf(hmp, "  clear-bitmap-shift: %u\n",
+                       ms->clear_bitmap_shift);
 }
 
-void hmp_info_migrate(Monitor *mon, const QDict *qdict)
+static const gchar *format_time_str(uint64_t us)
 {
+    const char *units[] = {"us", "ms", "sec"};
+    int index = 0;
+
+    while (us >= 1000 && index + 1 < ARRAY_SIZE(units)) {
+        us /= 1000;
+        index++;
+    }
+
+    return g_strdup_printf("%"PRIu64" %s", us, units[index]);
+}
+
+static void migration_dump_blocktime(MonitorHMP *hmp, MigrationInfo *info)
+{
+    if (info->has_postcopy_blocktime) {
+        monitor_hmp_printf(hmp, "Postcopy Blocktime (ms): %" PRIu32 "\n",
+                           info->postcopy_blocktime);
+    }
+
+    if (info->has_postcopy_vcpu_blocktime) {
+        uint32List *item = info->postcopy_vcpu_blocktime;
+        const char *sep = "";
+        int count = 0;
+
+        monitor_hmp_printf(hmp, "Postcopy vCPU Blocktime (ms):\n [");
+
+        while (item) {
+            monitor_hmp_printf(hmp, "%s%"PRIu32, sep, item->value);
+            item = item->next;
+            /* Each line 10 vcpu results, newline if there's more */
+            sep = ((++count % 10 == 0) && item) ? ",\n  " : ", ";
+        }
+        monitor_hmp_printf(hmp, "]\n");
+    }
+
+    if (info->has_postcopy_latency) {
+        monitor_hmp_printf(hmp, "Postcopy Latency (ns): %" PRIu64 "\n",
+                           info->postcopy_latency);
+    }
+
+    if (info->has_postcopy_non_vcpu_latency) {
+        monitor_hmp_printf(hmp, "Postcopy non-vCPU Latency (ns): %" PRIu64 "\n",
+                           info->postcopy_non_vcpu_latency);
+    }
+
+    if (info->has_postcopy_vcpu_latency) {
+        uint64List *item = info->postcopy_vcpu_latency;
+        const char *sep = "";
+        int count = 0;
+
+        monitor_hmp_printf(hmp, "Postcopy vCPU Latencies (ns):\n [");
+
+        while (item) {
+            monitor_hmp_printf(hmp, "%s%"PRIu64, sep, item->value);
+            item = item->next;
+            /* Each line 10 vcpu results, newline if there's more */
+            sep = ((++count % 10 == 0) && item) ? ",\n  " : ", ";
+        }
+        monitor_hmp_printf(hmp, "]\n");
+    }
+
+    if (info->has_postcopy_latency_dist) {
+        uint64List *item = info->postcopy_latency_dist;
+        int count = 0;
+
+        monitor_hmp_printf(hmp, "Postcopy Latency Distribution:\n");
+
+        while (item) {
+            g_autofree const gchar *from = format_time_str(1UL << count);
+            g_autofree const gchar *to = format_time_str(1UL << (count + 1));
+
+            monitor_hmp_printf(hmp, "  [ %8s - %8s ]: %10"PRIu64"\n",
+                               from, to, item->value);
+            item = item->next;
+            count++;
+        }
+    }
+}
+
+void hmp_info_migrate(MonitorHMP *hmp, const QDict *qdict)
+{
+    bool show_all = qdict_get_try_bool(qdict, "all", false);
     MigrationInfo *info;
 
     info = qmp_query_migrate(NULL);
 
-    migration_global_dump(mon);
-
     if (info->blocked_reasons) {
         strList *reasons = info->blocked_reasons;
-        monitor_printf(mon, "Outgoing migration blocked:\n");
+        monitor_hmp_printf(hmp, "Outgoing migration blocked:\n");
         while (reasons) {
-            monitor_printf(mon, "  %s\n", reasons->value);
+            monitor_hmp_printf(hmp, "  %s\n", reasons->value);
             reasons = reasons->next;
         }
     }
 
     if (info->has_status) {
-        monitor_printf(mon, "Migration status: %s",
-                       MigrationStatus_str(info->status));
-        if (info->status == MIGRATION_STATUS_FAILED && info->error_desc) {
-            monitor_printf(mon, " (%s)\n", info->error_desc);
+        monitor_hmp_printf(hmp, "Status: \t\t%s",
+                           MigrationStatus_str(info->status));
+        if ((info->status == MIGRATION_STATUS_FAILED ||
+             info->status == MIGRATION_STATUS_POSTCOPY_PAUSED) &&
+            info->error_desc) {
+            monitor_hmp_printf(hmp, " (%s)\n", info->error_desc);
         } else {
-            monitor_printf(mon, "\n");
+            monitor_hmp_printf(hmp, "\n");
         }
 
-        monitor_printf(mon, "total time: %" PRIu64 " ms\n",
-                       info->total_time);
-        if (info->has_expected_downtime) {
-            monitor_printf(mon, "expected downtime: %" PRIu64 " ms\n",
-                           info->expected_downtime);
-        }
-        if (info->has_downtime) {
-            monitor_printf(mon, "downtime: %" PRIu64 " ms\n",
-                           info->downtime);
-        }
-        if (info->has_setup_time) {
-            monitor_printf(mon, "setup: %" PRIu64 " ms\n",
-                           info->setup_time);
+        if (info->total_time) {
+            monitor_hmp_printf(hmp, "Time (ms): \t\ttotal=%" PRIu64,
+                               info->total_time);
+            if (info->has_setup_time) {
+                monitor_hmp_printf(hmp, ", setup=%" PRIu64,
+                                   info->setup_time);
+            }
+            if (info->has_expected_downtime) {
+                monitor_hmp_printf(hmp, ", exp_down=%" PRIu64,
+                                   info->expected_downtime);
+            }
+            if (info->has_downtime) {
+                monitor_hmp_printf(hmp, ", down=%" PRIu64,
+                                   info->downtime);
+            }
+            monitor_hmp_printf(hmp, "\n");
         }
     }
 
-    if (info->ram) {
-        monitor_printf(mon, "transferred ram: %" PRIu64 " kbytes\n",
-                       info->ram->transferred >> 10);
-        monitor_printf(mon, "throughput: %0.2f mbps\n",
-                       info->ram->mbps);
-        monitor_printf(mon, "remaining ram: %" PRIu64 " kbytes\n",
-                       info->ram->remaining >> 10);
-        monitor_printf(mon, "total ram: %" PRIu64 " kbytes\n",
-                       info->ram->total >> 10);
-        monitor_printf(mon, "duplicate: %" PRIu64 " pages\n",
-                       info->ram->duplicate);
-        monitor_printf(mon, "normal: %" PRIu64 " pages\n",
-                       info->ram->normal);
-        monitor_printf(mon, "normal bytes: %" PRIu64 " kbytes\n",
-                       info->ram->normal_bytes >> 10);
-        monitor_printf(mon, "dirty sync count: %" PRIu64 "\n",
-                       info->ram->dirty_sync_count);
-        monitor_printf(mon, "page size: %" PRIu64 " kbytes\n",
-                       info->ram->page_size >> 10);
-        monitor_printf(mon, "multifd bytes: %" PRIu64 " kbytes\n",
-                       info->ram->multifd_bytes >> 10);
-        monitor_printf(mon, "pages-per-second: %" PRIu64 "\n",
-                       info->ram->pages_per_second);
-
-        if (info->ram->dirty_pages_rate) {
-            monitor_printf(mon, "dirty pages rate: %" PRIu64 " pages\n",
-                           info->ram->dirty_pages_rate);
-        }
-        if (info->ram->postcopy_requests) {
-            monitor_printf(mon, "postcopy request count: %" PRIu64 "\n",
-                           info->ram->postcopy_requests);
-        }
-        if (info->ram->precopy_bytes) {
-            monitor_printf(mon, "precopy ram: %" PRIu64 " kbytes\n",
-                           info->ram->precopy_bytes >> 10);
-        }
-        if (info->ram->downtime_bytes) {
-            monitor_printf(mon, "downtime ram: %" PRIu64 " kbytes\n",
-                           info->ram->downtime_bytes >> 10);
-        }
-        if (info->ram->postcopy_bytes) {
-            monitor_printf(mon, "postcopy ram: %" PRIu64 " kbytes\n",
-                           info->ram->postcopy_bytes >> 10);
-        }
-        if (info->ram->dirty_sync_missed_zero_copy) {
-            monitor_printf(mon,
-                           "Zero-copy-send fallbacks happened: %" PRIu64 " times\n",
-                           info->ram->dirty_sync_missed_zero_copy);
-        }
+    if (info->has_remaining) {
+        g_autofree char *remaining = size_to_str(info->remaining);
+        monitor_hmp_printf(hmp, "Remaining: \t\t%s\n", remaining);
     }
 
-    if (info->xbzrle_cache) {
-        monitor_printf(mon, "cache size: %" PRIu64 " bytes\n",
-                       info->xbzrle_cache->cache_size);
-        monitor_printf(mon, "xbzrle transferred: %" PRIu64 " kbytes\n",
-                       info->xbzrle_cache->bytes >> 10);
-        monitor_printf(mon, "xbzrle pages: %" PRIu64 " pages\n",
-                       info->xbzrle_cache->pages);
-        monitor_printf(mon, "xbzrle cache miss: %" PRIu64 " pages\n",
-                       info->xbzrle_cache->cache_miss);
-        monitor_printf(mon, "xbzrle cache miss rate: %0.2f\n",
-                       info->xbzrle_cache->cache_miss_rate);
-        monitor_printf(mon, "xbzrle encoding rate: %0.2f\n",
-                       info->xbzrle_cache->encoding_rate);
-        monitor_printf(mon, "xbzrle overflow: %" PRIu64 "\n",
-                       info->xbzrle_cache->overflow);
-    }
-
-    if (info->has_cpu_throttle_percentage) {
-        monitor_printf(mon, "cpu throttle percentage: %" PRIu64 "\n",
-                       info->cpu_throttle_percentage);
-    }
-
-    if (info->has_dirty_limit_throttle_time_per_round) {
-        monitor_printf(mon, "dirty-limit throttle time: %" PRIu64 " us\n",
-                       info->dirty_limit_throttle_time_per_round);
-    }
-
-    if (info->has_dirty_limit_ring_full_time) {
-        monitor_printf(mon, "dirty-limit ring full time: %" PRIu64 " us\n",
-                       info->dirty_limit_ring_full_time);
-    }
-
-    if (info->has_postcopy_blocktime) {
-        monitor_printf(mon, "postcopy blocktime: %u\n",
-                       info->postcopy_blocktime);
-    }
-
-    if (info->has_postcopy_vcpu_blocktime) {
-        Visitor *v;
-        char *str;
-        v = string_output_visitor_new(false, &str);
-        visit_type_uint32List(v, NULL, &info->postcopy_vcpu_blocktime,
-                              &error_abort);
-        visit_complete(v, &str);
-        monitor_printf(mon, "postcopy vcpu blocktime: %s\n", str);
-        g_free(str);
-        visit_free(v);
-    }
     if (info->has_socket_address) {
         SocketAddressList *addr;
 
-        monitor_printf(mon, "socket address: [\n");
+        monitor_hmp_printf(hmp, "Sockets: [\n");
 
         for (addr = info->socket_address; addr; addr = addr->next) {
             char *s = socket_uri(addr->value);
-            monitor_printf(mon, "\t%s\n", s);
+            monitor_hmp_printf(hmp, "\t%s\n", s);
             g_free(s);
         }
-        monitor_printf(mon, "]\n");
+        monitor_hmp_printf(hmp, "]\n");
     }
 
-    if (info->vfio) {
-        monitor_printf(mon, "vfio device transferred: %" PRIu64 " kbytes\n",
-                       info->vfio->transferred >> 10);
+    if (info->ram) {
+        g_autofree char *str_psize = size_to_str(info->ram->page_size);
+        g_autofree char *str_total = size_to_str(info->ram->total);
+        g_autofree char *str_transferred = size_to_str(info->ram->transferred);
+        g_autofree char *str_remaining = size_to_str(info->ram->remaining);
+        g_autofree char *str_precopy = size_to_str(info->ram->precopy_bytes);
+        g_autofree char *str_multifd = size_to_str(info->ram->multifd_bytes);
+        g_autofree char *str_postcopy = size_to_str(info->ram->postcopy_bytes);
+
+        monitor_hmp_printf(hmp, "RAM info:\n");
+        monitor_hmp_printf(hmp, "  Throughput (Mbps): \t%0.2f\n",
+                           info->ram->mbps);
+        monitor_hmp_printf(hmp, "  Sizes: \t\tpagesize=%s, total=%s\n",
+                           str_psize, str_total);
+        monitor_hmp_printf(hmp, "  Transfers: \t\ttransferred=%s, remain=%s\n",
+                           str_transferred, str_remaining);
+        monitor_hmp_printf(hmp, "    Channels: \t\tprecopy=%s, "
+                           "multifd=%s, postcopy=%s",
+                           str_precopy, str_multifd, str_postcopy);
+
+        if (info->vfio) {
+            g_autofree char *str_vfio = size_to_str(info->vfio->transferred);
+
+            monitor_hmp_printf(hmp, ", vfio=%s", str_vfio);
+        }
+        monitor_hmp_printf(hmp, "\n");
+
+        monitor_hmp_printf(hmp, "    Page Types: \tnormal=%" PRIu64
+                           ", zero=%" PRIu64 "\n",
+                           info->ram->normal, info->ram->duplicate);
+        monitor_hmp_printf(hmp, "  Page Rates (pps): \ttransfer=%" PRIu64,
+                           info->ram->pages_per_second);
+        if (info->ram->dirty_pages_rate) {
+            monitor_hmp_printf(hmp, ", dirty=%" PRIu64,
+                               info->ram->dirty_pages_rate);
+        }
+        monitor_hmp_printf(hmp, "\n");
+
+        monitor_hmp_printf(hmp, "  Others: \t\tdirty_syncs=%" PRIu64,
+                           info->ram->dirty_sync_count);
+        if (info->ram->postcopy_requests) {
+            monitor_hmp_printf(hmp, ", postcopy_req=%" PRIu64,
+                               info->ram->postcopy_requests);
+        }
+        if (info->ram->downtime_bytes) {
+            monitor_hmp_printf(hmp, ", downtime_bytes=%" PRIu64,
+                               info->ram->downtime_bytes);
+        }
+        if (info->ram->dirty_sync_missed_zero_copy) {
+            monitor_hmp_printf(hmp, ", zerocopy_fallbacks=%" PRIu64,
+                               info->ram->dirty_sync_missed_zero_copy);
+        }
+        monitor_hmp_printf(hmp, "\n");
     }
 
+    if (!show_all) {
+        goto out;
+    }
+
+    migration_global_dump(hmp);
+
+    if (info->xbzrle_cache) {
+        monitor_hmp_printf(hmp, "XBZRLE: size=%" PRIu64
+                           ", transferred=%" PRIu64
+                           ", pages=%" PRIu64
+                           ", miss=%" PRIu64 "\n"
+                           "  miss_rate=%0.2f"
+                           ", encode_rate=%0.2f"
+                           ", overflow=%" PRIu64 "\n",
+                           info->xbzrle_cache->cache_size,
+                           info->xbzrle_cache->bytes,
+                           info->xbzrle_cache->pages,
+                           info->xbzrle_cache->cache_miss,
+                           info->xbzrle_cache->cache_miss_rate,
+                           info->xbzrle_cache->encoding_rate,
+                           info->xbzrle_cache->overflow);
+    }
+
+    if (info->has_cpu_throttle_percentage) {
+        monitor_hmp_printf(hmp, "CPU Throttle (%%): %" PRIu64 "\n",
+                           info->cpu_throttle_percentage);
+    }
+
+    if (info->has_dirty_limit_throttle_time_per_round) {
+        monitor_hmp_printf(hmp, "Dirty-limit Throttle (us): %" PRIu64 "\n",
+                           info->dirty_limit_throttle_time_per_round);
+    }
+
+    if (info->has_dirty_limit_ring_full_time) {
+        monitor_hmp_printf(hmp, "Dirty-limit Ring Full (us): %" PRIu64 "\n",
+                           info->dirty_limit_ring_full_time);
+    }
+
+    migration_dump_blocktime(hmp, info);
+out:
     qapi_free_MigrationInfo(info);
 }
 
-void hmp_info_migrate_capabilities(Monitor *mon, const QDict *qdict)
+void hmp_info_migrate_capabilities(MonitorHMP *hmp, const QDict *qdict)
 {
     MigrationCapabilityStatusList *caps, *cap;
 
@@ -220,105 +306,120 @@ void hmp_info_migrate_capabilities(Monitor *mon, const QDict *qdict)
 
     if (caps) {
         for (cap = caps; cap; cap = cap->next) {
-            monitor_printf(mon, "%s: %s\n",
-                           MigrationCapability_str(cap->value->capability),
-                           cap->value->state ? "on" : "off");
+            monitor_hmp_printf(hmp, "%s: %s\n",
+                               MigrationCapability_str(cap->value->capability),
+                               cap->value->state ? "on" : "off");
         }
     }
 
     qapi_free_MigrationCapabilityStatusList(caps);
 }
 
-void hmp_info_migrate_parameters(Monitor *mon, const QDict *qdict)
+static void monitor_print_cpr_exec_command(MonitorHMP *hmp, strList *args)
+{
+    monitor_hmp_printf(hmp, "%s:",
+        MigrationParameter_str(MIGRATION_PARAMETER_CPR_EXEC_COMMAND));
+
+    while (args) {
+        monitor_hmp_printf(hmp, " %s", args->value);
+        args = args->next;
+    }
+    monitor_hmp_printf(hmp, "\n");
+}
+
+void hmp_info_migrate_parameters(MonitorHMP *hmp, const QDict *qdict)
 {
     MigrationParameters *params;
+    MigrationState *s = migrate_get_current();
 
     params = qmp_query_migrate_parameters(NULL);
 
     if (params) {
-        monitor_printf(mon, "%s: %" PRIu64 " ms\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " ms\n",
             MigrationParameter_str(MIGRATION_PARAMETER_ANNOUNCE_INITIAL),
             params->announce_initial);
-        monitor_printf(mon, "%s: %" PRIu64 " ms\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " ms\n",
             MigrationParameter_str(MIGRATION_PARAMETER_ANNOUNCE_MAX),
             params->announce_max);
-        monitor_printf(mon, "%s: %" PRIu64 "\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 "\n",
             MigrationParameter_str(MIGRATION_PARAMETER_ANNOUNCE_ROUNDS),
             params->announce_rounds);
-        monitor_printf(mon, "%s: %" PRIu64 " ms\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " ms\n",
             MigrationParameter_str(MIGRATION_PARAMETER_ANNOUNCE_STEP),
             params->announce_step);
         assert(params->has_throttle_trigger_threshold);
-        monitor_printf(mon, "%s: %u\n",
+        monitor_hmp_printf(hmp, "%s: %u\n",
             MigrationParameter_str(MIGRATION_PARAMETER_THROTTLE_TRIGGER_THRESHOLD),
             params->throttle_trigger_threshold);
         assert(params->has_cpu_throttle_initial);
-        monitor_printf(mon, "%s: %u\n",
+        monitor_hmp_printf(hmp, "%s: %u\n",
             MigrationParameter_str(MIGRATION_PARAMETER_CPU_THROTTLE_INITIAL),
             params->cpu_throttle_initial);
         assert(params->has_cpu_throttle_increment);
-        monitor_printf(mon, "%s: %u\n",
+        monitor_hmp_printf(hmp, "%s: %u\n",
             MigrationParameter_str(MIGRATION_PARAMETER_CPU_THROTTLE_INCREMENT),
             params->cpu_throttle_increment);
         assert(params->has_cpu_throttle_tailslow);
-        monitor_printf(mon, "%s: %s\n",
+        monitor_hmp_printf(hmp, "%s: %s\n",
             MigrationParameter_str(MIGRATION_PARAMETER_CPU_THROTTLE_TAILSLOW),
             params->cpu_throttle_tailslow ? "on" : "off");
         assert(params->has_max_cpu_throttle);
-        monitor_printf(mon, "%s: %u\n",
+        monitor_hmp_printf(hmp, "%s: %u\n",
             MigrationParameter_str(MIGRATION_PARAMETER_MAX_CPU_THROTTLE),
             params->max_cpu_throttle);
         assert(params->tls_creds);
-        monitor_printf(mon, "%s: '%s'\n",
+        monitor_hmp_printf(hmp, "%s: '%s'\n",
             MigrationParameter_str(MIGRATION_PARAMETER_TLS_CREDS),
-            params->tls_creds);
+                       params->tls_creds->u.s);
         assert(params->tls_hostname);
-        monitor_printf(mon, "%s: '%s'\n",
+        monitor_hmp_printf(hmp, "%s: '%s'\n",
             MigrationParameter_str(MIGRATION_PARAMETER_TLS_HOSTNAME),
-            params->tls_hostname);
+                       params->tls_hostname->u.s);
+        assert(params->tls_authz);
+        monitor_hmp_printf(hmp, "%s: '%s'\n",
+            MigrationParameter_str(MIGRATION_PARAMETER_TLS_AUTHZ),
+                       params->tls_authz->u.s);
         assert(params->has_max_bandwidth);
-        monitor_printf(mon, "%s: %" PRIu64 " bytes/second\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " bytes/second\n",
             MigrationParameter_str(MIGRATION_PARAMETER_MAX_BANDWIDTH),
             params->max_bandwidth);
         assert(params->has_avail_switchover_bandwidth);
-        monitor_printf(mon, "%s: %" PRIu64 " bytes/second\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " bytes/second\n",
             MigrationParameter_str(MIGRATION_PARAMETER_AVAIL_SWITCHOVER_BANDWIDTH),
             params->avail_switchover_bandwidth);
+        assert(params->has_max_postcopy_bandwidth);
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " bytes/second\n",
+            MigrationParameter_str(MIGRATION_PARAMETER_MAX_POSTCOPY_BANDWIDTH),
+            params->max_postcopy_bandwidth);
         assert(params->has_downtime_limit);
-        monitor_printf(mon, "%s: %" PRIu64 " ms\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " ms\n",
             MigrationParameter_str(MIGRATION_PARAMETER_DOWNTIME_LIMIT),
             params->downtime_limit);
         assert(params->has_x_checkpoint_delay);
-        monitor_printf(mon, "%s: %u ms\n",
+        monitor_hmp_printf(hmp, "%s: %u ms\n",
             MigrationParameter_str(MIGRATION_PARAMETER_X_CHECKPOINT_DELAY),
             params->x_checkpoint_delay);
-        monitor_printf(mon, "%s: %u\n",
+        monitor_hmp_printf(hmp, "%s: %u\n",
             MigrationParameter_str(MIGRATION_PARAMETER_MULTIFD_CHANNELS),
             params->multifd_channels);
-        monitor_printf(mon, "%s: %s\n",
+        monitor_hmp_printf(hmp, "%s: %s\n",
             MigrationParameter_str(MIGRATION_PARAMETER_MULTIFD_COMPRESSION),
             MultiFDCompression_str(params->multifd_compression));
         assert(params->has_zero_page_detection);
-        monitor_printf(mon, "%s: %s\n",
+        monitor_hmp_printf(hmp, "%s: %s\n",
             MigrationParameter_str(MIGRATION_PARAMETER_ZERO_PAGE_DETECTION),
             qapi_enum_lookup(&ZeroPageDetection_lookup,
                 params->zero_page_detection));
-        monitor_printf(mon, "%s: %" PRIu64 " bytes\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " bytes\n",
             MigrationParameter_str(MIGRATION_PARAMETER_XBZRLE_CACHE_SIZE),
             params->xbzrle_cache_size);
-        monitor_printf(mon, "%s: %" PRIu64 "\n",
-            MigrationParameter_str(MIGRATION_PARAMETER_MAX_POSTCOPY_BANDWIDTH),
-            params->max_postcopy_bandwidth);
-        monitor_printf(mon, "%s: '%s'\n",
-            MigrationParameter_str(MIGRATION_PARAMETER_TLS_AUTHZ),
-            params->tls_authz);
 
-        if (params->has_block_bitmap_mapping) {
+        if (s->has_block_bitmap_mapping) {
             const BitmapMigrationNodeAliasList *bmnal;
 
-            monitor_printf(mon, "%s:\n",
-                           MigrationParameter_str(
-                               MIGRATION_PARAMETER_BLOCK_BITMAP_MAPPING));
+            monitor_hmp_printf(hmp, "%s:\n",
+                               MigrationParameter_str(
+                                   MIGRATION_PARAMETER_BLOCK_BITMAP_MAPPING));
 
             for (bmnal = params->block_bitmap_mapping;
                  bmnal;
@@ -327,43 +428,53 @@ void hmp_info_migrate_parameters(Monitor *mon, const QDict *qdict)
                 const BitmapMigrationNodeAlias *bmna = bmnal->value;
                 const BitmapMigrationBitmapAliasList *bmbal;
 
-                monitor_printf(mon, "  '%s' -> '%s'\n",
-                               bmna->node_name, bmna->alias);
+                monitor_hmp_printf(hmp, "  '%s' -> '%s'\n",
+                                   bmna->node_name, bmna->alias);
 
                 for (bmbal = bmna->bitmaps; bmbal; bmbal = bmbal->next) {
                     const BitmapMigrationBitmapAlias *bmba = bmbal->value;
 
-                    monitor_printf(mon, "    '%s' -> '%s'\n",
-                                   bmba->name, bmba->alias);
+                    monitor_hmp_printf(hmp, "    '%s' -> '%s'\n",
+                                       bmba->name, bmba->alias);
                 }
             }
         }
 
-        monitor_printf(mon, "%s: %" PRIu64 " ms\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " ms\n",
         MigrationParameter_str(MIGRATION_PARAMETER_X_VCPU_DIRTY_LIMIT_PERIOD),
         params->x_vcpu_dirty_limit_period);
 
-        monitor_printf(mon, "%s: %" PRIu64 " MB/s\n",
+        monitor_hmp_printf(hmp, "%s: %" PRIu64 " MB/s\n",
             MigrationParameter_str(MIGRATION_PARAMETER_VCPU_DIRTY_LIMIT),
             params->vcpu_dirty_limit);
 
         assert(params->has_mode);
-        monitor_printf(mon, "%s: %s\n",
+        monitor_hmp_printf(hmp, "%s: %s\n",
             MigrationParameter_str(MIGRATION_PARAMETER_MODE),
             qapi_enum_lookup(&MigMode_lookup, params->mode));
 
         if (params->has_direct_io) {
-            monitor_printf(mon, "%s: %s\n",
-                           MigrationParameter_str(
-                               MIGRATION_PARAMETER_DIRECT_IO),
-                           params->direct_io ? "on" : "off");
+            monitor_hmp_printf(hmp, "%s: %s\n",
+                               MigrationParameter_str(
+                                   MIGRATION_PARAMETER_DIRECT_IO),
+                               params->direct_io ? "on" : "off");
         }
+
+        if (params->has_x_rdma_chunk_size) {
+            monitor_hmp_printf(hmp, "%s: %" PRIu64 " bytes\n",
+                               MigrationParameter_str(
+                                   MIGRATION_PARAMETER_X_RDMA_CHUNK_SIZE),
+                               params->x_rdma_chunk_size);
+        }
+
+        assert(params->has_cpr_exec_command);
+        monitor_print_cpr_exec_command(hmp, params->cpr_exec_command);
     }
 
     qapi_free_MigrationParameters(params);
 }
 
-void hmp_loadvm(Monitor *mon, const QDict *qdict)
+void hmp_loadvm(MonitorHMP *hmp, const QDict *qdict)
 {
     RunState saved_state = runstate_get();
 
@@ -376,33 +487,33 @@ void hmp_loadvm(Monitor *mon, const QDict *qdict)
         load_snapshot_resume(saved_state);
     }
 
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_savevm(Monitor *mon, const QDict *qdict)
+void hmp_savevm(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
 
     save_snapshot(qdict_get_try_str(qdict, "name"),
                   true, NULL, false, NULL, &err);
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_delvm(Monitor *mon, const QDict *qdict)
+void hmp_delvm(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
     const char *name = qdict_get_str(qdict, "name");
 
     delete_snapshot(name, false, NULL, &err);
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_cancel(Monitor *mon, const QDict *qdict)
+void hmp_migrate_cancel(MonitorHMP *hmp, const QDict *qdict)
 {
     qmp_migrate_cancel(NULL);
 }
 
-void hmp_migrate_continue(Monitor *mon, const QDict *qdict)
+void hmp_migrate_continue(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
     const char *state = qdict_get_str(qdict, "state");
@@ -412,10 +523,10 @@ void hmp_migrate_continue(Monitor *mon, const QDict *qdict)
         qmp_migrate_continue(val, &err);
     }
 
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_incoming(Monitor *mon, const QDict *qdict)
+void hmp_migrate_incoming(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
     const char *uri = qdict_get_str(qdict, "uri");
@@ -431,30 +542,30 @@ void hmp_migrate_incoming(Monitor *mon, const QDict *qdict)
     qapi_free_MigrationChannelList(caps);
 
 end:
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_recover(Monitor *mon, const QDict *qdict)
+void hmp_migrate_recover(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
     const char *uri = qdict_get_str(qdict, "uri");
 
     qmp_migrate_recover(uri, &err);
 
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_pause(Monitor *mon, const QDict *qdict)
+void hmp_migrate_pause(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
 
     qmp_migrate_pause(&err);
 
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
 
-void hmp_migrate_set_capability(Monitor *mon, const QDict *qdict)
+void hmp_migrate_set_capability(MonitorHMP *hmp, const QDict *qdict)
 {
     const char *cap = qdict_get_str(qdict, "capability");
     bool state = qdict_get_bool(qdict, "state");
@@ -476,15 +587,15 @@ void hmp_migrate_set_capability(Monitor *mon, const QDict *qdict)
     qapi_free_MigrationCapabilityStatusList(caps);
 
 end:
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_set_parameter(Monitor *mon, const QDict *qdict)
+void hmp_migrate_set_parameter(MonitorHMP *hmp, const QDict *qdict)
 {
     const char *param = qdict_get_str(qdict, "parameter");
     const char *valuestr = qdict_get_str(qdict, "value");
     Visitor *v = string_input_visitor_new(valuestr);
-    MigrateSetParameters *p = g_new0(MigrateSetParameters, 1);
+    MigrationParameters *p = g_new0(MigrationParameters, 1);
     uint64_t valuebw = 0;
     uint64_t cache_size;
     Error *err = NULL;
@@ -639,6 +750,31 @@ void hmp_migrate_set_parameter(Monitor *mon, const QDict *qdict)
         p->has_direct_io = true;
         visit_type_bool(v, param, &p->direct_io, &err);
         break;
+    case MIGRATION_PARAMETER_X_RDMA_CHUNK_SIZE:
+        p->has_x_rdma_chunk_size = true;
+        visit_type_size(v, param, &p->x_rdma_chunk_size, &err);
+        break;
+    case MIGRATION_PARAMETER_CPR_EXEC_COMMAND: {
+        /*
+         * NOTE: g_autofree will only auto g_free() the strv array when
+         * needed, it will not free the strings within the array. It's
+         * intentional: when strv is set, the ownership of the strings will
+         * always be passed to p->cpr_exec_command via QAPI_LIST_APPEND().
+         */
+        g_autofree char **strv = NULL;
+        g_autoptr(GError) gerr = NULL;
+        strList **tail = &p->cpr_exec_command;
+
+        if (!g_shell_parse_argv(valuestr, NULL, &strv, &gerr)) {
+            error_setg(&err, "%s", gerr->message);
+            break;
+        }
+        for (int i = 0; strv[i]; i++) {
+            QAPI_LIST_APPEND(tail, strv[i]);
+        }
+        p->has_cpr_exec_command = true;
+        break;
+    }
     default:
         g_assert_not_reached();
     }
@@ -650,25 +786,25 @@ void hmp_migrate_set_parameter(Monitor *mon, const QDict *qdict)
     qmp_migrate_set_parameters(p, &err);
 
  cleanup:
-    qapi_free_MigrateSetParameters(p);
+    qapi_free_MigrationParameters(p);
     visit_free(v);
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
-void hmp_migrate_start_postcopy(Monitor *mon, const QDict *qdict)
+void hmp_migrate_start_postcopy(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
     qmp_migrate_start_postcopy(&err);
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 
 #ifdef CONFIG_REPLICATION
-void hmp_x_colo_lost_heartbeat(Monitor *mon, const QDict *qdict)
+void hmp_x_colo_lost_heartbeat(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
 
     qmp_x_colo_lost_heartbeat(&err);
-    hmp_handle_error(mon, err);
+    hmp_handle_error(hmp, err);
 }
 #endif
 
@@ -698,34 +834,54 @@ static void hmp_migrate_status_cb(void *opaque)
     qapi_free_MigrationInfo(info);
 }
 
-void hmp_migrate(Monitor *mon, const QDict *qdict)
+void hmp_migrate(MonitorHMP *hmp, const QDict *qdict)
 {
+    Monitor *mon = MONITOR(hmp);
     bool detach = qdict_get_try_bool(qdict, "detach", false);
     bool resume = qdict_get_try_bool(qdict, "resume", false);
     const char *uri = qdict_get_str(qdict, "uri");
+    const char *uri_cpr = qdict_get_try_str(qdict, "uri-cpr");
     Error *err = NULL;
     g_autoptr(MigrationChannelList) caps = NULL;
     g_autoptr(MigrationChannel) channel = NULL;
+    g_autoptr(MigrationChannel) channel_cpr = NULL;
 
     if (!migrate_uri_parse(uri, &channel, &err)) {
-        hmp_handle_error(mon, err);
+        hmp_handle_error(hmp, err);
         return;
     }
     QAPI_LIST_PREPEND(caps, g_steal_pointer(&channel));
 
-    qmp_migrate(NULL, true, caps, false, false, true, resume, &err);
-    if (hmp_handle_error(mon, err)) {
+    if (uri_cpr) {
+        if (migrate_mode() != MIG_MODE_CPR_TRANSFER) {
+            error_setg(&err, "-c can only be used in cpr-transfer mode");
+            hmp_handle_error(hmp, err);
+            return;
+        }
+
+        if (!migrate_uri_parse(uri_cpr, &channel_cpr, &err)) {
+            hmp_handle_error(hmp, err);
+            return;
+        }
+
+        channel_cpr->channel_type = MIGRATION_CHANNEL_TYPE_CPR;
+        QAPI_LIST_PREPEND(caps, g_steal_pointer(&channel_cpr));
+    }
+
+    qmp_migrate(NULL, true, caps, true, resume, &err);
+    if (hmp_handle_error(hmp, err)) {
         return;
     }
 
     if (!detach) {
         HMPMigrationStatus *status;
 
-        if (monitor_suspend(mon) < 0) {
-            monitor_printf(mon, "terminal does not allow synchronous "
-                           "migration, continuing detached\n");
+        if (!hmp->use_readline) {
+            monitor_hmp_printf(hmp, "terminal does not allow synchronous "
+                               "migration, continuing detached\n");
             return;
         }
+        monitor_suspend(mon);
 
         status = g_malloc0(sizeof(*status));
         status->mon = mon;

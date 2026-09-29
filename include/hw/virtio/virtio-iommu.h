@@ -25,7 +25,7 @@
 #include "hw/pci/pci.h"
 #include "qom/object.h"
 #include "qapi/qapi-types-virtio.h"
-#include "sysemu/host_iommu_device.h"
+#include "system/host_iommu_device.h"
 
 #define TYPE_VIRTIO_IOMMU "virtio-iommu-device"
 #define TYPE_VIRTIO_IOMMU_PCI "virtio-iommu-pci"
@@ -65,6 +65,7 @@ struct VirtIOIOMMU {
     GTree *domains;
     QemuRecMutex mutex;
     GTree *endpoints;
+    QEMUTimer *cmd_timer;
     bool boot_bypass;
     Notifier machine_done;
     bool granule_frozen;

@@ -26,7 +26,7 @@
 
 
 #include "libqtest-single.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 
 #define DRIVE_FLOPPY_BLANK \
     "-drive if=floppy,file=null-co://,file.read-zeroes=on,format=raw,size=1440k"
@@ -63,6 +63,13 @@ enum {
     DIO     = 0x40,
 
     DSKCHG  = 0x80,
+};
+enum {
+    ST0_IC_MASK  = 0xc0,    /* interrupt code */
+    ST0_IC_ABNTERM = 0x40,  /* abnormal termination */
+    ST0_DS_MASK  = 0x03,    /* drive the answer is about */
+
+    ST1_MA       = 0x01,    /* missing address mark */
 };
 
 static char *test_image;
@@ -270,6 +277,21 @@ static void test_cmos(void)
     g_assert(cmos == 0x40 || cmos == 0x50);
 }
 
+static void media_insert(void)
+{
+    qtest_qmp_assert_success(global_qtest,
+                             "{'execute':'blockdev-change-medium', 'arguments':{"
+                             " 'id':'floppy0', 'filename': %s, 'format': 'raw' }}",
+                             test_image);
+}
+
+static void media_eject(void)
+{
+    qtest_qmp_assert_success(global_qtest,
+                             "{'execute':'eject', 'arguments':{"
+                             " 'id':'floppy0' }}");
+}
+
 static void test_no_media_on_start(void)
 {
     uint8_t dir;
@@ -301,10 +323,7 @@ static void test_media_insert(void)
 
     /* Insert media in drive. DSKCHK should not be reset until a step pulse
      * is sent. */
-    qtest_qmp_assert_success(global_qtest,
-                             "{'execute':'blockdev-change-medium', 'arguments':{"
-                             " 'id':'floppy0', 'filename': %s, 'format': 'raw' }}",
-                             test_image);
+    media_insert();
 
     dir = inb(FLOPPY_BASE + reg_dir);
     assert_bit_set(dir, DSKCHG);
@@ -333,9 +352,7 @@ static void test_media_change(void)
 
     /* Eject the floppy and check that DSKCHG is set. Reading it out doesn't
      * reset the bit. */
-    qtest_qmp_assert_success(global_qtest,
-                             "{'execute':'eject', 'arguments':{"
-                             " 'id':'floppy0' }}");
+    media_eject();
 
     dir = inb(FLOPPY_BASE + reg_dir);
     assert_bit_set(dir, DSKCHG);
@@ -413,6 +430,9 @@ static void test_read_id(void)
     uint8_t cyl;
     uint8_t st0;
     uint8_t msr;
+
+    /* READ ID reads an address mark, so it needs a medium in the drive. */
+    media_insert();
 
     /* Seek to track 0 and check with READ ID */
     send_seek(0);
@@ -493,10 +513,85 @@ static void test_read_id(void)
     g_assert_cmpint(st0, ==, head << 2);
 }
 
+/*
+ * An empty drive spins no diskette, so READ ID finds no address mark and must
+ * terminate abnormally.  Reporting success (with a made-up sector ID) would
+ * tell the guest that a medium is still present after it has been ejected.
+ */
+static void test_read_id_no_media(void)
+{
+    uint8_t drive = 0;
+    uint8_t head = 0;
+    uint8_t st0, st1;
+
+    floppy_send(CMD_READ_ID);
+    g_assert(!get_irq(FLOPPY_IRQ));
+    floppy_send(head << 2 | drive);
+
+    while (!get_irq(FLOPPY_IRQ)) {
+        clock_step(1000000000LL / 50);
+    }
+
+    st0 = floppy_recv();
+    st1 = floppy_recv();
+    floppy_recv();                  /* ST2 */
+    floppy_recv();                  /* cylinder */
+    floppy_recv();                  /* head */
+    floppy_recv();                  /* sector */
+    g_assert(get_irq(FLOPPY_IRQ));
+    floppy_recv();                  /* sector size */
+    g_assert(!get_irq(FLOPPY_IRQ));
+
+    g_assert_cmpint(st0 & ST0_IC_MASK, ==, ST0_IC_ABNTERM);
+    g_assert_cmpint(st1 & ST1_MA, ==, ST1_MA);
+}
+
+/*
+ * READ ID carries the drive number in its command byte and has to latch it.
+ * A controller that fails to do so answers for whichever drive was selected
+ * last.  Here drive 0 holds a medium and is selected by the SEEK; drive 1 is
+ * empty, so answering for the wrong drive terminates normally (ST0 = 0x00)
+ * where the command has to fail, and names drive 0 rather than drive 1.
+ */
+static void test_read_id_other_drive(void)
+{
+    uint8_t drive = 1;
+    uint8_t head = 0;
+    uint8_t st0, st1;
+
+    media_insert();
+
+    /* SEEK latches drive 0, the way a driver spinning up the motor would */
+    send_seek(0);
+
+    floppy_send(CMD_READ_ID);
+    g_assert(!get_irq(FLOPPY_IRQ));
+    floppy_send(head << 2 | drive);
+
+    while (!get_irq(FLOPPY_IRQ)) {
+        clock_step(1000000000LL / 50);
+    }
+
+    st0 = floppy_recv();
+    st1 = floppy_recv();
+    floppy_recv();                  /* ST2 */
+    floppy_recv();                  /* cylinder */
+    floppy_recv();                  /* head */
+    floppy_recv();                  /* sector */
+    g_assert(get_irq(FLOPPY_IRQ));
+    floppy_recv();                  /* sector size */
+    g_assert(!get_irq(FLOPPY_IRQ));
+
+    g_assert_cmpint(st0 & ST0_DS_MASK, ==, drive);
+    g_assert_cmpint(st0 & ST0_IC_MASK, ==, ST0_IC_ABNTERM);
+    g_assert_cmpint(st1 & ST1_MA, ==, ST1_MA);
+}
+
 static void test_read_no_dma_1(void)
 {
     uint8_t ret;
 
+    media_insert();
     outb(FLOPPY_BASE + reg_dor, inb(FLOPPY_BASE + reg_dor) & ~0x08);
     send_seek(0);
     ret = send_read_no_dma_command(1, 0x04);
@@ -507,6 +602,7 @@ static void test_read_no_dma_18(void)
 {
     uint8_t ret;
 
+    media_insert();
     outb(FLOPPY_BASE + reg_dor, inb(FLOPPY_BASE + reg_dor) & ~0x08);
     send_seek(0);
     ret = send_read_no_dma_command(18, 0x04);
@@ -517,6 +613,7 @@ static void test_read_no_dma_19(void)
 {
     uint8_t ret;
 
+    media_insert();
     outb(FLOPPY_BASE + reg_dor, inb(FLOPPY_BASE + reg_dor) & ~0x08);
     send_seek(0);
     ret = send_read_no_dma_command(19, 0x20);
@@ -601,10 +698,67 @@ static void test_cve_2021_3507(void)
     qtest_quit(s);
 }
 
+#define MACHINE_ONE_DRIVE "-machine pc -device floppy,id=floppy0"
+#define MACHINE_TWO_DRIVES \
+    "-machine pc -device floppy,id=floppy0,unit=0" \
+    " -device floppy,id=floppy1,unit=1"
+
+/*
+ * Each test gets its own QEMU instance, so that none of them depends on the
+ * state another one left behind.  Without this, several tests only pass in
+ * the order they happen to be registered in: the read_no_dma tests need the
+ * medium that test_media_insert leaves in the drive, and fuzz-registers
+ * writes random values to the eight I/O ports at FLOPPY_BASE and restores
+ * none of them.
+ */
+typedef struct {
+    const char *path;
+    void (*fn)(void);
+    const char *args;
+} FDCTest;
+
+static const FDCTest fdc_tests[] = {
+    { "/fdc/cmos",              test_cmos,              MACHINE_ONE_DRIVE },
+    { "/fdc/no_media_on_start", test_no_media_on_start, MACHINE_ONE_DRIVE },
+    { "/fdc/read_without_media", test_read_without_media, MACHINE_ONE_DRIVE },
+    { "/fdc/media_change",      test_media_change,      MACHINE_ONE_DRIVE },
+    { "/fdc/sense_interrupt",   test_sense_interrupt,   MACHINE_ONE_DRIVE },
+    { "/fdc/relative_seek",     test_relative_seek,     MACHINE_ONE_DRIVE },
+    { "/fdc/read_id",           test_read_id,           MACHINE_ONE_DRIVE },
+    { "/fdc/read_id_no_media",  test_read_id_no_media,  MACHINE_ONE_DRIVE },
+    { "/fdc/read_id_other_drive", test_read_id_other_drive,
+                                                        MACHINE_TWO_DRIVES },
+    { "/fdc/verify",            test_verify,            MACHINE_ONE_DRIVE },
+    { "/fdc/media_insert",      test_media_insert,      MACHINE_ONE_DRIVE },
+    { "/fdc/read_no_dma_1",     test_read_no_dma_1,     MACHINE_ONE_DRIVE },
+    { "/fdc/read_no_dma_18",    test_read_no_dma_18,    MACHINE_ONE_DRIVE },
+    { "/fdc/read_no_dma_19",    test_read_no_dma_19,    MACHINE_ONE_DRIVE },
+    { "/fdc/fuzz-registers",    fuzz_registers,         MACHINE_ONE_DRIVE },
+};
+
+static void run_isolated(const void *data)
+{
+    const FDCTest *test = data;
+
+    /* Every command line in fdc_tests[] names the pc machine */
+    if (!qtest_has_machine("pc")) {
+        g_test_skip("Machine 'pc' is not available");
+        return;
+    }
+
+    qtest_start(test->args);
+    qtest_irq_intercept_in(global_qtest, "ioapic");
+
+    test->fn();
+
+    qtest_end();
+}
+
 int main(int argc, char **argv)
 {
     int fd;
     int ret;
+    size_t i;
 
     /* Create a temporary raw image */
     fd = g_file_open_tmp("qtest.XXXXXX", &test_image, NULL);
@@ -616,28 +770,17 @@ int main(int argc, char **argv)
     /* Run the tests */
     g_test_init(&argc, &argv, NULL);
 
-    qtest_start("-machine pc -device floppy,id=floppy0");
-    qtest_irq_intercept_in(global_qtest, "ioapic");
-    qtest_add_func("/fdc/cmos", test_cmos);
-    qtest_add_func("/fdc/no_media_on_start", test_no_media_on_start);
-    qtest_add_func("/fdc/read_without_media", test_read_without_media);
-    qtest_add_func("/fdc/media_change", test_media_change);
-    qtest_add_func("/fdc/sense_interrupt", test_sense_interrupt);
-    qtest_add_func("/fdc/relative_seek", test_relative_seek);
-    qtest_add_func("/fdc/read_id", test_read_id);
-    qtest_add_func("/fdc/verify", test_verify);
-    qtest_add_func("/fdc/media_insert", test_media_insert);
-    qtest_add_func("/fdc/read_no_dma_1", test_read_no_dma_1);
-    qtest_add_func("/fdc/read_no_dma_18", test_read_no_dma_18);
-    qtest_add_func("/fdc/read_no_dma_19", test_read_no_dma_19);
-    qtest_add_func("/fdc/fuzz-registers", fuzz_registers);
+    for (i = 0; i < ARRAY_SIZE(fdc_tests); i++) {
+        qtest_add_data_func(fdc_tests[i].path, &fdc_tests[i], run_isolated);
+    }
+
+    /* These use a QTestState of their own instead of global_qtest */
     qtest_add_func("/fdc/fuzz/cve_2021_20196", test_cve_2021_20196);
     qtest_add_func("/fdc/fuzz/cve_2021_3507", test_cve_2021_3507);
 
     ret = g_test_run();
 
     /* Cleanup */
-    qtest_end();
     unlink(test_image);
     g_free(test_image);
 

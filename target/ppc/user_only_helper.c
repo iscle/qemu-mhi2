@@ -19,8 +19,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "accel/tcg/cpu-loop.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "internal.h"
 
 void ppc_cpu_record_sigsegv(CPUState *cs, vaddr address,

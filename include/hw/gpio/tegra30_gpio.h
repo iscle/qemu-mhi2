@@ -2,7 +2,7 @@
 #define HW_GPIO_TEGRA30_GPIO_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 /*
  * nVidia Tegra GPIO controller.

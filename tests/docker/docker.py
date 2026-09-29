@@ -35,27 +35,6 @@ FILTERED_ENV_NAMES = ['ftp_proxy', 'http_proxy', 'https_proxy']
 
 DEVNULL = open(os.devnull, 'wb')
 
-class EngineEnum(enum.IntEnum):
-    AUTO = 1
-    DOCKER = 2
-    PODMAN = 3
-
-    def __str__(self):
-        return self.name.lower()
-
-    def __repr__(self):
-        return str(self)
-
-    @staticmethod
-    def argparse(s):
-        try:
-            return EngineEnum[s.upper()]
-        except KeyError:
-            return s
-
-
-USE_ENGINE = EngineEnum.AUTO
-
 def _bytes_checksum(bytes):
     """Calculate a digest string unique to the text content"""
     return hashlib.sha1(bytes).hexdigest()
@@ -73,17 +52,18 @@ def _file_checksum(filename):
 
 def _guess_engine_command():
     """ Guess a working engine command or raise exception if not found"""
-    commands = []
-
-    if USE_ENGINE in [EngineEnum.AUTO, EngineEnum.PODMAN]:
-        commands += [["podman"]]
-    if USE_ENGINE in [EngineEnum.AUTO, EngineEnum.DOCKER]:
-        commands += [["docker"], ["sudo", "-n", "docker"]]
+    commands = [["podman"],
+                ["podman-remote"],
+                ["podman", "--remote"],
+                ["docker"],
+                ["sudo", "-n", "docker"]]
     for cmd in commands:
         try:
-            # docker version will return the client details in stdout
-            # but still report a status of 1 if it can't contact the daemon
-            if subprocess.call(cmd + ["version"],
+            # 'version' is not sufficient to prove a working binary
+            # for podman. 'info' is a stronger check that is more
+            # likely to correlate with ability to create containers,
+            # and required to detect the need for podman remote
+            if subprocess.call(cmd + ["info"],
                                stdout=DEVNULL, stderr=DEVNULL) == 0:
                 return cmd
         except OSError:
@@ -195,16 +175,6 @@ def _check_binfmt_misc(executable):
     return interp, True
 
 
-def _read_qemu_dockerfile(img_name):
-    # special case for Debian linux-user images
-    if img_name.startswith("debian") and img_name.endswith("user"):
-        img_name = "debian-bootstrap"
-
-    df = os.path.join(os.path.dirname(__file__), "dockerfiles",
-                      img_name + ".docker")
-    return _read_dockerfile(df)
-
-
 def _dockerfile_verify_flat(df):
     "Verify we do not include other qemu/ layers"
     for l in df.splitlines():
@@ -220,8 +190,11 @@ def _dockerfile_verify_flat(df):
 
 class Docker(object):
     """ Running Docker commands """
-    def __init__(self):
-        self._command = _guess_engine_command()
+    def __init__(self, commandstr=None):
+        if commandstr is None:
+            self._command = _guess_engine_command()
+        else:
+            self._command = commandstr.split(" ")
 
         if ("docker" in self._command and
             "TRAVIS" not in os.environ and
@@ -314,13 +287,6 @@ class Docker(object):
                                              dir=docker_dir, suffix=".docker")
         tmp_df.write(dockerfile)
 
-        if user:
-            uid = os.getuid()
-            uname = getpass.getuser()
-            tmp_df.write("\n")
-            tmp_df.write("RUN id %s 2>/dev/null || useradd -u %d -U %s" %
-                         (uname, uid, uname))
-
         tmp_df.write("\n")
         tmp_df.write("LABEL com.qemu.dockerfile-checksum=%s\n" % (checksum))
         for f, c in extra_files_cksum:
@@ -331,6 +297,13 @@ class Docker(object):
         build_args = ["build", "-t", tag, "-f", tmp_df.name]
         if self._buildkit:
             build_args += ["--build-arg", "BUILDKIT_INLINE_CACHE=1"]
+
+        if user:
+            uid = os.getuid()
+            if uid != 0:
+                uname = getpass.getuser()
+                build_args += ["--build-arg", "USER=%s" % uname,
+                               "--build-arg", "UID=%s" % uid]
 
         if registry is not None:
             pull_args = ["pull", "%s/%s" % (registry, tag)]
@@ -362,10 +335,11 @@ class Docker(object):
 
         if as_user:
             uid = os.getuid()
-            cmd = [ "-u", str(uid) ] + cmd
-            # podman requires a bit more fiddling
-            if self._command[0] == "podman":
-                cmd.insert(0, '--userns=keep-id')
+            if uid != 0:
+                cmd = [ "-u", str(uid) ] + cmd
+                # podman requires a bit more fiddling
+                if self._command[0] == "podman":
+                    cmd.insert(0, '--userns=keep-id')
 
         ret = self._do_check(["run", "--rm", "--label",
                              "com.qemu.instance.uuid=" + label] + cmd,
@@ -407,10 +381,13 @@ class RunCommand(SubCommand):
                             help="Don't remove image when command completes")
         parser.add_argument("--run-as-current-user", action="store_true",
                             help="Run container using the current user's uid")
+        parser.add_argument('cmd', nargs='*',
+                            help="""The command to run. You should precede with
+                            -- to avoid confusion about its flags""")
 
     def run(self, args, argv):
-        return Docker().run(argv, args.keep, quiet=args.quiet,
-                            as_user=args.run_as_current_user)
+        return Docker(args.command).run(args.cmd, args.keep, quiet=args.quiet,
+                                        as_user=args.run_as_current_user)
 
 
 class BuildCommand(SubCommand):
@@ -443,11 +420,10 @@ class BuildCommand(SubCommand):
         dockerfile = _read_dockerfile(args.dockerfile)
         tag = args.tag
 
-        dkr = Docker()
+        dkr = Docker(args.command)
         if "--no-cache" not in argv and \
            dkr.image_matches_dockerfile(tag, dockerfile):
-            if not args.quiet:
-                print("Image is up to date.")
+            pass
         else:
             # Create a docker context directory for the build
             docker_dir = tempfile.mkdtemp(prefix="docker_build")
@@ -510,7 +486,7 @@ class FetchCommand(SubCommand):
                             help="Docker registry")
 
     def run(self, args, argv):
-        dkr = Docker()
+        dkr = Docker(args.command)
         dkr.command(cmd="pull", quiet=args.quiet,
                     argv=["%s/%s" % (args.registry, args.tag)])
         dkr.command(cmd="tag", quiet=args.quiet,
@@ -588,7 +564,7 @@ class UpdateCommand(SubCommand):
         tmp.seek(0)
 
         # Run the build with our tarball context
-        dkr = Docker()
+        dkr = Docker(args.command)
         dkr.update_image(args.tag, tmp, quiet=args.quiet)
 
         return 0
@@ -599,7 +575,7 @@ class CleanCommand(SubCommand):
     name = "clean"
 
     def run(self, args, argv):
-        Docker().clean()
+        Docker(args.command).clean()
         return 0
 
 
@@ -608,7 +584,7 @@ class ImagesCommand(SubCommand):
     name = "images"
 
     def run(self, args, argv):
-        return Docker().command("images", argv, args.quiet)
+        return Docker(args.command).command("images", argv, args.quiet)
 
 
 class ProbeCommand(SubCommand):
@@ -617,15 +593,11 @@ class ProbeCommand(SubCommand):
 
     def run(self, args, argv):
         try:
-            docker = Docker()
-            if docker._command[0] == "docker":
-                print("docker")
-            elif docker._command[0] == "sudo":
-                print("sudo docker")
-            elif docker._command[0] == "podman":
-                print("podman")
+            docker = Docker(args.command)
+            print(" ".join(docker._command))
         except Exception:
             print("no")
+            return 1
 
         return
 
@@ -654,18 +626,16 @@ class CcCommand(SubCommand):
                 cmd += ["-v", "%s:%s:ro,z" % (p, p)]
         cmd += [args.image, args.cc]
         cmd += argv
-        return Docker().run(cmd, False, quiet=args.quiet,
-                            as_user=True)
+        return Docker(args.command).run(cmd, False, quiet=args.quiet,
+                                        as_user=True)
 
 
 def main():
-    global USE_ENGINE
-
     parser = argparse.ArgumentParser(description="A Docker helper",
                                      usage="%s <subcommand> ..." %
                                      os.path.basename(sys.argv[0]))
-    parser.add_argument("--engine", type=EngineEnum.argparse, choices=list(EngineEnum),
-                        help="specify which container engine to use")
+    parser.add_argument("--command",
+                        help="specify which container engine command to use")
     subparsers = parser.add_subparsers(title="subcommands", help=None)
     for cls in SubCommand.__subclasses__():
         cmd = cls()
@@ -674,8 +644,6 @@ def main():
         cmd.args(subp)
         subp.set_defaults(cmdobj=cmd)
     args, argv = parser.parse_known_args()
-    if args.engine:
-        USE_ENGINE = args.engine
     return args.cmdobj.run(args, argv)
 
 

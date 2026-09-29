@@ -54,7 +54,7 @@ GArray *hw_breakpoints, *hw_watchpoints;
  * here so future PC comparisons will work properly.
  */
 
-int insert_hw_breakpoint(target_ulong addr)
+int insert_hw_breakpoint(vaddr addr)
 {
     HWBreakpoint brk = {
         .bcr = 0x1,                             /* BCR E=1, enable */
@@ -80,7 +80,7 @@ int insert_hw_breakpoint(target_ulong addr)
  * Delete a breakpoint and shuffle any above down
  */
 
-int delete_hw_breakpoint(target_ulong pc)
+int delete_hw_breakpoint(vaddr pc)
 {
     int i;
     for (i = 0; i < hw_breakpoints->len; i++) {
@@ -94,7 +94,7 @@ int delete_hw_breakpoint(target_ulong pc)
 }
 
 /**
- * insert_hw_watchpoint()
+ * insert_gdbstub_hw_watchpoint()
  * @addr: address of watch point
  * @len: size of area
  * @type: type of watch point
@@ -125,7 +125,7 @@ int delete_hw_breakpoint(target_ulong pc)
  * need to ensure you mask the address as required and set BAS=0xff
  */
 
-int insert_hw_watchpoint(target_ulong addr, target_ulong len, int type)
+int insert_gdbstub_hw_watchpoint(vaddr addr, vaddr len, GdbBreakpointType type)
 {
     HWWatchpoint wp = {
         .wcr = R_DBGWCR_E_MASK, /* E=1, enable */
@@ -182,7 +182,7 @@ int insert_hw_watchpoint(target_ulong addr, target_ulong len, int type)
     return 0;
 }
 
-bool check_watchpoint_in_range(int i, target_ulong addr)
+bool check_watchpoint_in_range(int i, vaddr addr)
 {
     HWWatchpoint *wp = get_hw_wp(i);
     uint64_t addr_top, addr_bottom = wp->wvr;
@@ -208,13 +208,13 @@ bool check_watchpoint_in_range(int i, target_ulong addr)
 }
 
 /**
- * delete_hw_watchpoint()
+ * delete_gdbstub_hw_watchpoint()
  * @addr: address of breakpoint
  *
  * Delete a breakpoint and shuffle any above down
  */
 
-int delete_hw_watchpoint(target_ulong addr, target_ulong len, int type)
+int delete_gdbstub_hw_watchpoint(vaddr addr, vaddr len, GdbBreakpointType type)
 {
     int i;
     for (i = 0; i < cur_hw_wps; i++) {
@@ -226,7 +226,7 @@ int delete_hw_watchpoint(target_ulong addr, target_ulong len, int type)
     return -ENOENT;
 }
 
-bool find_hw_breakpoint(CPUState *cpu, target_ulong pc)
+bool find_hw_breakpoint(CPUState *cpu, vaddr pc)
 {
     int i;
 
@@ -239,7 +239,7 @@ bool find_hw_breakpoint(CPUState *cpu, target_ulong pc)
     return false;
 }
 
-CPUWatchpoint *find_hw_watchpoint(CPUState *cpu, target_ulong addr)
+CPUWatchpoint *find_hw_watchpoint(CPUState *cpu, vaddr addr)
 {
     int i;
 

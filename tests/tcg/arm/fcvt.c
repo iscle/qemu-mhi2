@@ -172,7 +172,15 @@ static void convert_single_to_integer(void)
         /* asm("vcvt.s32.f32 %s0, %s1" : "=t" (output) : "t" (input)); */
         output = input;
 #else
+#ifdef FPRCVT
+        asm("fmov s31, %s1\n\t"
+            /* "fcvtzs d0, s31\n\t" */
+            ".byte 0xe0,0x03,0x36,0x9e\n\t"
+            "fmov %0, d0" :
+            "=r" (output) : "w" (input) : "s31", "d0");
+#else
         asm("fcvtzs %0, %s1" : "=r" (output) : "w" (input));
+#endif
 #endif
         print_int64(i, output);
     }
@@ -424,6 +432,7 @@ int main(int argc, char *argv[argc])
     convert_single_to_integer();
     convert_double_to_integer();
     convert_half_to_integer();
+
 
     /* And now with ARM alternative FP16 */
 #if defined(__arm__)

@@ -18,19 +18,24 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "hw/boards.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/allwinner-a10.h"
 #include "hw/arm/boot.h"
 #include "hw/i2c/i2c.h"
 
-static struct arm_boot_info cubieboard_binfo = {
-    .loader_start = AW_A10_SDRAM_BASE,
-    .board_id = 0x1008,
+#define TYPE_CUBIEBOARD_MACHINE MACHINE_TYPE_NAME("cubieboard")
+OBJECT_DECLARE_SIMPLE_TYPE(CubieboardMachineState, CUBIEBOARD_MACHINE)
+
+struct CubieboardMachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
 };
 
 static void cubieboard_init(MachineState *machine)
 {
+    CubieboardMachineState *cbs = CUBIEBOARD_MACHINE(machine);
     AwA10State *a10;
     Error *err = NULL;
     DriveInfo *di;
@@ -102,8 +107,10 @@ static void cubieboard_init(MachineState *machine)
     }
     /* TODO create and connect IDE devices for ide_drive_get() */
 
-    cubieboard_binfo.ram_size = machine->ram_size;
-    arm_load_kernel(&a10->cpu, machine, &cubieboard_binfo);
+    cbs->bootinfo.loader_start = AW_A10_SDRAM_BASE;
+    cbs->bootinfo.board_id = 0x1008;
+    cbs->bootinfo.ram_size = machine->ram_size;
+    arm_load_kernel(&a10->cpu, machine, &cbs->bootinfo);
 }
 
 static void cubieboard_machine_init(MachineClass *mc)
@@ -122,6 +129,9 @@ static void cubieboard_machine_init(MachineClass *mc)
     mc->units_per_default_bus = 1;
     mc->ignore_memory_transaction_failures = true;
     mc->default_ram_id = "cubieboard.ram";
+    mc->auto_create_sdcard = true;
 }
 
-DEFINE_MACHINE("cubieboard", cubieboard_machine_init)
+DEFINE_MACHINE_EXTENDED("cubieboard", MACHINE, CubieboardMachineState,
+                        cubieboard_machine_init, false, false,
+                        NULL)

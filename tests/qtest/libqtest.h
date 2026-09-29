@@ -17,8 +17,9 @@
 #ifndef LIBQTEST_H
 #define LIBQTEST_H
 
-#include "qapi/qmp/qobject.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qobject.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "libqmp.h"
 
 typedef struct QTestState QTestState;
@@ -47,6 +48,31 @@ QTestState *qtest_initf(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
 QTestState *qtest_vinitf(const char *fmt, va_list ap) G_GNUC_PRINTF(1, 0);
 
 /**
+ * qtest_qemu_binary:
+ * @var: environment variable name
+ *
+ * Look up @var and return its value as the qemu binary path.
+ * If @var is NULL, look up  the default var name.
+ */
+const char *qtest_qemu_binary(const char *var);
+
+/**
+ * qtest_init_after_exec:
+ * @qts: the previous QEMU state
+ *
+ * Return a test state representing new QEMU after @qts exec's it.
+ */
+QTestState *qtest_init_after_exec(QTestState *qts);
+
+/**
+ * qtest_qemu_args:
+ * @extra_args: Other arguments to pass to QEMU.
+ *
+ * Return the command line used to start QEMU, sans binary.
+ */
+gchar *qtest_qemu_args(const char *extra_args);
+
+/**
  * qtest_init:
  * @extra_args: other arguments to pass to QEMU.  CAUTION: these
  * arguments are subject to word splitting and shell evaluation.
@@ -56,17 +82,21 @@ QTestState *qtest_vinitf(const char *fmt, va_list ap) G_GNUC_PRINTF(1, 0);
 QTestState *qtest_init(const char *extra_args);
 
 /**
- * qtest_init_with_env:
+ * qtest_init_ext:
  * @var: Environment variable from where to take the QEMU binary
  * @extra_args: Other arguments to pass to QEMU.  CAUTION: these
  * arguments are subject to word splitting and shell evaluation.
+ * @capabilities: list of QMP capabilities (strings) to enable
+ * @do_connect: connect to qemu monitor and qtest socket.
  *
  * Like qtest_init(), but use a different environment variable for the
- * QEMU binary.
+ * QEMU binary, allow specify capabilities and skip connecting
+ * to QEMU monitor.
  *
  * Returns: #QTestState instance.
  */
-QTestState *qtest_init_with_env(const char *var, const char *extra_args);
+QTestState *qtest_init_ext(const char *var, const char *extra_args,
+                           QList *capabilities, bool do_connect);
 
 /**
  * qtest_init_without_qmp_handshake:
@@ -78,6 +108,22 @@ QTestState *qtest_init_with_env(const char *var, const char *extra_args);
 QTestState *qtest_init_without_qmp_handshake(const char *extra_args);
 
 /**
+ * qtest_connect
+ * @s: #QTestState instance to connect
+ * Connect to qemu monitor and qtest socket, after skipping them in
+ * qtest_init_ext.  Does not handshake with the monitor.
+ */
+void qtest_connect(QTestState *s);
+
+/**
+ * qtest_qmp_handshake:
+ * @s: #QTestState instance to operate on.
+ * @capabilities: list of QMP capabilities (strings) to enable
+ * Perform handshake after connecting to qemu monitor.
+ */
+void qtest_qmp_handshake(QTestState *s, QList *capabilities);
+
+/**
  * qtest_init_with_serial:
  * @extra_args: other arguments to pass to QEMU.  CAUTION: these
  * arguments are subject to word splitting and shell evaluation.
@@ -87,6 +133,31 @@ QTestState *qtest_init_without_qmp_handshake(const char *extra_args);
  * Returns: #QTestState instance.
  */
 QTestState *qtest_init_with_serial(const char *extra_args, int *sock_fd);
+
+/**
+ * qtest_system_reset:
+ * @s: #QTestState instance to operate on.
+ *
+ * Send a "system_reset" command to the QEMU under test, and wait for
+ * the reset to complete before returning.
+ */
+void qtest_system_reset(QTestState *s);
+
+/**
+ * qtest_system_reset_nowait:
+ * @s: #QTestState instance to operate on.
+ *
+ * Send a "system_reset" command to the QEMU under test, but do not
+ * wait for the reset to complete before returning. The caller is
+ * responsible for waiting for either the RESET event or some other
+ * event of interest to them before proceeding.
+ *
+ * This function should only be used if you're specifically testing
+ * for some other event; in that case you can't use qtest_system_reset()
+ * because it will read and discard any other QMP events that arrive
+ * before the RESET event.
+ */
+void qtest_system_reset_nowait(QTestState *s);
 
 /**
  * qtest_wait_qemu:
@@ -328,6 +399,18 @@ QDict *qtest_qmp_eventwait_ref(QTestState *s, const char *event);
 QDict *qtest_qmp_event_ref(QTestState *s, const char *event);
 
 /**
+ * qtest_qmp_job_wait:
+ * @s: #QTestState instance to operate on.
+ * @job_id: job identifier to wait for.
+ *
+ * Wait for a QMP job to reach "concluded" status by consuming
+ * JOB_STATUS_CHANGE events, then dismiss the job.
+ * Asserts that the job completed without error.
+ */
+void qtest_qmp_job_wait(QTestState *s, const char *job_id);
+
+#ifdef CONFIG_HMP
+/**
  * qtest_hmp:
  * @s: #QTestState instance to operate on.
  * @fmt: HMP command to send to QEMU, formats arguments like sprintf().
@@ -340,7 +423,7 @@ QDict *qtest_qmp_event_ref(QTestState *s, const char *event);
 char *qtest_hmp(QTestState *s, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
 
 /**
- * qtest_hmpv:
+ * qtest_vhmp:
  * @s: #QTestState instance to operate on.
  * @fmt: HMP command to send to QEMU, formats arguments like vsprintf().
  * @ap: HMP command arguments
@@ -352,8 +435,28 @@ char *qtest_hmp(QTestState *s, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
  */
 char *qtest_vhmp(QTestState *s, const char *fmt, va_list ap)
     G_GNUC_PRINTF(2, 0);
+#endif
+
+/**
+ * qtest_qemu_io:
+ * @s: #QTestState instance to operate on.
+ * @device: block device node-name or BlockBackend name.
+ * @fmt: qemu-io command to send, formats arguments like sprintf().
+ *
+ * Send a qemu-io command via the qtest protocol.
+ */
+void qtest_qemu_io(QTestState *s, const char *device,
+                   const char *fmt, ...) G_GNUC_PRINTF(3, 4);
 
 void qtest_module_load(QTestState *s, const char *prefix, const char *libname);
+
+/**
+ * qtest_qom_tests:
+ * @s: #QTestState instance to operate on.
+ *
+ * Run QOM property get/set round-trip tests on all non-abstract types.
+ */
+void qtest_qom_tests(QTestState *s);
 
 /**
  * qtest_get_irq:
@@ -574,6 +677,20 @@ void qtest_memread(QTestState *s, uint64_t addr, void *data, size_t size);
 uint64_t qtest_rtas_call(QTestState *s, const char *name,
                          uint32_t nargs, uint64_t args,
                          uint32_t nret, uint64_t ret);
+
+/**
+ * qtest_csr_call:
+ * @s: #QTestState instance to operate on.
+ * @name: name of the command to call.
+ * @cpu: hart number.
+ * @csr: CSR number.
+ * @val: Value for reading/writing.
+ *
+ * Call an RISC-V CSR read/write function
+ */
+uint64_t qtest_csr_call(QTestState *s, const char *name,
+                         uint64_t cpu, int csr,
+                         uint64_t *val);
 
 /**
  * qtest_bufread:
@@ -879,7 +996,7 @@ void qtest_qmp_assert_success(QTestState *qts, const char *fmt, ...)
 
 #ifndef _WIN32
 /**
- * qtest_qmp_fd_assert_success_ref:
+ * qtest_qmp_fds_assert_success_ref:
  * @qts: QTestState instance to operate on
  * @fds: the file descriptors to send
  * @nfds: number of @fds to send
@@ -896,7 +1013,7 @@ QDict *qtest_qmp_fds_assert_success_ref(QTestState *qts, int *fds, size_t nfds,
     G_GNUC_PRINTF(4, 5);
 
 /**
- * qtest_qmp_fd_assert_success:
+ * qtest_qmp_fds_assert_success:
  * @qts: QTestState instance to operate on
  * @fds: the file descriptors to send
  * @nfds: number of @fds to send
@@ -917,7 +1034,7 @@ void qtest_qmp_fds_assert_success(QTestState *qts, int *fds, size_t nfds,
  * @cb: Pointer to the callback function
  * @skip_old_versioned: true if versioned old machine types should be skipped
  *
- *  Call a callback function for every name of all available machines.
+ * Call a callback function for every name of all available machines.
  */
 void qtest_cb_for_every_machine(void (*cb)(const char *machine),
                                 bool skip_old_versioned);
@@ -1092,5 +1209,16 @@ bool have_qemu_img(void);
  * Returns: true if the image has been created successfully.
  */
 bool mkimg(const char *file, const char *fmt, unsigned size_mb);
+
+/**
+ * qtest_verbose:
+ * @domain: The logging domain
+ *
+ * Read the QTEST_LOG environment variable and return whether the
+ * specified domain is enabled for verbose logging. Enable specific
+ * logging domains with QTEST_LOG=<domain> or use QTEST_LOG=-<domain> to
+ * enable all domains except for the specific one.
+ */
+bool qtest_verbose(const char *domain);
 
 #endif

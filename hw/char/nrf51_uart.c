@@ -16,9 +16,9 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/char/nrf51_uart.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -104,10 +104,7 @@ buffer_drained:
 
 static void uart_cancel_transmit(NRF51UARTState *s)
 {
-    if (s->watch_tag) {
-        g_source_remove(s->watch_tag);
-        s->watch_tag = 0;
-    }
+    g_clear_handle_id(&s->watch_tag, g_source_remove);
 }
 
 static void uart_write(void *opaque, hwaddr addr,
@@ -304,12 +301,11 @@ static const VMStateDescription nrf51_uart_vmstate = {
     }
 };
 
-static Property nrf51_uart_properties[] = {
+static const Property nrf51_uart_properties[] = {
     DEFINE_PROP_CHR("chardev", NRF51UARTState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void nrf51_uart_class_init(ObjectClass *klass, void *data)
+static void nrf51_uart_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

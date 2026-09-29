@@ -36,11 +36,11 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
-#include "sysemu/reset.h"
+#include "system/reset.h"
 #include "qapi/error.h"
 #include "trace.h"
 #include "hw/pci/pci_device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/pixel_ops.h"
 #include "vga_regs.h"
@@ -779,9 +779,9 @@ static int cirrus_do_copy(CirrusVGAState *s, int dst, int src, int w, int h)
                       s->cirrus_blt_width, s->cirrus_blt_height);
 
     if (notify) {
-        dpy_gfx_update(s->vga.con, dx, dy,
-                       s->cirrus_blt_width / depth,
-                       s->cirrus_blt_height);
+        qemu_console_update(s->vga.con, dx, dy,
+                            s->cirrus_blt_width / depth,
+                            s->cirrus_blt_height);
     }
 
     /* we don't have to notify the display that this portion has
@@ -2930,6 +2930,8 @@ void cirrus_init_common(CirrusVGAState *s, Object *owner,
     s->vga.cursor_invalidate = cirrus_cursor_invalidate;
     s->vga.cursor_draw_line = cirrus_cursor_draw_line;
 
+    s->vga.big_endian_fb = false;
+
     qemu_register_reset(cirrus_reset, s);
 }
 
@@ -2962,7 +2964,7 @@ static void pci_cirrus_vga_realize(PCIDevice *dev, Error **errp)
     }
     cirrus_init_common(s, OBJECT(dev), device_id, 1, pci_address_space(dev),
                        pci_address_space_io(dev));
-    s->vga.con = graphic_console_init(DEVICE(dev), 0, s->vga.hw_ops, &s->vga);
+    s->vga.con = qemu_graphic_console_create(DEVICE(dev), 0, s->vga.hw_ops, &s->vga);
 
     /* setup PCI */
     memory_region_init(&s->pci_bar, OBJECT(dev), "cirrus-pci-bar0", 0x2000000);
@@ -2982,17 +2984,14 @@ static void pci_cirrus_vga_realize(PCIDevice *dev, Error **errp)
     }
 }
 
-static Property pci_vga_cirrus_properties[] = {
+static const Property pci_vga_cirrus_properties[] = {
     DEFINE_PROP_UINT32("vgamem_mb", struct PCICirrusVGAState,
                        cirrus_vga.vga.vram_size_mb, 4),
     DEFINE_PROP_BOOL("blitter", struct PCICirrusVGAState,
                      cirrus_vga.enable_blitter, true),
-    DEFINE_PROP_BOOL("global-vmstate", struct PCICirrusVGAState,
-                     cirrus_vga.vga.global_vmstate, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void cirrus_vga_class_init(ObjectClass *klass, void *data)
+static void cirrus_vga_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -3014,7 +3013,7 @@ static const TypeInfo cirrus_vga_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCICirrusVGAState),
     .class_init    = cirrus_vga_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

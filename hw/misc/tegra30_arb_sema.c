@@ -1,5 +1,5 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -107,7 +107,7 @@ static const VMStateDescription tegra30_arb_sema_vmstate = {
     }
 };
 
-static void tegra30_arb_sema_class_init(ObjectClass *klass, void *data)
+static void tegra30_arb_sema_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

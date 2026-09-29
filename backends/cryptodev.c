@@ -22,8 +22,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/cryptodev.h"
-#include "sysemu/stats.h"
+#include "system/cryptodev.h"
+#include "system/stats.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-cryptodev.h"
 #include "qapi/qapi-types-stats.h"
@@ -97,7 +97,7 @@ static int qmp_query_cryptodev_foreach(Object *obj, void *data)
 QCryptodevInfoList *qmp_query_cryptodev(Error **errp)
 {
     QCryptodevInfoList *list = NULL;
-    Object *objs = container_get(object_get_root(), "/objects");
+    Object *objs = object_get_container("objects");
 
     object_child_foreach(objs, qmp_query_cryptodev_foreach, &list);
 
@@ -454,9 +454,15 @@ bool cryptodev_backend_is_ready(CryptoDevBackend *backend)
 }
 
 static bool
-cryptodev_backend_can_be_deleted(UserCreatable *uc)
+cryptodev_backend_prepare_delete(UserCreatable *uc, Error **errp)
 {
-    return !cryptodev_backend_is_used(CRYPTODEV_BACKEND(uc));
+    if (cryptodev_backend_is_used(CRYPTODEV_BACKEND(uc))) {
+        error_setg(errp,
+                   "Cannot delete cryptodev backend '%s' that is in use",
+                   object_get_canonical_path_component(OBJECT(uc)));
+        return false;
+    }
+    return true;
 }
 
 static void cryptodev_backend_instance_init(Object *obj)
@@ -557,7 +563,7 @@ static void cryptodev_backend_stats_cb(StatsResultList **result,
     switch (target) {
     case STATS_TARGET_CRYPTODEV:
     {
-        Object *objs = container_get(object_get_root(), "/objects");
+        Object *objs = object_get_container("objects");
         StatsArgs stats_args;
         stats_args.result.stats = result;
         stats_args.names = names;
@@ -608,12 +614,12 @@ static void cryptodev_backend_schemas_cb(StatsSchemaList **result,
 }
 
 static void
-cryptodev_backend_class_init(ObjectClass *oc, void *data)
+cryptodev_backend_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
 
     ucc->complete = cryptodev_backend_complete;
-    ucc->can_be_deleted = cryptodev_backend_can_be_deleted;
+    ucc->prepare_delete = cryptodev_backend_prepare_delete;
 
     QTAILQ_INIT(&crypto_clients);
     object_class_property_add(oc, "queues", "uint32",
@@ -641,7 +647,7 @@ static const TypeInfo cryptodev_backend_info = {
     .instance_finalize = cryptodev_backend_finalize,
     .class_size = sizeof(CryptoDevBackendClass),
     .class_init = cryptodev_backend_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

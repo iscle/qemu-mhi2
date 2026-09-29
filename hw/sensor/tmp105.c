@@ -1,5 +1,5 @@
 /*
- * Texas Instruments TMP105 temperature sensor.
+ * Texas Instruments TMP105/TMP75/TMP175/LM75B temperature sensor.
  *
  * Copyright (C) 2008 Nokia Corporation
  * Written by Andrzej Zaborowski <andrew@openedhand.com>
@@ -16,18 +16,75 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ * Limitations:
+ * - The SMBus Alert Response Address protocol and the general-call commands
+ *   are not implemented.
+ * - The over-limit comparison uses the full 8.8 fixed-point temperature and a
+ *   ">=" boundary for every variant. The LM75B's 9-bit comparison quantisation
+ *   and strict-exceed boundary are therefore only approximated.
  */
 
 #include "qemu/osdep.h"
-#include "hw/i2c/i2c.h"
-#include "hw/irq.h"
-#include "migration/vmstate.h"
-#include "hw/sensor/tmp105.h"
+#include "qemu/module.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
-#include "qemu/module.h"
-#include "hw/registerfields.h"
+#include "qom/object.h"
+#include "hw/sensor/tmp105.h"
+#include "hw/sensor/tmp105_regs.h"
+#include "hw/core/irq.h"
+#include "hw/core/registerfields.h"
+#include "hw/i2c/i2c.h"
+#include "migration/vmstate.h"
 #include "trace.h"
+
+OBJECT_DECLARE_TYPE(TMP105State, TMP105Class, TMP105)
+
+struct TMP105State {
+    /*< private >*/
+    I2CSlave parent_obj;
+    /*< public >*/
+
+    uint8_t len;
+    uint8_t buf[2];
+    qemu_irq pin;
+
+    uint8_t pointer;
+    uint8_t config;
+    int16_t temperature;
+    int16_t limit[2];
+    uint8_t faults;
+    uint8_t fault_count;
+    uint8_t alarm;
+    /*
+     * The TMP105 initially looks for a temperature rising above T_high;
+     * once this is detected, the condition it looks for next is the
+     * temperature falling below T_low. This flag is false when initially
+     * looking for T_high, true when looking for T_low.
+     */
+    bool detect_falling;
+};
+
+/*
+ * Per-device-model parameters. The TMP105, TMP75, TMP175 and LM75B share the
+ * same register map and control semantics; they differ only in a handful of
+ * details captured here.
+ *
+ * @faultq: fault-queue length table selected by Config bits
+ * @config_wmask: writable Config bits. The LM75B has no resolution (R1:R0) or
+ * one-shot (OS) bits.
+ * @fixed_res: converter resolution field pinned by the device, or -1 when it is
+ * software-selectable.
+ * @limit_lsb_mask: low-byte mask applied to the T_LOW/T_HIGH limit registers.
+ */
+struct TMP105Class {
+    I2CSlaveClass parent_class;
+    const uint8_t *faultq;
+    uint8_t config_wmask;
+    int8_t fixed_res;
+    uint8_t limit_lsb_mask;
+    bool tm_change_clears_alert;
+};
 
 FIELD(CONFIG, SHUTDOWN_MODE,        0, 1)
 FIELD(CONFIG, THERMOSTAT_MODE,      1, 1)
@@ -43,43 +100,40 @@ static void tmp105_interrupt_update(TMP105State *s)
 
 static void tmp105_alarm_update(TMP105State *s, bool one_shot)
 {
+    bool fault;
+
     if (FIELD_EX8(s->config, CONFIG, SHUTDOWN_MODE) && !one_shot) {
         return;
     }
 
-    if (FIELD_EX8(s->config, CONFIG, THERMOSTAT_MODE)) {
-        /*
-         * TM == 1 : Interrupt mode. We signal Alert when the
-         * temperature rises above T_high, and expect the guest to clear
-         * it (eg by reading a device register).
-         */
-        if (s->detect_falling) {
-            if (s->temperature < s->limit[0]) {
-                s->alarm = 1;
-                s->detect_falling = false;
-            }
-        } else {
-            if (s->temperature >= s->limit[1]) {
-                s->alarm = 1;
-                s->detect_falling = true;
-            }
-        }
+    /*
+     * A fault is a conversion that lies outside the limit currently being
+     * watched: above T_high while looking for the alarm to trip, below T_low
+     * afterwards.
+     */
+    if (s->detect_falling) {
+        fault = s->temperature < s->limit[0];
     } else {
-        /*
-         * TM == 0 : Comparator mode. We signal Alert when the temperature
-         * rises above T_high, and stop signalling it when the temperature
-         * falls below T_low.
-         */
+        fault = s->temperature >= s->limit[1];
+    }
+
+    if (!fault) {
+        s->fault_count = 0;
+    } else if (++s->fault_count >= s->faults) {
+        s->fault_count = 0;
         if (s->detect_falling) {
-            if (s->temperature < s->limit[0]) {
-                s->alarm = 0;
-                s->detect_falling = false;
-            }
+            /*
+             * Temperature fell back below T_low. In comparator mode (TM == 0)
+             * the alarm is released; in interrupt mode (TM == 1) it is
+             * asserted again and the guest is expected to clear it by reading
+             * a register.
+             */
+            s->alarm = FIELD_EX8(s->config, CONFIG, THERMOSTAT_MODE);
+            s->detect_falling = false;
         } else {
-            if (s->temperature >= s->limit[1]) {
-                s->alarm = 1;
-                s->detect_falling = true;
-            }
+            /* Temperature rose to or above T_high: assert the alarm. */
+            s->alarm = 1;
+            s->detect_falling = true;
         }
     }
 
@@ -119,10 +173,11 @@ static void tmp105_set_temperature(Object *obj, Visitor *v, const char *name,
     tmp105_alarm_update(s, false);
 }
 
-static const int tmp105_faultq[4] = { 1, 2, 4, 6 };
-
 static void tmp105_read(TMP105State *s)
 {
+    const TMP105Class *tc = TMP105_GET_CLASS(s);
+    int res;
+
     s->len = 0;
 
     if (FIELD_EX8(s->config, CONFIG, THERMOSTAT_MODE)) {
@@ -132,9 +187,11 @@ static void tmp105_read(TMP105State *s)
 
     switch (s->pointer & 3) {
     case TMP105_REG_TEMPERATURE:
+        res = tc->fixed_res >= 0 ? tc->fixed_res :
+              FIELD_EX8(s->config, CONFIG, CONVERTER_RESOLUTION);
         s->buf[s->len++] = (((uint16_t) s->temperature) >> 8);
         s->buf[s->len++] = (((uint16_t) s->temperature) >> 0) &
-                (0xf0 << (FIELD_EX8(~s->config, CONFIG, CONVERTER_RESOLUTION)));
+                (0xf0 << (3 - res));
         break;
 
     case TMP105_REG_CONFIG:
@@ -152,33 +209,56 @@ static void tmp105_read(TMP105State *s)
         break;
     }
 
-    trace_tmp105_read(s->i2c.address, s->pointer);
+    trace_tmp105_read(s->parent_obj.address, s->pointer);
 }
 
 static void tmp105_write(TMP105State *s)
 {
-    trace_tmp105_write(s->i2c.address, s->pointer);
+    const TMP105Class *tc = TMP105_GET_CLASS(s);
+    uint8_t config, one_shot;
+    bool waking;
+
+    trace_tmp105_write(s->parent_obj.address, s->pointer);
 
     switch (s->pointer & 3) {
     case TMP105_REG_TEMPERATURE:
         break;
 
     case TMP105_REG_CONFIG:
-        if (FIELD_EX8(s->buf[0] & ~s->config, CONFIG, SHUTDOWN_MODE)) {
-            trace_tmp105_write_shutdown(s->i2c.address);
+        config = s->buf[0] & tc->config_wmask;
+        if (FIELD_EX8(config & ~s->config, CONFIG, SHUTDOWN_MODE)) {
+            trace_tmp105_write_shutdown(s->parent_obj.address);
+            if (FIELD_EX8(config, CONFIG, THERMOSTAT_MODE)) {
+                s->alarm = 0;
+            }
         }
-        s->config = FIELD_DP8(s->buf[0], CONFIG, ONE_SHOT, 0);
-        s->faults = tmp105_faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
-        tmp105_alarm_update(s, FIELD_EX8(s->buf[0], CONFIG, ONE_SHOT));
+        if (tc->tm_change_clears_alert &&
+            FIELD_EX8(config ^ s->config, CONFIG, THERMOSTAT_MODE)) {
+            s->alarm = 0;
+            s->fault_count = 0;
+            s->detect_falling = false;
+        }
+        waking = FIELD_EX8(s->config & ~config, CONFIG, SHUTDOWN_MODE);
+        one_shot = FIELD_EX8(config, CONFIG, ONE_SHOT);
+        s->config = FIELD_DP8(config, CONFIG, ONE_SHOT, 0);
+        s->faults = tc->faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
+        if (one_shot && FIELD_EX8(s->config, CONFIG, SHUTDOWN_MODE)) {
+            tmp105_alarm_update(s, true);
+        } else if (waking) {
+            tmp105_alarm_update(s, false);
+        } else {
+            tmp105_interrupt_update(s);
+        }
         break;
 
     case TMP105_REG_T_LOW:
     case TMP105_REG_T_HIGH:
         if (s->len >= 3) {
             s->limit[s->pointer & 1] = (int16_t)
-                    ((((uint16_t) s->buf[0]) << 8) | (s->buf[1] & 0xf0));
+                    ((((uint16_t) s->buf[0]) << 8) |
+                     (s->buf[1] & tc->limit_lsb_mask));
         }
-        tmp105_alarm_update(s, false);
+        tmp105_interrupt_update(s);
         break;
     }
 }
@@ -227,8 +307,9 @@ static int tmp105_event(I2CSlave *i2c, enum i2c_event event)
 static int tmp105_post_load(void *opaque, int version_id)
 {
     TMP105State *s = opaque;
+    const TMP105Class *tc = TMP105_GET_CLASS(s);
 
-    s->faults = tmp105_faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
+    s->faults = tc->faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
 
     tmp105_interrupt_update(s);
     return 0;
@@ -246,6 +327,13 @@ static bool detect_falling_needed(void *opaque)
     return s->detect_falling;
 }
 
+static bool fault_count_needed(void *opaque)
+{
+    const TMP105State *s = opaque;
+
+    return s->fault_count != 0;
+}
+
 static const VMStateDescription vmstate_tmp105_detect_falling = {
     .name = "TMP105/detect-falling",
     .version_id = 1,
@@ -253,6 +341,17 @@ static const VMStateDescription vmstate_tmp105_detect_falling = {
     .needed = detect_falling_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(detect_falling, TMP105State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_tmp105_fault_count = {
+    .name = "TMP105/fault-count",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = fault_count_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(fault_count, TMP105State),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -270,23 +369,26 @@ static const VMStateDescription vmstate_tmp105 = {
         VMSTATE_INT16(temperature, TMP105State),
         VMSTATE_INT16_ARRAY(limit, TMP105State, 2),
         VMSTATE_UINT8(alarm, TMP105State),
-        VMSTATE_I2C_SLAVE(i2c, TMP105State),
+        VMSTATE_I2C_SLAVE(parent_obj, TMP105State),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_tmp105_detect_falling,
+        &vmstate_tmp105_fault_count,
         NULL
     }
 };
 
-static void tmp105_reset(I2CSlave *i2c)
+static void tmp105_reset_hold(Object *obj, ResetType type)
 {
-    TMP105State *s = TMP105(i2c);
+    TMP105State *s = TMP105(obj);
+    const TMP105Class *tc = TMP105_GET_CLASS(s);
 
     s->temperature = 0;
     s->pointer = 0;
     s->config = 0;
-    s->faults = tmp105_faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
+    s->faults = tc->faultq[FIELD_EX8(s->config, CONFIG, FAULT_QUEUE)];
+    s->fault_count = 0;
     s->alarm = 0;
     s->detect_falling = false;
 
@@ -302,8 +404,6 @@ static void tmp105_realize(DeviceState *dev, Error **errp)
     TMP105State *s = TMP105(i2c);
 
     qdev_init_gpio_out(&i2c->qdev, &s->pin, 1);
-
-    tmp105_reset(&s->i2c);
 }
 
 static void tmp105_initfn(Object *obj)
@@ -311,31 +411,101 @@ static void tmp105_initfn(Object *obj)
     object_property_add(obj, "temperature", "int",
                         tmp105_get_temperature,
                         tmp105_set_temperature, NULL, NULL);
+    object_property_set_description(obj, "temperature",
+                                    "Temperature, in millidegrees Celsius");
 }
 
-static void tmp105_class_init(ObjectClass *klass, void *data)
+/*
+ * Fault-queue length selected by Config F1:F0. Row 0 (1/2/4/6) is used by the
+ * TMP105, TMP175 and LM75B; row 1 (1/2/3/4) by the TMP75.
+ */
+static const uint8_t tmp105_faultq[][4] = {
+    { 1, 2, 4, 6 },
+    { 1, 2, 3, 4 },
+};
+
+/* The F1:F0 field must never index past a fault-queue table row. */
+QEMU_BUILD_BUG_ON((1 << R_CONFIG_FAULT_QUEUE_LENGTH) - 1 >=
+                  ARRAY_SIZE(tmp105_faultq[0]));
+
+static void tmp105_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
+    TMP105Class *tc = TMP105_CLASS(klass);
 
     dc->realize = tmp105_realize;
     k->event = tmp105_event;
     k->recv = tmp105_rx;
     k->send = tmp105_tx;
+    rc->phases.hold = tmp105_reset_hold;
     dc->vmsd = &vmstate_tmp105;
+
+    tc->faultq = tmp105_faultq[0];
+    tc->config_wmask = 0xff;
+    tc->fixed_res = -1;
+    tc->limit_lsb_mask = 0xf0;
+    tc->tm_change_clears_alert = false;
 }
 
-static const TypeInfo tmp105_info = {
-    .name          = TYPE_TMP105,
-    .parent        = TYPE_I2C_SLAVE,
-    .instance_size = sizeof(TMP105State),
-    .instance_init = tmp105_initfn,
-    .class_init    = tmp105_class_init,
+static void tmp175_class_init(ObjectClass *klass, const void *data)
+{
+    TMP105Class *tc = TMP105_CLASS(klass);
+
+    tc->faultq = tmp105_faultq[0];
+    tc->config_wmask = 0xff;
+    tc->fixed_res = -1;
+    tc->limit_lsb_mask = 0xf0;
+    tc->tm_change_clears_alert = false;
+}
+
+static void tmp75_class_init(ObjectClass *klass, const void *data)
+{
+    TMP105Class *tc = TMP105_CLASS(klass);
+
+    tc->faultq = tmp105_faultq[1];
+    tc->config_wmask = 0xff;
+    tc->fixed_res = -1;
+    tc->limit_lsb_mask = 0xf0;
+    tc->tm_change_clears_alert = true;
+}
+
+static void lm75b_class_init(ObjectClass *klass, const void *data)
+{
+    TMP105Class *tc = TMP105_CLASS(klass);
+
+    tc->faultq = tmp105_faultq[0];
+    tc->config_wmask = 0x1f;
+    tc->fixed_res = 2;
+    tc->limit_lsb_mask = 0x80;
+    tc->tm_change_clears_alert = false;
+}
+
+static const TypeInfo tmp105_types[] = {
+    {
+        .name          = TYPE_TMP105,
+        .parent        = TYPE_I2C_SLAVE,
+        .instance_size = sizeof(TMP105State),
+        .class_size    = sizeof(TMP105Class),
+        .instance_init = tmp105_initfn,
+        .class_init    = tmp105_class_init,
+    },
+    {
+        .name          = TYPE_TMP175,
+        .parent        = TYPE_TMP105,
+        .class_init    = tmp175_class_init,
+    },
+    {
+        .name          = TYPE_TMP75,
+        .parent        = TYPE_TMP105,
+        .class_init    = tmp75_class_init,
+    },
+    {
+        .name          = TYPE_LM75B,
+        .parent        = TYPE_TMP105,
+        .class_init    = lm75b_class_init,
+    },
 };
 
-static void tmp105_register_types(void)
-{
-    type_register_static(&tmp105_info);
-}
-
-type_init(tmp105_register_types)
+DEFINE_TYPES(tmp105_types)

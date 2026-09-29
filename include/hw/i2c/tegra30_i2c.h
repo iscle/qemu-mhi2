@@ -2,7 +2,7 @@
 #define HW_I2C_TEGRA30_I2C_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 
 /** Size of the register window of a Tegra I2C controller */

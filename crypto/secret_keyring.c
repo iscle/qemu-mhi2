@@ -41,7 +41,7 @@ qcrypto_secret_keyring_load_data(QCryptoSecretCommon *sec_common,
                                  Error **errp)
 {
     QCryptoSecretKeyring *secret = QCRYPTO_SECRET_KEYRING(sec_common);
-    uint8_t *buffer = NULL;
+    g_autofree uint8_t *buffer = NULL;
     long retcode;
 
     *output = NULL;
@@ -61,12 +61,11 @@ qcrypto_secret_keyring_load_data(QCryptoSecretCommon *sec_common,
 
     retcode = keyctl_read(secret->serial, buffer, retcode);
     if (retcode < 0) {
-        g_free(buffer);
         goto keyctl_error;
     }
 
     *outputlen = retcode;
-    *output = buffer;
+    *output = g_steal_pointer(&buffer);
     return;
 
 keyctl_error:
@@ -103,7 +102,7 @@ qcrypto_secret_prop_get_key(Object *obj, Visitor *v,
 
 
 static void
-qcrypto_secret_keyring_class_init(ObjectClass *oc, void *data)
+qcrypto_secret_keyring_class_init(ObjectClass *oc, const void *data)
 {
     QCryptoSecretCommonClass *sic = QCRYPTO_SECRET_COMMON_CLASS(oc);
     sic->load_data = qcrypto_secret_keyring_load_data;

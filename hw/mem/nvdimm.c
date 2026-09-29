@@ -28,9 +28,9 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "hw/mem/nvdimm.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/mem/memory-device.h"
-#include "sysemu/hostmem.h"
+#include "system/hostmem.h"
 
 static void nvdimm_get_label_size(Object *obj, Visitor *v, const char *name,
                                   void *opaque, Error **errp)
@@ -99,7 +99,7 @@ static void nvdimm_set_uuid(Object *obj, Visitor *v, const char *name,
 
 static void nvdimm_init(Object *obj)
 {
-    object_property_add(obj, NVDIMM_LABEL_SIZE_PROP, "int",
+    object_property_add(obj, NVDIMM_LABEL_SIZE_PROP, "size",
                         nvdimm_get_label_size, nvdimm_set_label_size, NULL,
                         NULL);
 
@@ -246,12 +246,11 @@ static void nvdimm_write_label_data(NVDIMMDevice *nvdimm, const void *buf,
     memory_region_set_dirty(mr, backend_offset, size);
 }
 
-static Property nvdimm_properties[] = {
+static const Property nvdimm_properties[] = {
     DEFINE_PROP_BOOL(NVDIMM_UNARMED_PROP, NVDIMMDevice, unarmed, false),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void nvdimm_class_init(ObjectClass *oc, void *data)
+static void nvdimm_class_init(ObjectClass *oc, const void *data)
 {
     PCDIMMDeviceClass *ddc = PC_DIMM_CLASS(oc);
     MemoryDeviceClass *mdc = MEMORY_DEVICE_CLASS(oc);

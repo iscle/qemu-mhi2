@@ -9,8 +9,6 @@
 #ifndef SEMIHOST_CONSOLE_H
 #define SEMIHOST_CONSOLE_H
 
-#include "cpu.h"
-
 /**
  * qemu_semihosting_console_read:
  * @cs: CPUState
@@ -55,5 +53,14 @@ void qemu_semihosting_console_block_until_ready(CPUState *cs);
  * Return true if characters are available for read; does not block.
  */
 bool qemu_semihosting_console_ready(void);
+
+/**
+ * qemu_semihosting_console_has_chardev:
+ *
+ * Return true if the semihosting console is backed by a chardev.
+ * When true, console I/O goes through the chardev rather than
+ * host stdio.
+ */
+bool qemu_semihosting_console_has_chardev(void);
 
 #endif /* SEMIHOST_CONSOLE_H */

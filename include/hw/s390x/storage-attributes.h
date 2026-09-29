@@ -12,8 +12,7 @@
 #ifndef S390_STORAGE_ATTRIBUTES_H
 #define S390_STORAGE_ATTRIBUTES_H
 
-#include "hw/qdev-core.h"
-#include "monitor/monitor.h"
+#include "hw/core/qdev.h"
 #include "qom/object.h"
 
 #define TYPE_S390_STATTRIB "s390-storage_attributes"
@@ -25,7 +24,6 @@ OBJECT_DECLARE_TYPE(S390StAttribState, S390StAttribClass, S390_STATTRIB)
 struct S390StAttribState {
     DeviceState parent_obj;
     uint64_t migration_cur_gfn;
-    bool migration_enabled;
 };
 
 
@@ -72,8 +70,5 @@ static inline Object *kvm_s390_stattrib_create(void)
     return NULL;
 }
 #endif
-
-void hmp_info_cmma(Monitor *mon, const QDict *qdict);
-void hmp_migrationmode(Monitor *mon, const QDict *qdict);
 
 #endif /* S390_STORAGE_ATTRIBUTES_H */

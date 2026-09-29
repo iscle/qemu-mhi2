@@ -12,8 +12,7 @@
 #include "qemu/sockets.h"
 #include "ui/input.h"
 #include "qom/object_interfaces.h"
-#include "sysemu/iothread.h"
-#include "block/aio.h"
+#include "system/iothread.h"
 
 #include <sys/ioctl.h>
 #include "standard-headers/linux/input.h"
@@ -167,8 +166,7 @@ static void input_linux_handle_keyboard(InputLinux *il,
 
         /* send event to guest when grab is active */
         if (il->grab_active && !input_linux_should_skip(il, event)) {
-            int qcode = qemu_input_linux_to_qcode(event->code);
-            qemu_input_event_send_key_qcode(NULL, qcode, event->value);
+            qemu_input_event_send_key_linux(NULL, event->code, event->value);
         }
 
         /* hotkey -> record switch request ... */
@@ -316,9 +314,8 @@ static void input_linux_complete(UserCreatable *uc, Error **errp)
         error_setg_file_open(errp, errno, il->evdev);
         return;
     }
-    if (!g_unix_set_fd_nonblocking(il->fd, true, NULL)) {
-        error_setg_errno(errp, errno, "Failed to set FD nonblocking");
-        return;
+    if (!qemu_set_blocking(il->fd, false, errp)) {
+        goto err_close;
     }
 
     rc = ioctl(il->fd, EVIOCGVERSION, &ver);
@@ -412,7 +409,6 @@ err_read_event_bits:
 
 err_close:
     close(il->fd);
-    return;
 }
 
 static void input_linux_instance_finalize(Object *obj)
@@ -495,7 +491,7 @@ static void input_linux_instance_init(Object *obj)
 {
 }
 
-static void input_linux_class_init(ObjectClass *oc, void *data)
+static void input_linux_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
 
@@ -523,7 +519,7 @@ static const TypeInfo input_linux_info = {
     .instance_size = sizeof(InputLinux),
     .instance_init = input_linux_instance_init,
     .instance_finalize = input_linux_instance_finalize,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

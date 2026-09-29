@@ -11,15 +11,18 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
+#include "exec/target_page.h"
+#include "system/ram_addr.h"
 #include "migration/qemu-file.h"
 #include "migration/register.h"
-#include "hw/qdev-properties.h"
+#include "monitor/hmp.h"
+#include "monitor/monitor.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/s390x/storage-attributes.h"
 #include "qemu/error-report.h"
-#include "exec/ram_addr.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qdict.h"
-#include "cpu.h"
+#include "qobject/qdict.h"
+#include "target/s390x/cpu.h"
 
 /* 512KiB cover 2GB of guest memory */
 #define CMMA_BLOCK_SIZE  (512 * KiB)
@@ -29,6 +32,7 @@
 #define STATTR_FLAG_ERROR   0x04ULL
 #define STATTR_FLAG_DONE    0x08ULL
 
+#ifdef CONFIG_HMP
 static S390StAttribState *s390_get_stattrib_device(void)
 {
     S390StAttribState *sas;
@@ -37,6 +41,7 @@ static S390StAttribState *s390_get_stattrib_device(void)
     assert(sas);
     return sas;
 }
+#endif
 
 void s390_stattrib_init(void)
 {
@@ -56,7 +61,8 @@ void s390_stattrib_init(void)
 
 /* Console commands: */
 
-void hmp_migrationmode(Monitor *mon, const QDict *qdict)
+#ifdef CONFIG_HMP
+void hmp_migrationmode(MonitorHMP *hmp, const QDict *qdict)
 {
     S390StAttribState *sas = s390_get_stattrib_device();
     S390StAttribClass *sac = S390_STATTRIB_GET_CLASS(sas);
@@ -66,12 +72,12 @@ void hmp_migrationmode(Monitor *mon, const QDict *qdict)
 
     r = sac->set_migrationmode(sas, what, &local_err);
     if (r < 0) {
-        monitor_printf(mon, "Error: %s", error_get_pretty(local_err));
+        monitor_hmp_printf(hmp, "Error: %s", error_get_pretty(local_err));
         error_free(local_err);
     }
 }
 
-void hmp_info_cmma(Monitor *mon, const QDict *qdict)
+void hmp_info_cmma(MonitorHMP *hmp, const QDict *qdict)
 {
     S390StAttribState *sas = s390_get_stattrib_device();
     S390StAttribClass *sac = S390_STATTRIB_GET_CLASS(sas);
@@ -82,31 +88,32 @@ void hmp_info_cmma(Monitor *mon, const QDict *qdict)
 
     vals = g_try_malloc(buflen);
     if (!vals) {
-        monitor_printf(mon, "Error: %s\n", strerror(errno));
+        monitor_hmp_printf(hmp, "Error: %s\n", strerror(errno));
         return;
     }
 
     len = sac->peek_stattr(sas, addr / TARGET_PAGE_SIZE, buflen, vals);
     if (len < 0) {
-        monitor_printf(mon, "Error: %s", strerror(-len));
+        monitor_hmp_printf(hmp, "Error: %s", strerror(-len));
         goto out;
     }
 
-    monitor_printf(mon, "  CMMA attributes, "
-                   "pages %" PRIu64 "+%d (0x%" PRIx64 "):\n",
-                   addr / TARGET_PAGE_SIZE, len, addr & ~TARGET_PAGE_MASK);
+    monitor_hmp_printf(hmp, "  CMMA attributes, "
+                       "pages %" PRIu64 "+%d (0x%" PRIx64 "):\n",
+                       addr / TARGET_PAGE_SIZE, len, addr & ~TARGET_PAGE_MASK);
     for (cx = 0; cx < len; cx++) {
         if (cx % 8 == 7) {
-            monitor_printf(mon, "%02x\n", vals[cx]);
+            monitor_hmp_printf(hmp, "%02x\n", vals[cx]);
         } else {
-            monitor_printf(mon, "%02x", vals[cx]);
+            monitor_hmp_printf(hmp, "%02x", vals[cx]);
         }
     }
-    monitor_printf(mon, "\n");
+    monitor_hmp_printf(hmp, "\n");
 
 out:
     g_free(vals);
 }
+#endif
 
 /* Migration support: */
 
@@ -186,15 +193,15 @@ static int cmma_save_setup(QEMUFile *f, void *opaque, Error **errp)
     return 0;
 }
 
-static void cmma_state_pending(void *opaque, uint64_t *must_precopy,
-                               uint64_t *can_postcopy)
+static void cmma_state_pending(void *opaque, MigPendingData *pending,
+                               bool exact, bool final)
 {
     S390StAttribState *sas = S390_STATTRIB(opaque);
     S390StAttribClass *sac = S390_STATTRIB_GET_CLASS(sas);
     long long res = sac->get_dirtycount(sas);
 
     if (res >= 0) {
-        *must_precopy += res;
+        pending->precopy_bytes += res;
     }
 }
 
@@ -304,10 +311,10 @@ static int qemu_s390_set_migrationmode_stub(S390StAttribState *sa, bool value,
 
 static int qemu_s390_get_active(S390StAttribState *sa)
 {
-    return sa->migration_enabled;
+    return true;
 }
 
-static void qemu_s390_stattrib_class_init(ObjectClass *oc, void *data)
+static void qemu_s390_stattrib_class_init(ObjectClass *oc, const void *data)
 {
     S390StAttribClass *sa_cl = S390_STATTRIB_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -338,9 +345,8 @@ static const TypeInfo qemu_s390_stattrib_info = {
 static SaveVMHandlers savevm_s390_stattrib_handlers = {
     .save_setup = cmma_save_setup,
     .save_live_iterate = cmma_save_iterate,
-    .save_live_complete_precopy = cmma_save_complete,
-    .state_pending_exact = cmma_state_pending,
-    .state_pending_estimate = cmma_state_pending,
+    .save_complete = cmma_save_complete,
+    .save_query_pending = cmma_state_pending,
     .save_cleanup = cmma_save_cleanup,
     .load_state = cmma_load,
     .is_active = cmma_active,
@@ -360,19 +366,13 @@ static void s390_stattrib_realize(DeviceState *dev, Error **errp)
                          &savevm_s390_stattrib_handlers, dev);
 }
 
-static Property s390_stattrib_props[] = {
-    DEFINE_PROP_BOOL("migration-enabled", S390StAttribState, migration_enabled, true),
-    DEFINE_PROP_END_OF_LIST(),
-};
-
-static void s390_stattrib_class_init(ObjectClass *oc, void *data)
+static void s390_stattrib_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->hotpluggable = false;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     dc->realize = s390_stattrib_realize;
-    device_class_set_props(dc, s390_stattrib_props);
 }
 
 static void s390_stattrib_instance_init(Object *obj)

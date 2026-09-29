@@ -24,13 +24,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 
 #include "hw/ide/mmio.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "ide-internal.h"
 
 /***********************************************************/
@@ -55,7 +55,7 @@ static void mmio_ide_reset(DeviceState *dev)
 {
     MMIOIDEState *s = MMIO_IDE(dev);
 
-    ide_bus_reset(&s->bus);
+    ide_bus_reset(&s->bus, IDE_RESET_HARDWARE);
 }
 
 static uint64_t mmio_ide_read(void *opaque, hwaddr addr,
@@ -141,12 +141,11 @@ static void mmio_ide_initfn(Object *obj)
     sysbus_init_irq(d, &s->irq);
 }
 
-static Property mmio_ide_properties[] = {
+static const Property mmio_ide_properties[] = {
     DEFINE_PROP_UINT32("shift", MMIOIDEState, shift, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void mmio_ide_class_init(ObjectClass *oc, void *data)
+static void mmio_ide_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

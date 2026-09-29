@@ -9,38 +9,40 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "cpu.h"
-#include "hw/sysbus.h"
+#include "target/arm/cpu.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/boot.h"
-#include "hw/arm/primecell.h"
 #include "hw/core/split-irq.h"
+#include "hw/misc/arm_sysctl.h"
 #include "hw/net/lan9118.h"
 #include "hw/net/smc91c111.h"
 #include "hw/pci/pci.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "net/net.h"
-#include "sysemu/sysemu.h"
-#include "hw/boards.h"
+#include "system/system.h"
+#include "hw/core/boards.h"
 #include "hw/i2c/i2c.h"
 #include "qemu/error-report.h"
 #include "hw/char/pl011.h"
 #include "hw/cpu/a9mpcore.h"
 #include "hw/intc/realview_gic.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/i2c/arm_sbcon_i2c.h"
 #include "hw/sd/sd.h"
-#include "audio/audio.h"
 #include "target/arm/cpu-qom.h"
 
 #define SMP_BOOT_ADDR 0xe0000000
 #define SMP_BOOTREG_ADDR 0x10000030
 
+#define GIC_EXT_IRQS 64 /* Realview PBX-A9 development board */
+
 /* Board init.  */
 
-static struct arm_boot_info realview_binfo = {
-    .smp_loader_start = SMP_BOOT_ADDR,
-    .smp_bootreg_addr = SMP_BOOTREG_ADDR,
-};
+typedef struct RealViewMachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
+} RealViewMachineState;
 
 /* The following two lists must be consistent.  */
 enum realview_board_type {
@@ -74,6 +76,8 @@ static void split_irq_from_named(DeviceState *src, const char* outname,
 static void realview_init(MachineState *machine,
                           enum realview_board_type board_type)
 {
+    /* All realview-* machines embed the same state as their first member */
+    RealViewMachineState *rvms = (RealViewMachineState *)machine;
     ARMCPU *cpu = NULL;
     CPUARMState *env;
     MemoryRegion *sysmem = get_system_memory();
@@ -185,7 +189,12 @@ static void realview_init(MachineState *machine,
     sysbus_mmio_map(SYS_BUS_DEVICE(sysctl), 0, 0x10000000);
 
     if (is_mpcore) {
-        dev = qdev_new(is_pb ? TYPE_A9MPCORE_PRIV : "realview_mpcore");
+        if (is_pb) {
+            dev = qdev_new(TYPE_A9MPCORE_PRIV);
+            qdev_prop_set_uint32(dev, "num-irq", GIC_EXT_IRQS + GIC_INTERNAL);
+        } else {
+            dev = qdev_new("realview_mpcore");
+        }
         qdev_prop_set_uint32(dev, "num-cpu", smp_cpus);
         busdev = SYS_BUS_DEVICE(dev);
         sysbus_realize_and_unref(busdev, &error_fatal);
@@ -195,13 +204,13 @@ static void realview_init(MachineState *machine,
         }
         sysbus_create_varargs("l2x0", periphbase + 0x2000, NULL);
         /* Both A9 and 11MPCore put the GIC CPU i/f at base + 0x100 */
-        realview_binfo.gic_cpu_if_addr = periphbase + 0x100;
+        rvms->bootinfo.gic_cpu_if_addr = periphbase + 0x100;
     } else {
         uint32_t gic_addr = is_pb ? 0x1e000000 : 0x10040000;
         /* For now just create the nIRQ GIC, and ignore the others.  */
         dev = sysbus_create_simple(TYPE_REALVIEW_GIC, gic_addr, cpu_irq[0]);
     }
-    for (n = 0; n < 64; n++) {
+    for (n = 0; n < GIC_EXT_IRQS; n++) {
         pic[n] = qdev_get_gpio_in(dev, n);
     }
 
@@ -380,10 +389,12 @@ static void realview_init(MachineState *machine,
                            &error_fatal);
     memory_region_add_subregion(sysmem, SMP_BOOT_ADDR, ram_hack);
 
-    realview_binfo.ram_size = ram_size;
-    realview_binfo.board_id = realview_board_id[board_type];
-    realview_binfo.loader_start = (board_type == BOARD_PB_A8 ? 0x70000000 : 0);
-    arm_load_kernel(cpu, machine, &realview_binfo);
+    rvms->bootinfo.smp_loader_start = SMP_BOOT_ADDR;
+    rvms->bootinfo.smp_bootreg_addr = SMP_BOOTREG_ADDR;
+    rvms->bootinfo.ram_size = ram_size;
+    rvms->bootinfo.board_id = realview_board_id[board_type];
+    rvms->bootinfo.loader_start = board_type == BOARD_PB_A8 ? 0x70000000 : 0;
+    arm_load_kernel(cpu, machine, &rvms->bootinfo);
 }
 
 static void realview_eb_init(MachineState *machine)
@@ -406,7 +417,7 @@ static void realview_pbx_a9_init(MachineState *machine)
     realview_init(machine, BOARD_PBX_A9);
 }
 
-static void realview_eb_class_init(ObjectClass *oc, void *data)
+static void realview_eb_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -415,6 +426,7 @@ static void realview_eb_class_init(ObjectClass *oc, void *data)
     mc->block_default_type = IF_SCSI;
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm926");
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -423,9 +435,10 @@ static const TypeInfo realview_eb_type = {
     .name = MACHINE_TYPE_NAME("realview-eb"),
     .parent = TYPE_MACHINE,
     .class_init = realview_eb_class_init,
+    .instance_size = sizeof(RealViewMachineState),
 };
 
-static void realview_eb_mpcore_class_init(ObjectClass *oc, void *data)
+static void realview_eb_mpcore_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -435,6 +448,7 @@ static void realview_eb_mpcore_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 4;
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm11mpcore");
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -443,9 +457,10 @@ static const TypeInfo realview_eb_mpcore_type = {
     .name = MACHINE_TYPE_NAME("realview-eb-mpcore"),
     .parent = TYPE_MACHINE,
     .class_init = realview_eb_mpcore_class_init,
+    .instance_size = sizeof(RealViewMachineState),
 };
 
-static void realview_pb_a8_class_init(ObjectClass *oc, void *data)
+static void realview_pb_a8_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -453,6 +468,7 @@ static void realview_pb_a8_class_init(ObjectClass *oc, void *data)
     mc->init = realview_pb_a8_init;
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -461,9 +477,10 @@ static const TypeInfo realview_pb_a8_type = {
     .name = MACHINE_TYPE_NAME("realview-pb-a8"),
     .parent = TYPE_MACHINE,
     .class_init = realview_pb_a8_class_init,
+    .instance_size = sizeof(RealViewMachineState),
 };
 
-static void realview_pbx_a9_class_init(ObjectClass *oc, void *data)
+static void realview_pbx_a9_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -472,6 +489,7 @@ static void realview_pbx_a9_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 4;
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a9");
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -480,6 +498,7 @@ static const TypeInfo realview_pbx_a9_type = {
     .name = MACHINE_TYPE_NAME("realview-pbx-a9"),
     .parent = TYPE_MACHINE,
     .class_init = realview_pbx_a9_class_init,
+    .instance_size = sizeof(RealViewMachineState),
 };
 
 static void realview_machine_init(void)

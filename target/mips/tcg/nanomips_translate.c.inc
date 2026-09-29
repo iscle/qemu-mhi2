@@ -3551,7 +3551,7 @@ static int decode_nanomips_32_48_opc(CPUMIPSState *env, DisasContext *ctx)
     int offset;
     int imm;
 
-    insn = translator_lduw(env, &ctx->base, ctx->base.pc_next + 2);
+    insn = translator_lduw_end(env, &ctx->base, ctx->base.pc_next + 2, mo_endian(ctx));
     ctx->opcode = (ctx->opcode << 16) | insn;
 
     rt = extract32(ctx->opcode, 21, 5);
@@ -3626,12 +3626,7 @@ static int decode_nanomips_32_48_opc(CPUMIPSState *env, DisasContext *ctx)
                 gen_p_lsx(ctx, rd, rs, rt);
                 break;
             case NM_LSA:
-                /*
-                 * In nanoMIPS, the shift field directly encodes the shift
-                 * amount, meaning that the supported shift values are in
-                 * the range 0 to 3 (instead of 1 to 4 in MIPSR6).
-                 */
-                gen_lsa(ctx, rd, rt, rs, extract32(ctx->opcode, 9, 2) - 1);
+                gen_lsa(ctx, rd, rt, rs, extract32(ctx->opcode, 9, 2));
                 break;
             case NM_EXTW:
                 gen_ext(ctx, 32, rd, rs, rt, extract32(ctx->opcode, 6, 5));
@@ -3670,7 +3665,8 @@ static int decode_nanomips_32_48_opc(CPUMIPSState *env, DisasContext *ctx)
         break;
     case NM_P48I:
         {
-            insn = translator_lduw(env, &ctx->base, ctx->base.pc_next + 4);
+            insn = translator_lduw_end(env, &ctx->base, ctx->base.pc_next + 4,
+                                       mo_endian(ctx));
             target_long addr_off = extract32(ctx->opcode, 0, 16) | insn << 16;
             switch (extract32(ctx->opcode, 16, 5)) {
             case NM_LI48:

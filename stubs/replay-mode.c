@@ -1,4 +1,4 @@
 #include "qemu/osdep.h"
-#include "sysemu/replay.h"
+#include "system/replay.h"
 
-ReplayMode replay_mode;
+ReplayMode replay_mode = REPLAY_MODE_NONE;

@@ -25,11 +25,11 @@
 
 #include "qemu/osdep.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 
 #include "hw/ide/isa.h"
 #include "qom/object.h"
@@ -51,7 +51,7 @@ static void isa_ide_reset(DeviceState *d)
 {
     ISAIDEState *s = ISA_IDE(d);
 
-    ide_bus_reset(&s->bus);
+    ide_bus_reset(&s->bus, IDE_RESET_HARDWARE);
 }
 
 static const VMStateDescription vmstate_ide_isa = {
@@ -101,14 +101,13 @@ ISADevice *isa_ide_init(ISABus *bus, int iobase, int iobase2, int irqnum,
     return isadev;
 }
 
-static Property isa_ide_properties[] = {
+static const Property isa_ide_properties[] = {
     DEFINE_PROP_UINT32("iobase",  ISAIDEState, iobase,  0x1f0),
     DEFINE_PROP_UINT32("iobase2", ISAIDEState, iobase2, 0x3f6),
     DEFINE_PROP_UINT32("irq",     ISAIDEState, irqnum,  14),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void isa_ide_class_initfn(ObjectClass *klass, void *data)
+static void isa_ide_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

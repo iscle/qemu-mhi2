@@ -28,6 +28,9 @@ variables:
     # we don't need. The --filter options avoid blobs and tree references we aren't going to use
     # and we also avoid fetching tags.
     GIT_FETCH_EXTRA_FLAGS: --filter=blob:none --filter=tree:0 --no-tags --prune --quiet
+    # Ensure docker.py / tests/docker/Makefile.include always displays stdout
+    # from any docker commands to aid debugging of failures
+    DOCKER_V: 1
 
   interruptible: true
 
@@ -45,12 +48,13 @@ variables:
     - if: '$CI_PROJECT_NAMESPACE == $QEMU_CI_UPSTREAM && $CI_COMMIT_TAG'
       when: never
 
-    # Scheduled runs on mainline don't get pipelines except for the special Coverity job
-    - if: '$CI_PROJECT_NAMESPACE == $QEMU_CI_UPSTREAM && $CI_PIPELINE_SOURCE == "schedule"'
+    # Scheduled jobs should explicitly enable the run in their job rules
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
 
-    # Cirrus jobs can't run unless the creds / target repo are set
-    - if: '$QEMU_JOB_CIRRUS && ($CIRRUS_GITHUB_REPO == null || $CIRRUS_API_TOKEN == null)'
+    # macOS jobs can't run in forks until gitlab opens up runner availability
+    # to all tiers https://gitlab.com/groups/gitlab-org/-/work_items/8267
+    - if: '$QEMU_JOB_MACOS == "1" && $CI_PROJECT_NAMESPACE != $QEMU_CI_UPSTREAM'
       when: never
 
     # Publishing jobs should only run on the default branch in upstream
@@ -67,10 +71,6 @@ variables:
 
     # Forks don't get pipelines unless QEMU_CI=1 or QEMU_CI=2 is set
     - if: '$QEMU_CI != "1" && $QEMU_CI != "2" && $CI_PROJECT_NAMESPACE != $QEMU_CI_UPSTREAM'
-      when: never
-
-    # Avocado jobs don't run in forks unless $QEMU_CI_AVOCADO_TESTING is set
-    - if: '$QEMU_JOB_AVOCADO && $QEMU_CI_AVOCADO_TESTING != "1" && $CI_PROJECT_NAMESPACE != $QEMU_CI_UPSTREAM'
       when: never
 
 
@@ -101,8 +101,8 @@ variables:
       when: manual
       allow_failure: true
 
-    # Avocado jobs can be manually start in forks if $QEMU_CI_AVOCADO_TESTING is unset
-    - if: '$QEMU_JOB_AVOCADO && $CI_PROJECT_NAMESPACE != $QEMU_CI_UPSTREAM'
+    # Functional jobs can be manually started in forks
+    - if: '$QEMU_JOB_FUNCTIONAL && $QEMU_CI_FUNCTIONAL != "1" && $CI_PROJECT_NAMESPACE != $QEMU_CI_UPSTREAM'
       when: manual
       allow_failure: true
 
@@ -134,3 +134,51 @@ variables:
         QEMU_CI_CONTAINER_TAG: $CI_COMMIT_REF_SLUG
 
     - when: on_success
+
+# Any job running meson should capture meson logs
+# by default. Some jobs might override the artifacts
+# to capture further files
+.base_meson_job_template:
+  extends: .base_job_template
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_SLUG"
+    when: always
+    expire_in: 7 days
+    paths:
+      - build/meson-logs
+      - ci-runner-env
+    reports:
+      junit: build/meson-logs/*.junit.xml
+  before_script:
+    - source scripts/ci/gitlab-ci-section
+    - section_start setup "Pre-script setup"
+    - JOBS=$(expr $(nproc) + 1)
+    # Prevent logs (if any) from prior build job artifacts
+    # from being duplicated in the new job artifacts
+    - rm -f build/meson-logs/*
+    - mkdir -p ci-runner-env
+    - test -f /packages.txt && cp /packages.txt ci-runner-env/packages.txt
+    - cp /proc/mounts ci-runner-env/mounts.txt
+    - cp /proc/cpuinfo ci-runner-env/cpuinfo.txt
+    - cp /proc/meminfo ci-runner-env/meminfo.txt
+    - ls -l /dev > ci-runner-env/devices.txt
+    - uname -a > ci-runner-env/kernel.txt
+    - id -a > ci-runner-env/user.txt
+    - printenv | sort > ci-runner-env/environ.txt
+    - section_end setup
+
+.base_meson_ccache_job_template:
+  extends: .base_meson_job_template
+  cache:
+    paths:
+      - ccache
+    key: "$CI_JOB_NAME"
+    when: always
+  script:
+    - export CCACHE_BASEDIR="$(pwd)"
+    - export CCACHE_DIR="$CCACHE_BASEDIR/ccache"
+    - export CCACHE_MAXSIZE="500M"
+    - export PATH="$CCACHE_WRAPPERSDIR:$PATH"
+    - ccache --zero-stats
+  after_script:
+    - ccache --show-stats

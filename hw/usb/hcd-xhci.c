@@ -25,7 +25,7 @@
 #include "qemu/module.h"
 #include "qemu/queue.h"
 #include "migration/vmstate.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "qapi/error.h"
 
@@ -39,8 +39,6 @@
 #else
 #define DPRINTF(...) do {} while (0)
 #endif
-#define FIXME(_msg) do { fprintf(stderr, "FIXME %s:%d %s\n", \
-                                 __func__, __LINE__, _msg); abort(); } while (0)
 
 #define TRB_LINK_LIMIT  32
 #define COMMAND_LIMIT   256
@@ -458,9 +456,15 @@ static void xhci_mfwrap_timer(void *opaque)
 {
     XHCIState *xhci = opaque;
     XHCIEvent wrap = { ER_MFINDEX_WRAP, CC_SUCCESS };
+    MemReentrancyGuard *guard = &xhci->parent.mem_reentrancy_guard;
+
+    assert(!guard->engaged_in_io);
+    guard->engaged_in_io = true;
 
     xhci_event(xhci, &wrap, 0);
     xhci_mfwrap_update(xhci);
+
+    guard->engaged_in_io = false;
 }
 
 static void xhci_die(XHCIState *xhci)
@@ -514,6 +518,7 @@ static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
     int i;
     uint32_t tmp[5];
     uint32_t n = len / sizeof(uint32_t);
+    const MemTxAttrs memtx_attrs = { .memory = true };
 
     assert((len % sizeof(uint32_t)) == 0);
     assert(n <= ARRAY_SIZE(tmp));
@@ -521,8 +526,7 @@ static inline void xhci_dma_write_u32s(XHCIState *xhci, dma_addr_t addr,
     for (i = 0; i < n; i++) {
         tmp[i] = cpu_to_le32(buf[i]);
     }
-    if (dma_memory_write(xhci->as, addr, tmp, len,
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (dma_memory_write(xhci->as, addr, tmp, len, memtx_attrs) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
                       __func__);
         xhci_die(xhci);
@@ -609,6 +613,7 @@ static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
     XHCIInterrupter *intr = &xhci->intr[v];
     XHCITRB ev_trb;
     dma_addr_t addr;
+    const MemTxAttrs memtx_attrs = { .memory = true };
 
     ev_trb.parameter = cpu_to_le64(event->ptr);
     ev_trb.status = cpu_to_le32(event->length | (event->ccode << 24));
@@ -625,7 +630,7 @@ static void xhci_write_event(XHCIState *xhci, XHCIEvent *event, int v)
 
     addr = intr->er_start + TRB_SIZE*intr->er_ep_idx;
     if (dma_memory_write(xhci->as, addr, &ev_trb, TRB_SIZE,
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                         memtx_attrs) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory access failed!\n",
                       __func__);
         xhci_die(xhci);
@@ -643,6 +648,11 @@ static void xhci_event(XHCIState *xhci, XHCIEvent *event, int v)
     XHCIInterrupter *intr;
     dma_addr_t erdp;
     unsigned int dp_idx;
+
+    if (xhci->numintrs == 1 ||
+        (xhci->intr_mapping_supported && !xhci->intr_mapping_supported(xhci))) {
+        v = 0;
+    }
 
     if (v >= xhci->numintrs) {
         DPRINTF("intr nr out of range (%d >= %d)\n", v, xhci->numintrs);
@@ -960,11 +970,13 @@ static TRBCCode xhci_alloc_device_streams(XHCIState *xhci, unsigned int slotid,
          * together and make an usb_device_alloc_streams call per group.
          */
         if (epctxs[i]->nr_pstreams != req_nr_streams) {
-            FIXME("guest streams config not identical for all eps");
+            qemu_log_mask(LOG_UNIMP,
+                          "guest streams config not identical for all eps\n");
             return CC_RESOURCE_ERROR;
         }
         if (eps[i]->max_streams != dev_max_streams) {
-            FIXME("device streams config not identical for all eps");
+            qemu_log_mask(LOG_UNIMP,
+                          "device streams config not identical for all eps\n");
             return CC_RESOURCE_ERROR;
         }
     }
@@ -1004,7 +1016,12 @@ static XHCIStreamContext *xhci_find_stream(XHCIEPContext *epctx,
     dma_addr_t base;
     uint32_t ctx[2], sct;
 
-    assert(streamid != 0);
+    if (!streamid) {
+        qemu_log_mask(LOG_GUEST_ERROR, "xhci: stream ID is zero\n");
+        *cc_error = CC_INVALID_STREAM_ID_ERROR;
+        return NULL;
+    }
+
     if (epctx->lsa) {
         if (streamid >= epctx->nr_pstreams) {
             *cc_error = CC_INVALID_STREAM_ID_ERROR;
@@ -1012,7 +1029,8 @@ static XHCIStreamContext *xhci_find_stream(XHCIEPContext *epctx,
         }
         sctx = epctx->pstreams + streamid;
     } else {
-        fprintf(stderr, "xhci: FIXME: secondary streams not implemented yet");
+        qemu_log_mask(LOG_UNIMP,
+                      "xhci: secondary streams not implemented yet\n");
         *cc_error = CC_INVALID_STREAM_TYPE_ERROR;
         return NULL;
     }
@@ -1075,7 +1093,14 @@ static void xhci_set_ep_state(XHCIState *xhci, XHCIEPContext *epctx,
 static void xhci_ep_kick_timer(void *opaque)
 {
     XHCIEPContext *epctx = opaque;
+    MemReentrancyGuard *guard = &epctx->xhci->parent.mem_reentrancy_guard;
+
+    assert(!guard->engaged_in_io);
+    guard->engaged_in_io = true;
+
     xhci_kick_epctx(epctx, 0);
+
+    guard->engaged_in_io = false;
 }
 
 static XHCIEPContext *xhci_alloc_epctx(XHCIState *xhci,
@@ -1115,7 +1140,7 @@ static void xhci_init_epctx(XHCIEPContext *epctx,
         epctx->ring.ccs = ctx[2] & 1;
     }
 
-    epctx->interval = 1 << ((ctx[0] >> 16) & 0xff);
+    epctx->interval = 1u << MIN((ctx[0] >> 16) & 0xffu, 18u);
 }
 
 static TRBCCode xhci_enable_ep(XHCIState *xhci, unsigned int slotid,
@@ -1182,6 +1207,12 @@ static void xhci_ep_free_xfer(XHCITransfer *xfer)
     g_free(xfer);
 }
 
+static void xhci_xfer_unmap(XHCITransfer *xfer)
+{
+    usb_packet_unmap(&xfer->packet, &xfer->sgl);
+    qemu_sglist_destroy(&xfer->sgl);
+}
+
 static int xhci_ep_nuke_one_xfer(XHCITransfer *t, TRBCCode report)
 {
     int killed = 0;
@@ -1193,6 +1224,7 @@ static int xhci_ep_nuke_one_xfer(XHCITransfer *t, TRBCCode report)
 
     if (t->running_async) {
         usb_cancel_packet(&t->packet);
+        xhci_xfer_unmap(t);
         t->running_async = 0;
         killed = 1;
     }
@@ -1446,7 +1478,8 @@ static int xhci_xfer_create_sgl(XHCITransfer *xfer, int in_xfer)
         switch (TRB_TYPE(*trb)) {
         case TR_DATA:
             if ((!(trb->control & TRB_TR_DIR)) != (!in_xfer)) {
-                DPRINTF("xhci: data direction mismatch for TR_DATA\n");
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "xhci: data direction mismatch for TR_DATA\n");
                 goto err;
             }
             /* fallthrough */
@@ -1456,7 +1489,8 @@ static int xhci_xfer_create_sgl(XHCITransfer *xfer, int in_xfer)
             chunk = trb->status & 0x1ffff;
             if (trb->control & TRB_TR_IDT) {
                 if (chunk > 8 || in_xfer) {
-                    DPRINTF("xhci: invalid immediate data TRB\n");
+                    qemu_log_mask(LOG_GUEST_ERROR,
+                                  "xhci: invalid immediate data TRB\n");
                     goto err;
                 }
                 qemu_sglist_add(&xfer->sgl, trb->addr, chunk);
@@ -1473,12 +1507,6 @@ err:
     qemu_sglist_destroy(&xfer->sgl);
     xhci_die(xhci);
     return -1;
-}
-
-static void xhci_xfer_unmap(XHCITransfer *xfer)
-{
-    usb_packet_unmap(&xfer->packet, &xfer->sgl);
-    qemu_sglist_destroy(&xfer->sgl);
 }
 
 static void xhci_xfer_report(XHCITransfer *xfer)
@@ -1605,7 +1633,9 @@ static int xhci_setup_packet(XHCITransfer *xfer)
         }
     }
 
-    xhci_xfer_create_sgl(xfer, dir == USB_TOKEN_IN); /* Also sets int_req */
+    if (xhci_xfer_create_sgl(xfer, dir == USB_TOKEN_IN) < 0) {  /* Also sets int_req */
+        return -1;
+    }
     usb_packet_setup(&xfer->packet, dir, ep, xfer->streamid,
                      xfer->trbs[0].addr, false, xfer->int_req);
     if (usb_packet_map(&xfer->packet, &xfer->sgl)) {
@@ -1665,9 +1695,7 @@ static int xhci_try_complete_packet(XHCITransfer *xfer)
         xhci_stall_ep(xfer);
         break;
     default:
-        DPRINTF("%s: FIXME: status = %d\n", __func__,
-                xfer->packet.status);
-        FIXME("unhandled USB_RET_*");
+        g_assert_not_reached();
     }
     return 0;
 }
@@ -1728,8 +1756,7 @@ static int xhci_fire_ctl_transfer(XHCIState *xhci, XHCITransfer *xfer)
 static void xhci_calc_intr_kick(XHCIState *xhci, XHCITransfer *xfer,
                                 XHCIEPContext *epctx, uint64_t mfindex)
 {
-    uint64_t asap = ((mfindex + epctx->interval - 1) &
-                     ~(epctx->interval-1));
+    uint64_t asap = ROUND_UP(mfindex, epctx->interval);
     uint64_t kick = epctx->mfindex_last + epctx->interval;
 
     assert(epctx->interval != 0);
@@ -1740,8 +1767,7 @@ static void xhci_calc_iso_kick(XHCIState *xhci, XHCITransfer *xfer,
                                XHCIEPContext *epctx, uint64_t mfindex)
 {
     if (xfer->trbs[0].control & TRB_TR_SIA) {
-        uint64_t asap = ((mfindex + epctx->interval - 1) &
-                         ~(epctx->interval-1));
+        uint64_t asap = ROUND_UP(mfindex, epctx->interval);
         if (asap >= epctx->mfindex_last &&
             asap <= epctx->mfindex_last + epctx->interval * 4) {
             xfer->mfindex_kick = epctx->mfindex_last + epctx->interval;
@@ -1900,26 +1926,15 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
             xfer->timed_xfer = 0;
             xfer->running_retry = 1;
         }
-        if (xfer->iso_xfer) {
-            /* retry iso transfer */
-            if (xhci_setup_packet(xfer) < 0) {
-                return;
-            }
-            usb_handle_packet(xfer->packet.ep->dev, &xfer->packet);
-            assert(xfer->packet.status != USB_RET_NAK);
-            xhci_try_complete_packet(xfer);
-        } else {
-            /* retry nak'ed transfer */
-            if (xhci_setup_packet(xfer) < 0) {
-                return;
-            }
-            usb_handle_packet(xfer->packet.ep->dev, &xfer->packet);
-            if (xfer->packet.status == USB_RET_NAK) {
-                xhci_xfer_unmap(xfer);
-                return;
-            }
-            xhci_try_complete_packet(xfer);
+        if (xhci_setup_packet(xfer) < 0) {
+            return;
         }
+        usb_handle_packet(xfer->packet.ep->dev, &xfer->packet);
+        if (xfer->packet.status == USB_RET_NAK) {
+            xhci_xfer_unmap(xfer);
+            return;
+        }
+        xhci_try_complete_packet(xfer);
         assert(!xfer->running_retry);
         if (xfer->complete) {
             /* update ring dequeue ptr */
@@ -2426,6 +2441,7 @@ static void xhci_detach_slot(XHCIState *xhci, USBPort *uport)
 static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
 {
     dma_addr_t ctx;
+    const MemTxAttrs memtx_attrs = { .memory = true };
 
     DPRINTF("xhci_get_port_bandwidth()\n");
 
@@ -2434,9 +2450,9 @@ static TRBCCode xhci_get_port_bandwidth(XHCIState *xhci, uint64_t pctx)
     DPRINTF("xhci: bandwidth context at "DMA_ADDR_FMT"\n", ctx);
 
     /* TODO: actually implement real values here. This is 80% for all ports. */
-    if (stb_dma(xhci->as, ctx, 0, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
+    if (stb_dma(xhci->as, ctx, 0, memtx_attrs) != MEMTX_OK ||
         dma_memory_set(xhci->as, ctx + 1, 80, xhci->numports,
-                       MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                       memtx_attrs) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR, "%s: DMA memory write failed!\n",
                       __func__);
         return CC_TRB_ERROR;
@@ -2810,9 +2826,15 @@ static uint64_t xhci_port_read(void *ptr, hwaddr reg, unsigned size)
     case 0x08: /* PORTLI */
         ret = 0;
         break;
-    case 0x0c: /* reserved */
+    case 0x0c: /* PORTHLPMC */
+        ret = 0;
+        qemu_log_mask(LOG_UNIMP, "%s: read from port register PORTHLPMC",
+                      __func__);
+        break;
     default:
-        trace_usb_xhci_unimplemented("port read", reg);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: read from port offset 0x%" HWADDR_PRIx,
+                      __func__, reg);
         ret = 0;
     }
 
@@ -2881,9 +2903,22 @@ static void xhci_port_write(void *ptr, hwaddr reg,
         }
         break;
     case 0x04: /* PORTPMSC */
+    case 0x0c: /* PORTHLPMC */
+        qemu_log_mask(LOG_UNIMP,
+                      "%s: write 0x%" PRIx64
+                      " (%u bytes) to port register at offset 0x%" HWADDR_PRIx,
+                      __func__, val, size, reg);
+        break;
     case 0x08: /* PORTLI */
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: Write to read-only PORTLI register",
+                      __func__);
+        break;
     default:
-        trace_usb_xhci_unimplemented("port write", reg);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: write 0x%" PRIx64 " (%u bytes) to unknown port "
+                      "register at offset 0x%" HWADDR_PRIx,
+                      __func__, val, size, reg);
+        break;
     }
 }
 
@@ -3015,6 +3050,12 @@ static uint64_t xhci_runtime_read(void *ptr, hwaddr reg,
         }
     } else {
         int v = (reg - 0x20) / 0x20;
+
+        if (v >= xhci->numintrs) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xhci: read from nonexistent interrupter %i\n", v);
+            goto out_trace;
+        }
         XHCIInterrupter *intr = &xhci->intr[v];
         switch (reg & 0x1f) {
         case 0x00: /* IMAN */
@@ -3041,6 +3082,7 @@ static uint64_t xhci_runtime_read(void *ptr, hwaddr reg,
         }
     }
 
+out_trace:
     trace_usb_xhci_runtime_read(reg, ret);
     return ret;
 }
@@ -3058,7 +3100,13 @@ static void xhci_runtime_write(void *ptr, hwaddr reg,
         trace_usb_xhci_unimplemented("runtime write", reg);
         return;
     }
+
     v = (reg - 0x20) / 0x20;
+    if (v >= xhci->numintrs) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "xhci: write to nonexistent interrupter %i\n", v);
+        return;
+    }
     intr = &xhci->intr[v];
 
     switch (reg & 0x1f) {
@@ -3605,17 +3653,16 @@ const VMStateDescription vmstate_xhci = {
     }
 };
 
-static Property xhci_properties[] = {
+static const Property xhci_properties[] = {
     DEFINE_PROP_BIT("streams", XHCIState, flags,
                     XHCI_FLAG_ENABLE_STREAMS, true),
     DEFINE_PROP_UINT32("p2",    XHCIState, numports_2, 4),
     DEFINE_PROP_UINT32("p3",    XHCIState, numports_3, 4),
     DEFINE_PROP_LINK("host",    XHCIState, hostOpaque, TYPE_DEVICE,
                      DeviceState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void xhci_class_init(ObjectClass *klass, void *data)
+static void xhci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

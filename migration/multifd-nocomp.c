@@ -11,27 +11,53 @@
  */
 
 #include "qemu/osdep.h"
-#include "exec/ramblock.h"
+#include "system/ramblock.h"
 #include "exec/target_page.h"
 #include "file.h"
+#include "migration-stats.h"
 #include "multifd.h"
+#include "multifd-colo.h"
 #include "options.h"
+#include "migration.h"
+#include "ram.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "trace.h"
+#include "qemu-file.h"
 
 static MultiFDSendData *multifd_ram_send;
 
-size_t multifd_ram_payload_size(void)
+static int multifd_ram_round_notify(NotifierWithReturn *n G_GNUC_UNUSED,
+                                    void *data, Error **errp)
 {
-    uint32_t n = multifd_ram_page_count();
+    RAMRoundNotifyData *round_data = data;
+    QEMUFile *f = round_data->file;
+    int ret;
 
-    /*
-     * We keep an array of page offsets at the end of MultiFDPages_t,
-     * add space for it in the allocation.
-     */
-    return sizeof(MultiFDPages_t) + n * sizeof(ram_addr_t);
+    if (!multifd_ram_sync_per_round()) {
+        return 0;
+    }
+
+    ret = multifd_ram_flush_and_sync(f);
+    if (ret < 0) {
+        error_setg(errp, "multifd RAM round synchronization failed");
+    }
+    return ret;
+}
+
+static NotifierWithReturn multifd_ram_round_notifier = {
+    .notify = multifd_ram_round_notify,
+};
+
+void multifd_ram_payload_alloc(MultiFDPages_t *pages)
+{
+    pages->offset = g_new0(ram_addr_t, multifd_ram_page_count());
+}
+
+void multifd_ram_payload_free(MultiFDPages_t *pages)
+{
+    g_clear_pointer(&pages->offset, g_free);
 }
 
 void multifd_ram_save_setup(void)
@@ -41,8 +67,7 @@ void multifd_ram_save_setup(void)
 
 void multifd_ram_save_cleanup(void)
 {
-    g_free(multifd_ram_send);
-    multifd_ram_send = NULL;
+    g_clear_pointer(&multifd_ram_send, multifd_send_data_free);
 }
 
 static void multifd_set_file_bitmap(MultiFDSendParams *p)
@@ -82,7 +107,13 @@ static void multifd_nocomp_send_cleanup(MultiFDSendParams *p, Error **errp)
 {
     g_free(p->iov);
     p->iov = NULL;
-    return;
+}
+
+static void multifd_ram_prepare_header(MultiFDSendParams *p)
+{
+    p->iov[0].iov_len = p->packet_len;
+    p->iov[0].iov_base = p->packet;
+    p->iovs_num++;
 }
 
 static void multifd_send_prepare_iovs(MultiFDSendParams *p)
@@ -118,7 +149,7 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
          * Only !zerocopy needs the header in IOV; zerocopy will
          * send it separately.
          */
-        multifd_send_prepare_header(p);
+        multifd_ram_prepare_header(p);
     }
 
     multifd_send_prepare_iovs(p);
@@ -133,6 +164,8 @@ static int multifd_nocomp_send_prepare(MultiFDSendParams *p, Error **errp)
         if (ret != 0) {
             return -1;
         }
+
+        qatomic_add(&mig_stats.multifd_bytes, p->packet_len);
     }
 
     return 0;
@@ -260,7 +293,6 @@ int multifd_ram_unfill_packet(MultiFDRecvParams *p, Error **errp)
         return -1;
     }
 
-    p->host = p->block->host;
     for (i = 0; i < p->normal_num; i++) {
         uint64_t offset = be64_to_cpu(packet->offset[i]);
 
@@ -283,6 +315,14 @@ int multifd_ram_unfill_packet(MultiFDRecvParams *p, Error **errp)
             return -1;
         }
         p->zero[i] = offset;
+    }
+
+    if (migrate_colo()) {
+        multifd_colo_prepare_recv(p);
+        assert(p->block->colo_cache);
+        p->host = p->block->colo_cache;
+    } else {
+        p->host = p->block->host;
     }
 
     return 0;
@@ -343,9 +383,54 @@ retry:
     return true;
 }
 
-int multifd_ram_flush_and_sync(void)
+/*
+ * We have two modes for multifd flushes:
+ *
+ * - Per-section mode: this is the legacy way to flush, it requires one
+ *   MULTIFD_FLAG_SYNC message for each RAM_SAVE_FLAG_EOS.
+ *
+ * - Per-round mode: this is the modern way to flush, it requires one
+ *   MULTIFD_FLAG_SYNC message only for each round of RAM scan.  Normally
+ *   it's paired with a new RAM_SAVE_FLAG_MULTIFD_FLUSH message in network
+ *   based migrations.
+ *
+ * One thing to mention is mapped-ram always use the modern way to sync.
+ */
+
+/* Do we need a per-section multifd flush (legacy way)? */
+bool multifd_ram_sync_per_section(void)
 {
     if (!migrate_multifd()) {
+        return false;
+    }
+
+    if (migrate_mapped_ram()) {
+        return false;
+    }
+
+    return migrate_multifd_flush_after_each_section();
+}
+
+/* Do we need a per-round multifd flush (modern way)? */
+bool multifd_ram_sync_per_round(void)
+{
+    if (!migrate_multifd()) {
+        return false;
+    }
+
+    if (migrate_mapped_ram()) {
+        return true;
+    }
+
+    return !migrate_multifd_flush_after_each_section();
+}
+
+int multifd_ram_flush_and_sync(QEMUFile *f)
+{
+    MultiFDSyncReq req;
+    int ret;
+
+    if (!migrate_multifd() || migration_in_postcopy()) {
         return 0;
     }
 
@@ -356,13 +441,37 @@ int multifd_ram_flush_and_sync(void)
         }
     }
 
-    return multifd_send_sync_main();
+    /* File migrations only need to sync with threads */
+    req = migrate_mapped_ram() ? MULTIFD_SYNC_LOCAL : MULTIFD_SYNC_ALL;
+
+    ret = multifd_send_sync_main(req);
+    if (ret) {
+        return ret;
+    }
+
+    /* If we don't need to sync with remote at all, nothing else to do */
+    if (req == MULTIFD_SYNC_LOCAL) {
+        return 0;
+    }
+
+    /*
+     * Old QEMUs don't understand RAM_SAVE_FLAG_MULTIFD_FLUSH, it relies
+     * on RAM_SAVE_FLAG_EOS instead.
+     */
+    if (migrate_multifd_flush_after_each_section()) {
+        return 0;
+    }
+
+    qemu_put_be64(f, RAM_SAVE_FLAG_MULTIFD_FLUSH);
+    qemu_fflush(f);
+
+    return 0;
 }
 
 bool multifd_send_prepare_common(MultiFDSendParams *p)
 {
     MultiFDPages_t *pages = &p->data->u.ram;
-    multifd_send_prepare_header(p);
+    multifd_ram_prepare_header(p);
     multifd_send_zero_page_detect(p);
 
     if (!pages->normal_num) {
@@ -385,6 +494,7 @@ static const MultiFDMethods multifd_nocomp_ops = {
 static void multifd_nocomp_register(void)
 {
     multifd_register_ops(MULTIFD_COMPRESSION_NONE, &multifd_nocomp_ops);
+    ram_round_add_notifier(&multifd_ram_round_notifier);
 }
 
 migration_init(multifd_nocomp_register);

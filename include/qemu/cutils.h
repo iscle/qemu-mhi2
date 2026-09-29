@@ -101,22 +101,7 @@ int strstart(const char *str, const char *val, const char **ptr);
  *          false otherwise.
  */
 int stristart(const char *str, const char *val, const char **ptr);
-/**
- * qemu_strnlen:
- * @s: string
- * @max_len: maximum number of bytes in @s to scan
- *
- * Return the length of the string @s, like strlen(), but do not
- * examine more than @max_len bytes of the memory pointed to by @s.
- * If no NUL terminator is found within @max_len bytes, then return
- * @max_len instead.
- *
- * This function has the same behaviour as the POSIX strnlen()
- * function.
- *
- * Returns: length of @s in bytes, or @max_len, whichever is smaller.
- */
-int qemu_strnlen(const char *s, int max_len);
+
 /**
  * qemu_strsep:
  * @input: pointer to string to parse
@@ -301,5 +286,20 @@ GString *qemu_hexdump_line(GString *str, const void *buf, size_t len,
 
 void qemu_hexdump(FILE *fp, const char *prefix,
                   const void *bufptr, size_t size);
+
+/**
+ * qemu_hexdump_to_buffer:
+ * @buffer: output string buffer
+ * @buffer_size: amount of available space in buffer. Must be at least
+ *               data_size*2+1.
+ * @data: input bytes
+ * @data_size: number of bytes in data
+ *
+ * Converts the @data_size bytes in @data into hex digit pairs, writing them to
+ * @buffer. Finally, a nul terminating character is written; @buffer therefore
+ * needs space for (data_size*2+1) chars.
+ */
+void qemu_hexdump_to_buffer(char *restrict buffer, size_t buffer_size,
+                            const uint8_t *restrict data, size_t data_size);
 
 #endif

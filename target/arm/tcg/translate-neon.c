@@ -118,11 +118,24 @@ static void neon_store_element64(int reg, int ele, MemOp size, TCGv_i64 var)
     }
 }
 
+/*
+ * Return true if a Neon insn is OK to access the registers indicated
+ * by regmask, false if it should UNDEF. This checks whether the
+ * D16-D31 regs are implemented by the CPU.
+ * Note that Neon insns accessing D16..D31 do not need to check D32DIS.
+ *
+ * @regmask should be the logical OR of the Dregs being accessed.
+ */
+static bool neon_dregs_ok(DisasContext *s, int dregmask)
+{
+    return !(dregmask & s->invalid_neon_dreg_mask);
+}
+
 static bool do_neon_ddda(DisasContext *s, int q, int vd, int vn, int vm,
                          int data, gen_helper_gvec_4 *fn_gvec)
 {
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (((vd | vn | vm) & 0x10) && !dc_isar_feature(aa32_simd_r32, s)) {
+    if (!neon_dregs_ok(s, vd | vn | vm)) {
         return false;
     }
 
@@ -135,7 +148,7 @@ static bool do_neon_ddda(DisasContext *s, int q, int vd, int vn, int vm,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -152,7 +165,7 @@ static bool do_neon_ddda_env(DisasContext *s, int q, int vd, int vn, int vm,
                              int data, gen_helper_gvec_4_ptr *fn_gvec)
 {
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (((vd | vn | vm) & 0x10) && !dc_isar_feature(aa32_simd_r32, s)) {
+    if (!neon_dregs_ok(s, vd | vn | vm)) {
         return false;
     }
 
@@ -165,7 +178,7 @@ static bool do_neon_ddda_env(DisasContext *s, int q, int vd, int vn, int vm,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -184,7 +197,7 @@ static bool do_neon_ddda_fpst(DisasContext *s, int q, int vd, int vn, int vm,
                               gen_helper_gvec_4_ptr *fn_gvec_ptr)
 {
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (((vd | vn | vm) & 0x10) && !dc_isar_feature(aa32_simd_r32, s)) {
+    if (!neon_dregs_ok(s, vd | vn | vm)) {
         return false;
     }
 
@@ -197,7 +210,7 @@ static bool do_neon_ddda_fpst(DisasContext *s, int q, int vd, int vn, int vm,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -240,8 +253,7 @@ static bool trans_VCADD(DisasContext *s, arg_VCADD *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -249,7 +261,7 @@ static bool trans_VCADD(DisasContext *s, arg_VCADD *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -271,7 +283,7 @@ static bool trans_VSDOT(DisasContext *s, arg_VSDOT *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 7, a->vd, a->vn, a->vm, 0,
-                        gen_helper_gvec_sdot_b);
+                        gen_helper_gvec_sdot_4b);
 }
 
 static bool trans_VUDOT(DisasContext *s, arg_VUDOT *a)
@@ -280,7 +292,7 @@ static bool trans_VUDOT(DisasContext *s, arg_VUDOT *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 7, a->vd, a->vn, a->vm, 0,
-                        gen_helper_gvec_udot_b);
+                        gen_helper_gvec_udot_4b);
 }
 
 static bool trans_VUSDOT(DisasContext *s, arg_VUSDOT *a)
@@ -289,7 +301,7 @@ static bool trans_VUSDOT(DisasContext *s, arg_VUSDOT *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 7, a->vd, a->vn, a->vm, 0,
-                        gen_helper_gvec_usdot_b);
+                        gen_helper_gvec_usdot_4b);
 }
 
 static bool trans_VDOT_b16(DisasContext *s, arg_VDOT_b16 *a)
@@ -310,8 +322,7 @@ static bool trans_VFML(DisasContext *s, arg_VFML *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        (a->vd & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd)) {
         return false;
     }
 
@@ -319,7 +330,7 @@ static bool trans_VFML(DisasContext *s, arg_VFML *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -356,7 +367,7 @@ static bool trans_VSDOT_scalar(DisasContext *s, arg_VSDOT_scalar *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 6, a->vd, a->vn, a->vm, a->index,
-                        gen_helper_gvec_sdot_idx_b);
+                        gen_helper_gvec_sdot_idx_4b);
 }
 
 static bool trans_VUDOT_scalar(DisasContext *s, arg_VUDOT_scalar *a)
@@ -365,7 +376,7 @@ static bool trans_VUDOT_scalar(DisasContext *s, arg_VUDOT_scalar *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 6, a->vd, a->vn, a->vm, a->index,
-                        gen_helper_gvec_udot_idx_b);
+                        gen_helper_gvec_udot_idx_4b);
 }
 
 static bool trans_VUSDOT_scalar(DisasContext *s, arg_VUSDOT_scalar *a)
@@ -374,7 +385,7 @@ static bool trans_VUSDOT_scalar(DisasContext *s, arg_VUSDOT_scalar *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 6, a->vd, a->vn, a->vm, a->index,
-                        gen_helper_gvec_usdot_idx_b);
+                        gen_helper_gvec_usdot_idx_4b);
 }
 
 static bool trans_VSUDOT_scalar(DisasContext *s, arg_VSUDOT_scalar *a)
@@ -383,7 +394,7 @@ static bool trans_VSUDOT_scalar(DisasContext *s, arg_VSUDOT_scalar *a)
         return false;
     }
     return do_neon_ddda(s, a->q * 6, a->vd, a->vn, a->vm, a->index,
-                        gen_helper_gvec_sudot_idx_b);
+                        gen_helper_gvec_sudot_idx_4b);
 }
 
 static bool trans_VDOT_b16_scal(DisasContext *s, arg_VDOT_b16_scal *a)
@@ -398,14 +409,14 @@ static bool trans_VDOT_b16_scal(DisasContext *s, arg_VDOT_b16_scal *a)
 static bool trans_VFML_scalar(DisasContext *s, arg_VFML_scalar *a)
 {
     int opr_sz;
+    int dregmask = a->vd | (a->q ? a->vn : 0);
 
     if (!dc_isar_feature(aa32_fhm, s)) {
         return false;
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd & 0x10) || (a->q && (a->vn & 0x10)))) {
+    if (!neon_dregs_ok(s, dregmask)) {
         return false;
     }
 
@@ -413,7 +424,7 @@ static bool trans_VFML_scalar(DisasContext *s, arg_VFML_scalar *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -478,7 +489,7 @@ static bool trans_VLDST_multiple(DisasContext *s, arg_VLDST_multiple *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist */
-    if (!dc_isar_feature(aa32_simd_r32, s) && (a->vd & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd)) {
         return false;
     }
     if (a->itype > 10) {
@@ -506,7 +517,7 @@ static bool trans_VLDST_multiple(DisasContext *s, arg_VLDST_multiple *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -520,7 +531,7 @@ static bool trans_VLDST_multiple(DisasContext *s, arg_VLDST_multiple *a)
     if (a->align) {
         align = pow2_align(a->align + 2); /* 4 ** a->align */
     } else {
-        align = s->align_mem ? MO_ALIGN : 0;
+        align = MO_ALIGN | (s->align_mem ? 0 : MO_ALIGN_TLB_ONLY);
     }
 
     /*
@@ -580,7 +591,7 @@ static bool trans_VLD_all_lanes(DisasContext *s, arg_VLD_all_lanes *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist */
-    if (!dc_isar_feature(aa32_simd_r32, s) && (a->vd & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd)) {
         return false;
     }
 
@@ -617,7 +628,7 @@ static bool trans_VLD_all_lanes(DisasContext *s, arg_VLD_all_lanes *a)
         }
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -672,7 +683,7 @@ static bool trans_VLDST_single(DisasContext *s, arg_VLDST_single *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist */
-    if (!dc_isar_feature(aa32_simd_r32, s) && (a->vd & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd)) {
         return false;
     }
 
@@ -714,7 +725,7 @@ static bool trans_VLDST_single(DisasContext *s, arg_VLDST_single *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -789,8 +800,7 @@ static bool do_3same(DisasContext *s, arg_3same *a, GVecGen3Fn fn)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -798,7 +808,7 @@ static bool do_3same(DisasContext *s, arg_3same *a, GVecGen3Fn fn)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1010,8 +1020,8 @@ DO_3S_FP_GVEC(VACGE, gen_helper_gvec_facge_s, gen_helper_gvec_facge_h)
 DO_3S_FP_GVEC(VACGT, gen_helper_gvec_facgt_s, gen_helper_gvec_facgt_h)
 DO_3S_FP_GVEC(VMAX, gen_helper_gvec_fmax_s, gen_helper_gvec_fmax_h)
 DO_3S_FP_GVEC(VMIN, gen_helper_gvec_fmin_s, gen_helper_gvec_fmin_h)
-DO_3S_FP_GVEC(VMLA, gen_helper_gvec_fmla_s, gen_helper_gvec_fmla_h)
-DO_3S_FP_GVEC(VMLS, gen_helper_gvec_fmls_s, gen_helper_gvec_fmls_h)
+DO_3S_FP_GVEC(VMLA, gen_helper_gvec_fmla_nf_s, gen_helper_gvec_fmla_nf_h)
+DO_3S_FP_GVEC(VMLS, gen_helper_gvec_fmls_nf_s, gen_helper_gvec_fmls_nf_h)
 DO_3S_FP_GVEC(VFMA, gen_helper_gvec_vfma_s, gen_helper_gvec_vfma_h)
 DO_3S_FP_GVEC(VFMS, gen_helper_gvec_vfms_s, gen_helper_gvec_vfms_h)
 DO_3S_FP_GVEC(VRECPS, gen_helper_gvec_recps_nf_s, gen_helper_gvec_recps_nf_h)
@@ -1067,8 +1077,7 @@ static bool do_vector_2sh(DisasContext *s, arg_2reg_shift *a, GVecGen2iFn *fn)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -1076,7 +1085,7 @@ static bool do_vector_2sh(DisasContext *s, arg_2reg_shift *a, GVecGen2iFn *fn)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1117,8 +1126,7 @@ static bool do_2shift_narrow_64(DisasContext *s, arg_2reg_shift *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -1126,7 +1134,7 @@ static bool do_2shift_narrow_64(DisasContext *s, arg_2reg_shift *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1168,8 +1176,7 @@ static bool do_2shift_narrow_32(DisasContext *s, arg_2reg_shift *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -1177,7 +1184,7 @@ static bool do_2shift_narrow_32(DisasContext *s, arg_2reg_shift *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1293,8 +1300,7 @@ static bool do_vshll_2sh(DisasContext *s, arg_2reg_shift *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -1302,7 +1308,7 @@ static bool do_vshll_2sh(DisasContext *s, arg_2reg_shift *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1383,8 +1389,7 @@ static bool do_fp_2sh(DisasContext *s, arg_2reg_shift *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -1392,7 +1397,7 @@ static bool do_fp_2sh(DisasContext *s, arg_2reg_shift *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1409,13 +1414,13 @@ static bool do_fp_2sh(DisasContext *s, arg_2reg_shift *a,
 
 DO_FP_2SH(VCVT_SF, gen_helper_gvec_vcvt_sf)
 DO_FP_2SH(VCVT_UF, gen_helper_gvec_vcvt_uf)
-DO_FP_2SH(VCVT_FS, gen_helper_gvec_vcvt_fs)
-DO_FP_2SH(VCVT_FU, gen_helper_gvec_vcvt_fu)
+DO_FP_2SH(VCVT_FS, gen_helper_gvec_vcvt_rz_fs)
+DO_FP_2SH(VCVT_FU, gen_helper_gvec_vcvt_rz_fu)
 
 DO_FP_2SH(VCVT_SH, gen_helper_gvec_vcvt_sh)
 DO_FP_2SH(VCVT_UH, gen_helper_gvec_vcvt_uh)
-DO_FP_2SH(VCVT_HS, gen_helper_gvec_vcvt_hs)
-DO_FP_2SH(VCVT_HU, gen_helper_gvec_vcvt_hu)
+DO_FP_2SH(VCVT_HS, gen_helper_gvec_vcvt_rz_hs)
+DO_FP_2SH(VCVT_HU, gen_helper_gvec_vcvt_rz_hu)
 
 static bool do_1reg_imm(DisasContext *s, arg_1reg_imm *a,
                         GVecGen2iFn *fn)
@@ -1428,7 +1433,7 @@ static bool do_1reg_imm(DisasContext *s, arg_1reg_imm *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) && (a->vd & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd)) {
         return false;
     }
 
@@ -1436,7 +1441,7 @@ static bool do_1reg_imm(DisasContext *s, arg_1reg_imm *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1485,8 +1490,7 @@ static bool do_prewiden_3d(DisasContext *s, arg_3diff *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -1499,7 +1503,7 @@ static bool do_prewiden_3d(DisasContext *s, arg_3diff *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1560,8 +1564,8 @@ static bool do_prewiden_3d(DisasContext *s, arg_3diff *a,
             NULL, NULL,                                                 \
         };                                                              \
         static NeonGenTwo64OpFn * const addfn[] = {                     \
-            gen_helper_neon_##OP##l_u16,                                \
-            gen_helper_neon_##OP##l_u32,                                \
+            tcg_gen_vec_##OP##16_i64,                                   \
+            tcg_gen_vec_##OP##32_i64,                                   \
             tcg_gen_##OP##_i64,                                         \
             NULL,                                                       \
         };                                                              \
@@ -1592,8 +1596,7 @@ static bool do_narrow_3d(DisasContext *s, arg_3diff *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -1606,7 +1609,7 @@ static bool do_narrow_3d(DisasContext *s, arg_3diff *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1639,8 +1642,8 @@ static bool do_narrow_3d(DisasContext *s, arg_3diff *a,
     static bool trans_##INSN##_3d(DisasContext *s, arg_3diff *a)        \
     {                                                                   \
         static NeonGenTwo64OpFn * const addfn[] = {                     \
-            gen_helper_neon_##OP##l_u16,                                \
-            gen_helper_neon_##OP##l_u32,                                \
+            tcg_gen_vec_##OP##16_i64,                                   \
+            tcg_gen_vec_##OP##32_i64,                                   \
             tcg_gen_##OP##_i64,                                         \
             NULL,                                                       \
         };                                                              \
@@ -1682,8 +1685,7 @@ static bool do_long_3d(DisasContext *s, arg_3diff *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -1696,7 +1698,7 @@ static bool do_long_3d(DisasContext *s, arg_3diff *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -1761,8 +1763,8 @@ static bool trans_VABAL_S_3d(DisasContext *s, arg_3diff *a)
         NULL,
     };
     static NeonGenTwo64OpFn * const addfn[] = {
-        gen_helper_neon_addl_u16,
-        gen_helper_neon_addl_u32,
+        tcg_gen_vec_add16_i64,
+        tcg_gen_vec_add32_i64,
         tcg_gen_add_i64,
         NULL,
     };
@@ -1779,8 +1781,8 @@ static bool trans_VABAL_U_3d(DisasContext *s, arg_3diff *a)
         NULL,
     };
     static NeonGenTwo64OpFn * const addfn[] = {
-        gen_helper_neon_addl_u16,
-        gen_helper_neon_addl_u32,
+        tcg_gen_vec_add16_i64,
+        tcg_gen_vec_add32_i64,
         tcg_gen_add_i64,
         NULL,
     };
@@ -1840,8 +1842,8 @@ static bool trans_VMULL_U_3d(DisasContext *s, arg_3diff *a)
             NULL,                                                       \
         };                                                              \
         static NeonGenTwo64OpFn * const accfn[] = {                     \
-            gen_helper_neon_##ACC##l_u16,                               \
-            gen_helper_neon_##ACC##l_u32,                               \
+            tcg_gen_vec_##ACC##16_i64,                                  \
+            tcg_gen_vec_##ACC##32_i64,                                  \
             tcg_gen_##ACC##_i64,                                        \
             NULL,                                                       \
         };                                                              \
@@ -1944,8 +1946,7 @@ static bool trans_VMULL_P_3d(DisasContext *s, arg_3diff *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -1967,7 +1968,7 @@ static bool trans_VMULL_P_3d(DisasContext *s, arg_3diff *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2027,8 +2028,7 @@ static bool do_2scalar(DisasContext *s, arg_2scalar *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2041,7 +2041,7 @@ static bool do_2scalar(DisasContext *s, arg_2scalar *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2125,8 +2125,7 @@ static bool do_2scalar_fp_vec(DisasContext *s, arg_2scalar *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2139,7 +2138,7 @@ static bool do_2scalar_fp_vec(DisasContext *s, arg_2scalar *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2222,8 +2221,7 @@ static bool do_vqrdmlah_2sc(DisasContext *s, arg_2scalar *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2236,7 +2234,7 @@ static bool do_vqrdmlah_2sc(DisasContext *s, arg_2scalar *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2293,8 +2291,7 @@ static bool do_2scalar_long(DisasContext *s, arg_2scalar *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2307,7 +2304,7 @@ static bool do_2scalar_long(DisasContext *s, arg_2scalar *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2371,7 +2368,7 @@ static bool trans_VMULL_U_2sc(DisasContext *s, arg_2scalar *a)
         };                                                              \
         static NeonGenTwo64OpFn * const accfn[] = {                     \
             NULL,                                                       \
-            gen_helper_neon_##ACC##l_u32,                               \
+            tcg_gen_vec_##ACC##32_i64,                                  \
             tcg_gen_##ACC##_i64,                                        \
             NULL,                                                       \
         };                                                              \
@@ -2438,8 +2435,7 @@ static bool trans_VEXT(DisasContext *s, arg_VEXT *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2451,7 +2447,7 @@ static bool trans_VEXT(DisasContext *s, arg_VEXT *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2507,8 +2503,7 @@ static bool trans_VTBL(DisasContext *s, arg_VTBL *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vn | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vn | a->vm)) {
         return false;
     }
 
@@ -2520,7 +2515,7 @@ static bool trans_VTBL(DisasContext *s, arg_VTBL *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2546,8 +2541,7 @@ static bool trans_VDUP_scalar(DisasContext *s, arg_VDUP_scalar *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -2555,7 +2549,7 @@ static bool trans_VDUP_scalar(DisasContext *s, arg_VDUP_scalar *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2563,204 +2557,6 @@ static bool trans_VDUP_scalar(DisasContext *s, arg_VDUP_scalar *a)
                          neon_element_offset(a->vm, a->index, a->size),
                          a->q ? 16 : 8, a->q ? 16 : 8);
     return true;
-}
-
-static bool trans_VREV64(DisasContext *s, arg_VREV64 *a)
-{
-    int pass, half;
-    TCGv_i32 tmp[2];
-
-    if (!arm_dc_feature(s, ARM_FEATURE_NEON)) {
-        return false;
-    }
-
-    /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
-        return false;
-    }
-
-    if ((a->vd | a->vm) & a->q) {
-        return false;
-    }
-
-    if (a->size == 3) {
-        return false;
-    }
-
-    if (!vfp_access_check(s)) {
-        return true;
-    }
-
-    tmp[0] = tcg_temp_new_i32();
-    tmp[1] = tcg_temp_new_i32();
-
-    for (pass = 0; pass < (a->q ? 2 : 1); pass++) {
-        for (half = 0; half < 2; half++) {
-            read_neon_element32(tmp[half], a->vm, pass * 2 + half, MO_32);
-            switch (a->size) {
-            case 0:
-                tcg_gen_bswap32_i32(tmp[half], tmp[half]);
-                break;
-            case 1:
-                gen_swap_half(tmp[half], tmp[half]);
-                break;
-            case 2:
-                break;
-            default:
-                g_assert_not_reached();
-            }
-        }
-        write_neon_element32(tmp[1], a->vd, pass * 2, MO_32);
-        write_neon_element32(tmp[0], a->vd, pass * 2 + 1, MO_32);
-    }
-    return true;
-}
-
-static bool do_2misc_pairwise(DisasContext *s, arg_2misc *a,
-                              NeonGenWidenFn *widenfn,
-                              NeonGenTwo64OpFn *opfn,
-                              NeonGenTwo64OpFn *accfn)
-{
-    /*
-     * Pairwise long operations: widen both halves of the pair,
-     * combine the pairs with the opfn, and then possibly accumulate
-     * into the destination with the accfn.
-     */
-    int pass;
-
-    if (!arm_dc_feature(s, ARM_FEATURE_NEON)) {
-        return false;
-    }
-
-    /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
-        return false;
-    }
-
-    if ((a->vd | a->vm) & a->q) {
-        return false;
-    }
-
-    if (!widenfn) {
-        return false;
-    }
-
-    if (!vfp_access_check(s)) {
-        return true;
-    }
-
-    for (pass = 0; pass < a->q + 1; pass++) {
-        TCGv_i32 tmp;
-        TCGv_i64 rm0_64, rm1_64, rd_64;
-
-        rm0_64 = tcg_temp_new_i64();
-        rm1_64 = tcg_temp_new_i64();
-        rd_64 = tcg_temp_new_i64();
-
-        tmp = tcg_temp_new_i32();
-        read_neon_element32(tmp, a->vm, pass * 2, MO_32);
-        widenfn(rm0_64, tmp);
-        read_neon_element32(tmp, a->vm, pass * 2 + 1, MO_32);
-        widenfn(rm1_64, tmp);
-
-        opfn(rd_64, rm0_64, rm1_64);
-
-        if (accfn) {
-            TCGv_i64 tmp64 = tcg_temp_new_i64();
-            read_neon_element64(tmp64, a->vd, pass, MO_64);
-            accfn(rd_64, tmp64, rd_64);
-        }
-        write_neon_element64(rd_64, a->vd, pass, MO_64);
-    }
-    return true;
-}
-
-static bool trans_VPADDL_S(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenWidenFn * const widenfn[] = {
-        gen_helper_neon_widen_s8,
-        gen_helper_neon_widen_s16,
-        tcg_gen_ext_i32_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const opfn[] = {
-        gen_helper_neon_paddl_u16,
-        gen_helper_neon_paddl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-
-    return do_2misc_pairwise(s, a, widenfn[a->size], opfn[a->size], NULL);
-}
-
-static bool trans_VPADDL_U(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenWidenFn * const widenfn[] = {
-        gen_helper_neon_widen_u8,
-        gen_helper_neon_widen_u16,
-        tcg_gen_extu_i32_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const opfn[] = {
-        gen_helper_neon_paddl_u16,
-        gen_helper_neon_paddl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-
-    return do_2misc_pairwise(s, a, widenfn[a->size], opfn[a->size], NULL);
-}
-
-static bool trans_VPADAL_S(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenWidenFn * const widenfn[] = {
-        gen_helper_neon_widen_s8,
-        gen_helper_neon_widen_s16,
-        tcg_gen_ext_i32_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const opfn[] = {
-        gen_helper_neon_paddl_u16,
-        gen_helper_neon_paddl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const accfn[] = {
-        gen_helper_neon_addl_u16,
-        gen_helper_neon_addl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-
-    return do_2misc_pairwise(s, a, widenfn[a->size], opfn[a->size],
-                             accfn[a->size]);
-}
-
-static bool trans_VPADAL_U(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenWidenFn * const widenfn[] = {
-        gen_helper_neon_widen_u8,
-        gen_helper_neon_widen_u16,
-        tcg_gen_extu_i32_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const opfn[] = {
-        gen_helper_neon_paddl_u16,
-        gen_helper_neon_paddl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-    static NeonGenTwo64OpFn * const accfn[] = {
-        gen_helper_neon_addl_u16,
-        gen_helper_neon_addl_u32,
-        tcg_gen_add_i64,
-        NULL,
-    };
-
-    return do_2misc_pairwise(s, a, widenfn[a->size], opfn[a->size],
-                             accfn[a->size]);
 }
 
 typedef void ZipFn(TCGv_ptr, TCGv_ptr);
@@ -2775,8 +2571,7 @@ static bool do_zip_uzp(DisasContext *s, arg_2misc *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -2789,7 +2584,7 @@ static bool do_zip_uzp(DisasContext *s, arg_2misc *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2845,8 +2640,7 @@ static bool do_vmovn(DisasContext *s, arg_2misc *a,
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -2858,7 +2652,7 @@ static bool do_vmovn(DisasContext *s, arg_2misc *a,
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2909,8 +2703,7 @@ static bool trans_VSHLL(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -2922,7 +2715,7 @@ static bool trans_VSHLL(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2953,8 +2746,7 @@ static bool trans_VCVT_B16_F32(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -2962,7 +2754,7 @@ static bool trans_VCVT_B16_F32(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -2993,8 +2785,7 @@ static bool trans_VCVT_F16_F32(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3002,7 +2793,7 @@ static bool trans_VCVT_F16_F32(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -3039,8 +2830,7 @@ static bool trans_VCVT_F32_F16(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3048,7 +2838,7 @@ static bool trans_VCVT_F32_F16(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -3085,8 +2875,7 @@ static bool do_2misc_vec(DisasContext *s, arg_2misc *a, GVecGen2Fn *fn)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3098,7 +2887,7 @@ static bool do_2misc_vec(DisasContext *s, arg_2misc *a, GVecGen2Fn *fn)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -3120,6 +2909,13 @@ DO_2MISC_VEC(VCGT0, gen_gvec_cgt0)
 DO_2MISC_VEC(VCLE0, gen_gvec_cle0)
 DO_2MISC_VEC(VCGE0, gen_gvec_cge0)
 DO_2MISC_VEC(VCLT0, gen_gvec_clt0)
+DO_2MISC_VEC(VCLS, gen_gvec_cls)
+DO_2MISC_VEC(VCLZ, gen_gvec_clz)
+DO_2MISC_VEC(VREV64, gen_gvec_rev64)
+DO_2MISC_VEC(VPADDL_S, gen_gvec_saddlp)
+DO_2MISC_VEC(VPADDL_U, gen_gvec_uaddlp)
+DO_2MISC_VEC(VPADAL_S, gen_gvec_sadalp)
+DO_2MISC_VEC(VPADAL_U, gen_gvec_uadalp)
 
 static bool trans_VMVN(DisasContext *s, arg_2misc *a)
 {
@@ -3127,6 +2923,30 @@ static bool trans_VMVN(DisasContext *s, arg_2misc *a)
         return false;
     }
     return do_2misc_vec(s, a, tcg_gen_gvec_not);
+}
+
+static bool trans_VCNT(DisasContext *s, arg_2misc *a)
+{
+    if (a->size != 0) {
+        return false;
+    }
+    return do_2misc_vec(s, a, gen_gvec_cnt);
+}
+
+static bool trans_VREV16(DisasContext *s, arg_2misc *a)
+{
+    if (a->size != 0) {
+        return false;
+    }
+    return do_2misc_vec(s, a, gen_gvec_rev16);
+}
+
+static bool trans_VREV32(DisasContext *s, arg_2misc *a)
+{
+    if (a->size != 0 && a->size != 1) {
+        return false;
+    }
+    return do_2misc_vec(s, a, gen_gvec_rev32);
 }
 
 #define WRAP_2M_3_OOL_FN(WRAPNAME, FUNC, DATA)                          \
@@ -3182,8 +3002,7 @@ static bool do_2misc(DisasContext *s, arg_2misc *a, NeonGenOneOpFn *fn)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3195,7 +3014,7 @@ static bool do_2misc(DisasContext *s, arg_2misc *a, NeonGenOneOpFn *fn)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -3208,68 +3027,6 @@ static bool do_2misc(DisasContext *s, arg_2misc *a, NeonGenOneOpFn *fn)
     return true;
 }
 
-static bool trans_VREV32(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenOneOpFn * const fn[] = {
-        tcg_gen_bswap32_i32,
-        gen_swap_half,
-        NULL,
-        NULL,
-    };
-    return do_2misc(s, a, fn[a->size]);
-}
-
-static bool trans_VREV16(DisasContext *s, arg_2misc *a)
-{
-    if (a->size != 0) {
-        return false;
-    }
-    return do_2misc(s, a, gen_rev16);
-}
-
-static bool trans_VCLS(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenOneOpFn * const fn[] = {
-        gen_helper_neon_cls_s8,
-        gen_helper_neon_cls_s16,
-        gen_helper_neon_cls_s32,
-        NULL,
-    };
-    return do_2misc(s, a, fn[a->size]);
-}
-
-static void do_VCLZ_32(TCGv_i32 rd, TCGv_i32 rm)
-{
-    tcg_gen_clzi_i32(rd, rm, 32);
-}
-
-static bool trans_VCLZ(DisasContext *s, arg_2misc *a)
-{
-    static NeonGenOneOpFn * const fn[] = {
-        gen_helper_neon_clz_u8,
-        gen_helper_neon_clz_u16,
-        do_VCLZ_32,
-        NULL,
-    };
-    return do_2misc(s, a, fn[a->size]);
-}
-
-static bool trans_VCNT(DisasContext *s, arg_2misc *a)
-{
-    if (a->size != 0) {
-        return false;
-    }
-    return do_2misc(s, a, gen_helper_neon_cnt_u8);
-}
-
-static void gen_VABS_F(unsigned vece, uint32_t rd_ofs, uint32_t rm_ofs,
-                       uint32_t oprsz, uint32_t maxsz)
-{
-    tcg_gen_gvec_andi(vece, rd_ofs, rm_ofs,
-                      vece == MO_16 ? 0x7fff : 0x7fffffff,
-                      oprsz, maxsz);
-}
-
 static bool trans_VABS_F(DisasContext *s, arg_2misc *a)
 {
     if (a->size == MO_16) {
@@ -3279,15 +3036,7 @@ static bool trans_VABS_F(DisasContext *s, arg_2misc *a)
     } else if (a->size != MO_32) {
         return false;
     }
-    return do_2misc_vec(s, a, gen_VABS_F);
-}
-
-static void gen_VNEG_F(unsigned vece, uint32_t rd_ofs, uint32_t rm_ofs,
-                       uint32_t oprsz, uint32_t maxsz)
-{
-    tcg_gen_gvec_xori(vece, rd_ofs, rm_ofs,
-                      vece == MO_16 ? 0x8000 : 0x80000000,
-                      oprsz, maxsz);
+    return do_2misc_vec(s, a, gen_gvec_fabs);
 }
 
 static bool trans_VNEG_F(DisasContext *s, arg_2misc *a)
@@ -3299,7 +3048,7 @@ static bool trans_VNEG_F(DisasContext *s, arg_2misc *a)
     } else if (a->size != MO_32) {
         return false;
     }
-    return do_2misc_vec(s, a, gen_VNEG_F);
+    return do_2misc_vec(s, a, gen_gvec_fneg);
 }
 
 static bool trans_VRECPE(DisasContext *s, arg_2misc *a)
@@ -3307,7 +3056,7 @@ static bool trans_VRECPE(DisasContext *s, arg_2misc *a)
     if (a->size != 2) {
         return false;
     }
-    return do_2misc(s, a, gen_helper_recpe_u32);
+    return do_2misc_vec(s, a, gen_gvec_urecpe);
 }
 
 static bool trans_VRSQRTE(DisasContext *s, arg_2misc *a)
@@ -3315,7 +3064,7 @@ static bool trans_VRSQRTE(DisasContext *s, arg_2misc *a)
     if (a->size != 2) {
         return false;
     }
-    return do_2misc(s, a, gen_helper_rsqrte_u32);
+    return do_2misc_vec(s, a, gen_gvec_ursqrte);
 }
 
 #define WRAP_1OP_ENV_FN(WRAPNAME, FUNC) \
@@ -3456,8 +3205,7 @@ static bool trans_VSWP(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3469,7 +3217,7 @@ static bool trans_VSWP(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 
@@ -3529,8 +3277,7 @@ static bool trans_VTRN(DisasContext *s, arg_2misc *a)
     }
 
     /* UNDEF accesses to D16-D31 if they don't exist. */
-    if (!dc_isar_feature(aa32_simd_r32, s) &&
-        ((a->vd | a->vm) & 0x10)) {
+    if (!neon_dregs_ok(s, a->vd | a->vm)) {
         return false;
     }
 
@@ -3542,7 +3289,7 @@ static bool trans_VTRN(DisasContext *s, arg_2misc *a)
         return false;
     }
 
-    if (!vfp_access_check(s)) {
+    if (!neon_access_check(s)) {
         return true;
     }
 

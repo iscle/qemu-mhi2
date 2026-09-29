@@ -2,7 +2,7 @@
 #define HW_INTC_TEGRA30_ICTLR_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 /* The legacy interrupt controller has up to 5 banks of 32 interrupts. */
 #define TEGRA30_ICTLR_BANKS        5

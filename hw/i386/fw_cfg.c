@@ -4,7 +4,7 @@
  * Copyright (c) 2019 Red Hat, Inc.
  *
  * Author:
- *   Philippe Mathieu-Daudé <philmd@redhat.com>
+ *   Philippe Mathieu-Daudé
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -13,7 +13,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/numa.h"
+#include "system/mshv.h"
+#include "system/whpx.h"
+#include "system/numa.h"
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/aml-build.h"
 #include "hw/firmware/smbios.h"
@@ -26,7 +28,9 @@
 #include CONFIG_DEVICES
 #include "target/i386/cpu.h"
 
-struct hpet_fw_config hpet_cfg = {.count = UINT8_MAX};
+#if !defined(CONFIG_HPET)
+struct hpet_fw_config hpet_fw_cfg = {.count = UINT8_MAX};
+#endif
 
 const char *fw_cfg_arch_key_name(uint16_t key)
 {
@@ -89,7 +93,7 @@ void fw_cfg_build_smbios(PCMachineState *pcms, FWCfgState *fw_cfg,
 
     /* build the array of physical mem area from e820 table */
     nr_e820 = e820_get_table(NULL);
-    mem_array = g_malloc0(sizeof(*mem_array) * nr_e820);
+    mem_array = g_new0(struct smbios_phys_mem_area, nr_e820);
     for (i = 0, array_count = 0; i < nr_e820; i++) {
         uint64_t addr, len;
 
@@ -125,8 +129,7 @@ FWCfgState *fw_cfg_arch_create(MachineState *ms,
     const CPUArchIdList *cpus = mc->possible_cpu_arch_ids(ms);
     int nb_numa_nodes = ms->numa_state->num_nodes;
 
-    fw_cfg = fw_cfg_init_io_dma(FW_CFG_IO_BASE, FW_CFG_IO_BASE + 4,
-                                &address_space_memory);
+    fw_cfg = fw_cfg_init_io_dma(FW_CFG_IO_BASE, &address_space_memory);
     fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, boot_cpus);
 
     /* FW_CFG_MAX_CPUS is a bit confusing/problematic on x86:
@@ -143,13 +146,13 @@ FWCfgState *fw_cfg_arch_create(MachineState *ms,
      */
     fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, apic_id_limit);
     fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, ms->ram_size);
-#ifdef CONFIG_ACPI
-    fw_cfg_add_bytes(fw_cfg, FW_CFG_ACPI_TABLES,
-                     acpi_tables, acpi_tables_len);
-#endif
+    if (acpi_builtin()) {
+        fw_cfg_add_bytes(fw_cfg, FW_CFG_ACPI_TABLES,
+                         acpi_tables, acpi_tables_len);
+    }
     fw_cfg_add_i32(fw_cfg, FW_CFG_IRQ0_OVERRIDE, 1);
 
-    fw_cfg_add_bytes(fw_cfg, FW_CFG_HPET, &hpet_cfg, sizeof(hpet_cfg));
+    fw_cfg_add_bytes(fw_cfg, FW_CFG_HPET, &hpet_fw_cfg, sizeof(hpet_fw_cfg));
     /* allocate memory for the NUMA channel: one (64bit) word for the number
      * of nodes, one word for each VCPU->node and one word for each node to
      * hold the amount of memory.
@@ -181,8 +184,15 @@ void fw_cfg_build_feature_control(MachineState *ms, FWCfgState *fw_cfg)
     uint64_t *val;
 
     cpu_x86_cpuid(env, 1, 0, &unused, &unused, &ecx, &edx);
-    if (ecx & CPUID_EXT_VMX) {
-        feature_control_bits |= FEATURE_CONTROL_VMXON_ENABLED_OUTSIDE_SMX;
+
+    /*
+     * Hyper-V in 26100 disallows this bit to be set.
+     * Otherwise a #GP gets raised.
+     */
+    if (!(whpx_enabled())) {
+        if (ecx & CPUID_EXT_VMX) {
+            feature_control_bits |= FEATURE_CONTROL_VMXON_ENABLED_OUTSIDE_SMX;
+        }
     }
 
     if ((edx & (CPUID_EXT2_MCE | CPUID_EXT2_MCA)) ==
@@ -205,7 +215,7 @@ void fw_cfg_build_feature_control(MachineState *ms, FWCfgState *fw_cfg)
         return;
     }
 
-    val = g_malloc(sizeof(*val));
+    val = g_new(uint64_t, 1);
     *val = cpu_to_le64(feature_control_bits | FEATURE_CONTROL_LOCKED);
     fw_cfg_add_file(fw_cfg, "etc/msr_feature_control", val, sizeof(*val));
 }
@@ -213,18 +223,18 @@ void fw_cfg_build_feature_control(MachineState *ms, FWCfgState *fw_cfg)
 #ifdef CONFIG_ACPI
 void fw_cfg_add_acpi_dsdt(Aml *scope, FWCfgState *fw_cfg)
 {
+    uint8_t io_size;
+    Aml *dev = aml_device("FWCF");
+    Aml *crs = aml_resource_template();
+
     /*
      * when using port i/o, the 8-bit data register *always* overlaps
      * with half of the 16-bit control register. Hence, the total size
-     * of the i/o region used is FW_CFG_CTL_SIZE; when using DMA, the
-     * DMA control register is located at FW_CFG_DMA_IO_BASE + 4
+     * of the i/o region used is FW_CFG_CTL_SIZE; And the DMA control
+     * register is located at FW_CFG_DMA_IO_BASE + 4
      */
-    Object *obj = OBJECT(fw_cfg);
-    uint8_t io_size = object_property_get_bool(obj, "dma_enabled", NULL) ?
-        ROUND_UP(FW_CFG_CTL_SIZE, 4) + sizeof(dma_addr_t) :
-        FW_CFG_CTL_SIZE;
-    Aml *dev = aml_device("FWCF");
-    Aml *crs = aml_resource_template();
+    assert(fw_cfg_dma_enabled(fw_cfg));
+    io_size = ROUND_UP(FW_CFG_CTL_SIZE, 4) + sizeof(dma_addr_t);
 
     aml_append(dev, aml_name_decl("_HID", aml_string("QEMU0002")));
 

@@ -18,24 +18,18 @@
 #define HW_I386_X86_H
 
 #include "exec/hwaddr.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/i386/topology.h"
 #include "hw/intc/ioapic.h"
 #include "hw/isa/isa.h"
 #include "qom/object.h"
+#include "system/igvm-cfg.h"
 
 struct X86MachineClass {
-    /*< private >*/
     MachineClass parent;
 
-    /*< public >*/
-
-    /* TSC rate migration: */
-    bool save_tsc_khz;
-    /* use DMA capable linuxboot option rom */
-    bool fwcfg_dma_enabled;
     /* CPU and apic information: */
     bool apic_xrupt_override;
 };
@@ -52,7 +46,7 @@ struct X86MachineState {
     qemu_irq *gsi;
     DeviceState *ioapic2;
     GMappedFile *initrd_mapped_file;
-    HotplugHandler *acpi_dev;
+    const HotplugHandler *acpi_dev;
 
     /*
      * Map the whole BIOS just underneath the 4 GiB address boundary. Only used
@@ -97,6 +91,8 @@ struct X86MachineState {
      * which means no limitation on the guest's bus locks.
      */
     uint64_t bus_lock_ratelimit;
+
+    IgvmCfg *igvm;
 };
 
 #define X86_MACHINE_SMM              "smm"
@@ -116,24 +112,24 @@ uint32_t x86_cpu_apic_id_from_index(X86MachineState *x86ms,
 
 void x86_cpus_init(X86MachineState *pcms, int default_cpu_version);
 void x86_rtc_set_cpus_count(ISADevice *rtc, uint16_t cpus_count);
-void x86_cpu_pre_plug(HotplugHandler *hotplug_dev,
+void x86_cpu_pre_plug(const HotplugHandler *hotplug_dev,
                       DeviceState *dev, Error **errp);
-void x86_cpu_plug(HotplugHandler *hotplug_dev,
+void x86_cpu_plug(const HotplugHandler *hotplug_dev,
                   DeviceState *dev, Error **errp);
-void x86_cpu_unplug_request_cb(HotplugHandler *hotplug_dev,
+void x86_cpu_unplug_request_cb(const HotplugHandler *hotplug_dev,
                                DeviceState *dev, Error **errp);
-void x86_cpu_unplug_cb(HotplugHandler *hotplug_dev,
+void x86_cpu_unplug_cb(const HotplugHandler *hotplug_dev,
                        DeviceState *dev, Error **errp);
 
 void x86_isa_bios_init(MemoryRegion *isa_bios, MemoryRegion *isa_memory,
                        MemoryRegion *bios, bool read_only);
 void x86_bios_rom_init(X86MachineState *x86ms, const char *default_firmware,
                        MemoryRegion *rom_memory, bool isapc_ram_fw);
+void x86_bios_rom_reload(X86MachineState *x86ms);
 
 void x86_load_linux(X86MachineState *x86ms,
                     FWCfgState *fw_cfg,
-                    int acpi_data_size,
-                    bool pvh_enabled);
+                    int acpi_data_size);
 
 bool x86_machine_is_smm_enabled(const X86MachineState *x86ms);
 bool x86_machine_is_acpi_enabled(const X86MachineState *x86ms);

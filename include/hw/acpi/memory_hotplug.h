@@ -2,7 +2,7 @@
 #define QEMU_HW_ACPI_MEMORY_HOTPLUG_H
 
 #include "qapi/qapi-types-acpi.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/aml-build.h"
 
@@ -36,9 +36,9 @@ typedef struct MemHotplugState {
 void acpi_memory_hotplug_init(MemoryRegion *as, Object *owner,
                               MemHotplugState *state, hwaddr io_base);
 
-void acpi_memory_plug_cb(HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
+void acpi_memory_plug_cb(const HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
                          DeviceState *dev, Error **errp);
-void acpi_memory_unplug_request_cb(HotplugHandler *hotplug_dev,
+void acpi_memory_unplug_request_cb(const HotplugHandler *hotplug_dev,
                                    MemHotplugState *mem_st,
                                    DeviceState *dev, Error **errp);
 void acpi_memory_unplug_cb(MemHotplugState *mem_st,

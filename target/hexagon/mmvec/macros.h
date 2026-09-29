@@ -21,33 +21,39 @@
 #include "qemu/host-utils.h"
 #include "arch.h"
 #include "mmvec/system_ext_mmvec.h"
+#include "accel/tcg/getpc.h"
+#include "accel/tcg/probe.h"
+#include "mmvec/hvx_ieee_fp.h"
+
+#define fBFLOAT()
+#define fCVI_VX_NO_TMP_LD()
 
 #ifndef QEMU_GENERATE
-#define VdV      (*(MMVector *)(VdV_void))
-#define VsV      (*(MMVector *)(VsV_void))
-#define VuV      (*(MMVector *)(VuV_void))
-#define VvV      (*(MMVector *)(VvV_void))
-#define VwV      (*(MMVector *)(VwV_void))
-#define VxV      (*(MMVector *)(VxV_void))
-#define VyV      (*(MMVector *)(VyV_void))
+#define VdV      (*(MMVector *restrict)(VdV_void))
+#define VsV      (*(MMVector *restrict)(VsV_void))
+#define VuV      (*(MMVector *restrict)(VuV_void))
+#define VvV      (*(MMVector *restrict)(VvV_void))
+#define VwV      (*(MMVector *restrict)(VwV_void))
+#define VxV      (*(MMVector *restrict)(VxV_void))
+#define VyV      (*(MMVector *restrict)(VyV_void))
 
-#define VddV     (*(MMVectorPair *)(VddV_void))
-#define VuuV     (*(MMVectorPair *)(VuuV_void))
-#define VvvV     (*(MMVectorPair *)(VvvV_void))
-#define VxxV     (*(MMVectorPair *)(VxxV_void))
+#define VddV     (*(MMVectorPair *restrict)(VddV_void))
+#define VuuV     (*(MMVectorPair *restrict)(VuuV_void))
+#define VvvV     (*(MMVectorPair *restrict)(VvvV_void))
+#define VxxV     (*(MMVectorPair *restrict)(VxxV_void))
 
-#define QeV      (*(MMQReg *)(QeV_void))
-#define QdV      (*(MMQReg *)(QdV_void))
-#define QsV      (*(MMQReg *)(QsV_void))
-#define QtV      (*(MMQReg *)(QtV_void))
-#define QuV      (*(MMQReg *)(QuV_void))
-#define QvV      (*(MMQReg *)(QvV_void))
-#define QxV      (*(MMQReg *)(QxV_void))
+#define QeV      (*(MMQReg *restrict)(QeV_void))
+#define QdV      (*(MMQReg *restrict)(QdV_void))
+#define QsV      (*(MMQReg *restrict)(QsV_void))
+#define QtV      (*(MMQReg *restrict)(QtV_void))
+#define QuV      (*(MMQReg *restrict)(QuV_void))
+#define QvV      (*(MMQReg *restrict)(QvV_void))
+#define QxV      (*(MMQReg *restrict)(QxV_void))
 #endif
 
 #define LOG_VTCM_BYTE(VA, MASK, VAL, IDX) \
     do { \
-        env->vtcm_log.data.ub[IDX] = (VAL); \
+        hexagon_mmvec_set_byte(&env->vtcm_log.data, IDX, VAL); \
         if (MASK) { \
             set_bit((IDX), env->vtcm_log.mask); \
         } else { \
@@ -120,83 +126,96 @@
         env->vtcm_log.op = true; \
         env->vtcm_log.op_size = SIZE; \
     } while (0)
-#define fVLOG_VTCM_WORD_INCREMENT(EA, OFFSET, INC, IDX, ALIGNMENT, LEN) \
+#define fVLOG_VTCM_WORD_INCREMENT(EA, OFFSET, INC, IDX, ALIGNMENT, \
+                                   OFFS_REG_END) \
     do { \
         int log_byte = 0; \
         target_ulong va = EA; \
-        target_ulong va_high = EA + LEN; \
+        int in_region = (OFFSET) <= (OFFS_REG_END); \
         for (int i0 = 0; i0 < 4; i0++) { \
-            log_byte = (va + i0) <= va_high; \
-            LOG_VTCM_BYTE(va + i0, log_byte, INC. ub[4 * IDX + i0], \
+            log_byte = in_region; \
+            LOG_VTCM_BYTE(va + i0, log_byte, \
+                           hexagon_mmvec_get_byte(&(INC), 4 * IDX + i0), \
                           4 * IDX + i0); \
         } \
     } while (0)
-#define fVLOG_VTCM_HALFWORD_INCREMENT(EA, OFFSET, INC, IDX, ALIGNMENT, LEN) \
+#define fVLOG_VTCM_HALFWORD_INCREMENT(EA, OFFSET, INC, IDX, ALIGNMENT, \
+                                       OFFS_REG_END) \
     do { \
         int log_byte = 0; \
         target_ulong va = EA; \
-        target_ulong va_high = EA + LEN; \
+        int in_region = (OFFSET) <= (OFFS_REG_END); \
         for (int i0 = 0; i0 < 2; i0++) { \
-            log_byte = (va + i0) <= va_high; \
-            LOG_VTCM_BYTE(va + i0, log_byte, INC.ub[2 * IDX + i0], \
+            log_byte = in_region; \
+            LOG_VTCM_BYTE(va + i0, log_byte, \
+                           hexagon_mmvec_get_byte(&(INC), 2 * IDX + i0), \
                           2 * IDX + i0); \
         } \
     } while (0)
 
 #define fVLOG_VTCM_HALFWORD_INCREMENT_DV(EA, OFFSET, INC, IDX, IDX2, IDX_H, \
-                                         ALIGNMENT, LEN) \
+                                         ALIGNMENT, OFFS_REG_END) \
     do { \
         int log_byte = 0; \
         target_ulong va = EA; \
-        target_ulong va_high = EA + LEN; \
+        int in_region = (OFFSET) <= (OFFS_REG_END); \
         for (int i0 = 0; i0 < 2; i0++) { \
-            log_byte = (va + i0) <= va_high; \
-            LOG_VTCM_BYTE(va + i0, log_byte, INC.ub[2 * IDX + i0], \
+            log_byte = in_region; \
+            LOG_VTCM_BYTE(va + i0, log_byte, \
+                           hexagon_mmvec_get_byte(&(INC), 2 * IDX + i0), \
                           2 * IDX + i0); \
         } \
     } while (0)
 
 /* NOTE - Will this always be tmp_VRegs[0]; */
-#define GATHER_FUNCTION(EA, OFFSET, IDX, LEN, ELEMENT_SIZE, BANK_IDX, QVAL) \
+#define GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, ELEMENT_SIZE, \
+                         BANK_IDX, QVAL) \
     do { \
         int i0; \
         target_ulong va = EA; \
-        target_ulong va_high = EA + LEN; \
         uintptr_t ra = GETPC(); \
         int log_byte = 0; \
+        int in_region = (OFFSET) <= (OFFS_REG_END); \
         for (i0 = 0; i0 < ELEMENT_SIZE; i0++) { \
-            log_byte = ((va + i0) <= va_high) && QVAL; \
-            uint8_t B; \
-            B = cpu_ldub_data_ra(env, EA + i0, ra); \
-            env->tmp_VRegs[0].ub[ELEMENT_SIZE * IDX + i0] = B; \
+            uint8_t B = 0; \
+            \
+            log_byte = in_region && QVAL; \
+            if (log_byte) { \
+                B = cpu_ldub_data_ra(env, va + i0, ra); \
+                hexagon_mmvec_set_byte(&env->tmp_VRegs[0], \
+                                       ELEMENT_SIZE * IDX + i0, B); \
+            } \
             LOG_VTCM_BYTE(va + i0, log_byte, B, ELEMENT_SIZE * IDX + i0); \
         } \
     } while (0)
-#define fVLOG_VTCM_GATHER_WORD(EA, OFFSET, IDX, LEN) \
+#define fVLOG_VTCM_GATHER_WORD(EA, OFFSET, IDX, OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 4, IDX, 1); \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 4, IDX, 1); \
     } while (0)
-#define fVLOG_VTCM_GATHER_HALFWORD(EA, OFFSET, IDX, LEN) \
+#define fVLOG_VTCM_GATHER_HALFWORD(EA, OFFSET, IDX, OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 2, IDX, 1); \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, IDX, 1); \
     } while (0)
-#define fVLOG_VTCM_GATHER_HALFWORD_DV(EA, OFFSET, IDX, IDX2, IDX_H, LEN) \
+#define fVLOG_VTCM_GATHER_HALFWORD_DV(EA, OFFSET, IDX, IDX2, IDX_H, \
+                                       OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 2, (2 * IDX2 + IDX_H), 1); \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, \
+                         (2 * IDX2 + IDX_H), 1); \
     } while (0)
-#define fVLOG_VTCM_GATHER_WORDQ(EA, OFFSET, IDX, Q, LEN) \
+#define fVLOG_VTCM_GATHER_WORDQ(EA, OFFSET, IDX, Q, OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 4, IDX, \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 4, IDX, \
                         fGETQBIT(QsV, 4 * IDX + i0)); \
     } while (0)
-#define fVLOG_VTCM_GATHER_HALFWORDQ(EA, OFFSET, IDX, Q, LEN) \
+#define fVLOG_VTCM_GATHER_HALFWORDQ(EA, OFFSET, IDX, Q, OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 2, IDX, \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, IDX, \
                         fGETQBIT(QsV, 2 * IDX + i0)); \
     } while (0)
-#define fVLOG_VTCM_GATHER_HALFWORDQ_DV(EA, OFFSET, IDX, IDX2, IDX_H, Q, LEN) \
+#define fVLOG_VTCM_GATHER_HALFWORDQ_DV(EA, OFFSET, IDX, IDX2, IDX_H, Q, \
+                                        OFFS_REG_END) \
     do { \
-        GATHER_FUNCTION(EA, OFFSET, IDX, LEN, 2, (2 * IDX2 + IDX_H), \
+        GATHER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, (2 * IDX2 + IDX_H), \
                         fGETQBIT(QsV, 2 * IDX + i0)); \
     } while (0)
 #define SCATTER_OP_WRITE_TO_MEM(TYPE) \
@@ -210,9 +229,10 @@
                     uint8_t val; \
                     val = cpu_ldub_data_ra(env, env->vtcm_log.va[i + j], ra); \
                     dst |= val << (8 * j); \
-                    inc |= env->vtcm_log.data.ub[j + i] << (8 * j); \
+                    inc |= hexagon_mmvec_get_byte(&env->vtcm_log.data, j + i) \
+                           << (8 * j); \
                     clear_bit(j + i, env->vtcm_log.mask); \
-                    env->vtcm_log.data.ub[j + i] = 0; \
+                    hexagon_mmvec_set_byte(&env->vtcm_log.data, j + i, 0); \
                 } \
                 dst += inc; \
                 for (int j = 0; j < sizeof(TYPE); j++) { \
@@ -235,44 +255,48 @@
             } \
         } \
     } while (0)
-#define SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, ELEM_SIZE, BANK_IDX, QVAL, IN) \
+#define SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, ELEM_SIZE, \
+                          BANK_IDX, QVAL, IN) \
     do { \
         int i0; \
         target_ulong va = EA; \
-        target_ulong va_high = EA + LEN; \
         int log_byte = 0; \
+        int in_region = (OFFSET) <= (OFFS_REG_END); \
         for (i0 = 0; i0 < ELEM_SIZE; i0++) { \
-            log_byte = ((va + i0) <= va_high) && QVAL; \
-            LOG_VTCM_BYTE(va + i0, log_byte, IN.ub[ELEM_SIZE * IDX + i0], \
+            log_byte = in_region && QVAL; \
+            LOG_VTCM_BYTE(va + i0, log_byte, \
+                           hexagon_mmvec_get_byte(&(IN), \
+                                                    ELEM_SIZE * IDX + i0), \
                           ELEM_SIZE * IDX + i0); \
         } \
     } while (0)
-#define fVLOG_VTCM_HALFWORD(EA, OFFSET, IN, IDX, LEN) \
+#define fVLOG_VTCM_HALFWORD(EA, OFFSET, IN, IDX, OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 2, IDX, 1, IN); \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, IDX, 1, IN); \
     } while (0)
-#define fVLOG_VTCM_WORD(EA, OFFSET, IN, IDX, LEN) \
+#define fVLOG_VTCM_WORD(EA, OFFSET, IN, IDX, OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 4, IDX, 1, IN); \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 4, IDX, 1, IN); \
     } while (0)
-#define fVLOG_VTCM_HALFWORDQ(EA, OFFSET, IN, IDX, Q, LEN) \
+#define fVLOG_VTCM_HALFWORDQ(EA, OFFSET, IN, IDX, Q, OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 2, IDX, \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, IDX, \
                          fGETQBIT(QsV, 2 * IDX + i0), IN); \
     } while (0)
-#define fVLOG_VTCM_WORDQ(EA, OFFSET, IN, IDX, Q, LEN) \
+#define fVLOG_VTCM_WORDQ(EA, OFFSET, IN, IDX, Q, OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 4, IDX, \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 4, IDX, \
                          fGETQBIT(QsV, 4 * IDX + i0), IN); \
     } while (0)
-#define fVLOG_VTCM_HALFWORD_DV(EA, OFFSET, IN, IDX, IDX2, IDX_H, LEN) \
+#define fVLOG_VTCM_HALFWORD_DV(EA, OFFSET, IN, IDX, IDX2, IDX_H, OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 2, \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, \
                          (2 * IDX2 + IDX_H), 1, IN); \
     } while (0)
-#define fVLOG_VTCM_HALFWORDQ_DV(EA, OFFSET, IN, IDX, Q, IDX2, IDX_H, LEN) \
+#define fVLOG_VTCM_HALFWORDQ_DV(EA, OFFSET, IN, IDX, Q, IDX2, IDX_H, \
+                                 OFFS_REG_END) \
     do { \
-        SCATTER_FUNCTION(EA, OFFSET, IDX, LEN, 2, (2 * IDX2 + IDX_H), \
+        SCATTER_FUNCTION(EA, OFFSET, IDX, OFFS_REG_END, 2, (2 * IDX2 + IDX_H), \
                          fGETQBIT(QsV, 2 * IDX + i0), IN); \
     } while (0)
 #define fSTORERELEASE(EA, TYPE) \
@@ -280,26 +304,28 @@
         fV_AL_CHECK(EA, fVECSIZE() - 1); \
     } while (0)
 #ifdef QEMU_GENERATE
-#define fLOADMMV(EA, DST) gen_vreg_load(ctx, DST##_off, EA, true)
+#define fLOADMMV(EA, DST) gen_vreg_load(ctx, DST##_base, DST##_off, EA, true)
 #endif
 #ifdef QEMU_GENERATE
-#define fLOADMMVU(EA, DST) gen_vreg_load(ctx, DST##_off, EA, false)
+#define fLOADMMVU(EA, DST) gen_vreg_load(ctx, DST##_base, DST##_off, EA, false)
 #endif
 #ifdef QEMU_GENERATE
 #define fSTOREMMV(EA, SRC) \
-    gen_vreg_store(ctx, EA, SRC##_off, insn->slot, true)
+    gen_vreg_store(ctx, EA, SRC##_base, SRC##_off, insn->slot, true)
 #endif
 #ifdef QEMU_GENERATE
 #define fSTOREMMVQ(EA, SRC, MASK) \
-    gen_vreg_masked_store(ctx, EA, SRC##_off, MASK##_off, insn->slot, false)
+    gen_vreg_masked_store(ctx, EA, SRC##_base, SRC##_off, \
+                          MASK##_base, MASK##_off, insn->slot, false)
 #endif
 #ifdef QEMU_GENERATE
 #define fSTOREMMVNQ(EA, SRC, MASK) \
-    gen_vreg_masked_store(ctx, EA, SRC##_off, MASK##_off, insn->slot, true)
+    gen_vreg_masked_store(ctx, EA, SRC##_base, SRC##_off, \
+                          MASK##_base, MASK##_off, insn->slot, true)
 #endif
 #ifdef QEMU_GENERATE
 #define fSTOREMMVU(EA, SRC) \
-    gen_vreg_store(ctx, EA, SRC##_off, insn->slot, false)
+    gen_vreg_store(ctx, EA, SRC##_base, SRC##_off, insn->slot, false)
 #endif
 #define fVFOREACH(WIDTH, VAR) for (VAR = 0; VAR < fVELEM(WIDTH); VAR++)
 #define fVARRAY_ELEMENT_ACCESS(ARRAY, TYPE, INDEX) \
@@ -351,6 +377,11 @@
     do { \
         COE = (sextract32(VAL, 24 + 2 * POS, 2) << 8) | \
                extract32(VAL, POS * 8, 8); \
-    } while (0);
+    } while (0) \
+    ;
+
+#define fCMPGT_SF(A, B) cmpgt_sf(A, B, &env->hvx_fp_status)
+#define fCMPGT_HF(A, B) cmpgt_hf(A, B, &env->hvx_fp_status)
+#define fCMPGT_BF(A, B) fCMPGT_SF((uint32_t)(A) << 16, (uint32_t)(B) << 16)
 
 #endif

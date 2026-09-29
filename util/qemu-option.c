@@ -27,10 +27,10 @@
 
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qapi/qmp/qbool.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qnum.h"
-#include "qapi/qmp/qstring.h"
+#include "qobject/qbool.h"
+#include "qobject/qdict.h"
+#include "qobject/qnum.h"
+#include "qobject/qstring.h"
 #include "qapi/qmp/qerror.h"
 #include "qemu/option_int.h"
 #include "qemu/cutils.h"
@@ -270,6 +270,19 @@ const char *qemu_opt_get(QemuOpts *opts, const char *name)
 
     return opt->str;
 }
+
+bool qemu_opt_has_any(QemuOpts *opts, const char * const *names)
+{
+    int it;
+
+    for (it = 0; names[it]; it++) {
+        if (qemu_opt_get(opts, names[it])) {
+            return true;
+        }
+    }
+    return false;
+}
+
 
 void qemu_opt_iter_init(QemuOptsIter *iter, QemuOpts *opts, const char *name)
 {

@@ -10,7 +10,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "hw/arm/raspi_platform.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/arm/bcm2838.h"
 #include "trace.h"
 
@@ -184,6 +184,10 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->aux), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_AUX_UART1));
 
+    /* Connect the I2C interrupt to the interrupt controller */
+    qdev_connect_gpio_out(DEVICE(&ps_base->orgated_i2c_irq_splitter), 1,
+                          qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_I2C));
+
     /* Connect VC mailbox to the interrupt controller */
     sysbus_connect_irq(SYS_BUS_DEVICE(&ps_base->mboxes), 0,
                        qdev_get_gpio_in(gicdev, GIC_SPI_INTERRUPT_MBOX));
@@ -233,7 +237,7 @@ static void bcm2838_realize(DeviceState *dev, Error **errp)
     qdev_pass_gpios(DEVICE(&s->gic), DEVICE(&s->peripherals), NULL);
 }
 
-static void bcm2838_class_init(ObjectClass *oc, void *data)
+static void bcm2838_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     BCM283XBaseClass *bc_base = BCM283X_BASE_CLASS(oc);

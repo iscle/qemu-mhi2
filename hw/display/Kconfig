@@ -28,6 +28,10 @@ config PL110
 config TEGRA30_DC
     bool
 
+config IMX6UL_LCDIF
+    bool
+    select FRAMEBUFFER
+
 config SII9022
     bool
     depends on I2C
@@ -119,6 +123,11 @@ config VHOST_USER_VGA
     default y
     depends on VIRTIO_VGA && VHOST_USER_GPU
 
+config VHOST_USER_MEDIA
+    bool
+    default y
+    depends on VIRTIO && VHOST_USER
+
 config DPCD
     bool
     select AUX
@@ -143,3 +152,12 @@ config XLNX_DISPLAYPORT
 
 config DM163
     bool
+
+config MAC_PVG_MMIO
+    bool
+    depends on MAC_PVG && AARCH64
+
+config MAC_PVG_PCI
+    bool
+    depends on MAC_PVG && PCI
+    default y if PCI_DEVICES

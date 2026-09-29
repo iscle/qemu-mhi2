@@ -7,16 +7,13 @@ mips_ss.add(files(
   'gdbstub.c',
   'msa.c',
 ))
+mips_ss.add(zlib)
 
 if have_system
-  subdir('sysemu')
+  subdir('system')
 endif
 
-if 'CONFIG_TCG' in config_all_accel
-  subdir('tcg')
-endif
-
-mips_ss.add(when: 'CONFIG_KVM', if_true: files('kvm.c'))
+subdir('tcg')
 
 target_arch += {'mips': mips_ss}
 target_system_arch += {'mips': mips_system_ss}

@@ -186,6 +186,7 @@ class QEMUMachine:
         self._console_index = 0
         self._console_set = False
         self._console_device_type: Optional[str] = None
+        self._console_semihosting = False
         self._console_socket: Optional[socket.socket] = None
         self._console_file: Optional[socket.SocketIO] = None
         self._remove_files: List[str] = []
@@ -292,8 +293,8 @@ class QEMUMachine:
                 self._iolog = iolog.read()
 
     @property
-    def _base_args(self) -> List[str]:
-        args = ['-display', 'none', '-vga', 'none']
+    def _harness_args(self) -> List[str]:
+        args: List[str] = []
 
         if self._qmp_set:
             if self._sock_pair:
@@ -304,23 +305,38 @@ class QEMUMachine:
                 )
             else:
                 moncdev = f"socket,id=mon,path={self._monitor_address}"
-            args.extend(['-chardev', moncdev, '-mon',
-                         'chardev=mon,mode=control'])
+            args.extend(['-chardev', moncdev, '-object',
+                         'monitor-qmp,id=qmp,chardev=mon'])
+        return args
 
-        if self._machine is not None:
-            args.extend(['-machine', self._machine])
+    def _console_args(self, interactive: bool = False) -> List[str]:
+        args: List[str] = []
+        # redirect pre_console_index serials to null
         for _ in range(self._console_index):
             args.extend(['-serial', 'null'])
-        if self._console_set:
+
+        if interactive:
+            args.extend(['-serial', 'mon:stdio'])
+        elif self._console_set:
             assert self._cons_sock_pair is not None
             fd = self._cons_sock_pair[0].fileno()
             chardev = f"socket,id=console,fd={fd}"
             args.extend(['-chardev', chardev])
-            if self._console_device_type is None:
+            if self._console_semihosting:
+                args.extend(['-semihosting-config',
+                             'enable=on,chardev=console'])
+            elif self._console_device_type is None:
                 args.extend(['-serial', 'chardev:console'])
             else:
                 device = '%s,chardev=console' % self._console_device_type
                 args.extend(['-device', device])
+        return args
+
+    @property
+    def _base_args(self) -> List[str]:
+        args: List[str] = ['-display', 'none', '-vga', 'none']
+        if self._machine is not None:
+            args.extend(['-machine', self._machine])
         return args
 
     @property
@@ -366,6 +382,8 @@ class QEMUMachine:
         self._qemu_full_args = tuple(chain(
             self._wrapper,
             [self._binary],
+            self._harness_args,
+            self._console_args(),
             self._base_args,
             self._args
         ))
@@ -474,6 +492,14 @@ class QEMUMachine:
         """
         self._pre_launch()
         LOG.debug('VM launch command: %r', ' '.join(self._qemu_full_args))
+        # Log a simplified, developer-runnable command:
+        # Exclude harness-managed infrastructure args (harness_args)
+        # and wrapper.
+        debug_cmd = [self._binary]
+        debug_cmd.extend(self._console_args(interactive=True))
+        debug_cmd.extend(self._base_args)
+        debug_cmd.extend(self._args)
+        LOG.debug('Developer-runnable command: %r', ' '.join(debug_cmd))
 
         # Cleaning up of this subprocess is guaranteed by _do_shutdown.
         # pylint: disable=consider-using-with
@@ -870,7 +896,8 @@ class QEMUMachine:
 
     def set_console(self,
                     device_type: Optional[str] = None,
-                    console_index: int = 0) -> None:
+                    console_index: int = 0,
+                    semihosting: bool = False) -> None:
         """
         Sets the device type for a console device
 
@@ -899,6 +926,7 @@ class QEMUMachine:
         self._console_set = True
         self._console_device_type = device_type
         self._console_index = console_index
+        self._console_semihosting = semihosting
 
     @property
     def console_socket(self) -> socket.socket:

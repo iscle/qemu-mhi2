@@ -8,6 +8,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qapi/visitor.h"
 #include "qapi/error.h"
 #include "hw/pci-host/pnv_phb3_regs.h"
@@ -17,10 +18,10 @@
 #include "hw/pci/pcie_port.h"
 #include "hw/ppc/pnv.h"
 #include "hw/ppc/pnv_chip.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 
 #define phb3_error(phb, fmt, ...)                                       \
     qemu_log_mask(LOG_GUEST_ERROR, "phb3[%d:%d]: " fmt "\n",            \
@@ -474,6 +475,11 @@ void pnv_phb3_reg_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
 
     /* Special case configuration data */
     if ((off & 0xfffc) == PHB_CONFIG_DATA) {
+        if (size > 4) {
+            phb3_error(phb, "Invalid config access, offset: 0x%"PRIx64" size: %d",
+                      off, size);
+            return;
+        }
         pnv_phb3_config_write(phb, off & 0x3, size, val);
         return;
     }
@@ -596,6 +602,11 @@ uint64_t pnv_phb3_reg_read(void *opaque, hwaddr off, unsigned size)
     uint64_t val;
 
     if ((off & 0xfffc) == PHB_CONFIG_DATA) {
+        if (size > 4) {
+            phb3_error(phb, "Invalid config access, offset: 0x%"PRIx64" size: %d",
+                      off, size);
+            return ~0ull;
+        }
         return pnv_phb3_config_read(phb, off & 0x3, size);
     }
 
@@ -888,7 +899,7 @@ DECLARE_INSTANCE_CHECKER(IOMMUMemoryRegion, PNV_PHB3_IOMMU_MEMORY_REGION,
                          TYPE_PNV_PHB3_IOMMU_MEMORY_REGION)
 
 static void pnv_phb3_iommu_memory_region_class_init(ObjectClass *klass,
-                                                    void *data)
+                                                    const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 
@@ -1090,15 +1101,14 @@ void pnv_phb3_update_regions(PnvPHB3 *phb)
     pnv_phb3_check_all_m64s(phb);
 }
 
-static Property pnv_phb3_properties[] = {
+static const Property pnv_phb3_properties[] = {
     DEFINE_PROP_UINT32("index", PnvPHB3, phb_id, 0),
     DEFINE_PROP_UINT32("chip-id", PnvPHB3, chip_id, 0),
     DEFINE_PROP_LINK("chip", PnvPHB3, chip, TYPE_PNV_CHIP, PnvChip *),
     DEFINE_PROP_LINK("phb-base", PnvPHB3, phb_base, TYPE_PNV_PHB, PnvPHB *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void pnv_phb3_class_init(ObjectClass *klass, void *data)
+static void pnv_phb3_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1120,7 +1130,7 @@ static void pnv_phb3_root_bus_get_prop(Object *obj, Visitor *v,
                                        void *opaque, Error **errp)
 {
     PnvPHB3RootBus *bus = PNV_PHB3_ROOT_BUS(obj);
-    uint64_t value = 0;
+    uint32_t value = 0;
 
     if (strcmp(name, "phb-id") == 0) {
         value = bus->phb_id;
@@ -1128,7 +1138,7 @@ static void pnv_phb3_root_bus_get_prop(Object *obj, Visitor *v,
         value = bus->chip_id;
     }
 
-    visit_type_size(v, name, &value, errp);
+    visit_type_uint32(v, name, &value, errp);
 }
 
 static void pnv_phb3_root_bus_set_prop(Object *obj, Visitor *v,
@@ -1137,9 +1147,9 @@ static void pnv_phb3_root_bus_set_prop(Object *obj, Visitor *v,
 
 {
     PnvPHB3RootBus *bus = PNV_PHB3_ROOT_BUS(obj);
-    uint64_t value;
+    uint32_t value;
 
-    if (!visit_type_size(v, name, &value, errp)) {
+    if (!visit_type_uint32(v, name, &value, errp)) {
         return;
     }
 
@@ -1150,16 +1160,16 @@ static void pnv_phb3_root_bus_set_prop(Object *obj, Visitor *v,
     }
 }
 
-static void pnv_phb3_root_bus_class_init(ObjectClass *klass, void *data)
+static void pnv_phb3_root_bus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *k = BUS_CLASS(klass);
 
-    object_class_property_add(klass, "phb-id", "int",
+    object_class_property_add(klass, "phb-id", "uint32",
                               pnv_phb3_root_bus_get_prop,
                               pnv_phb3_root_bus_set_prop,
                               NULL, NULL);
 
-    object_class_property_add(klass, "chip-id", "int",
+    object_class_property_add(klass, "chip-id", "uint32",
                               pnv_phb3_root_bus_get_prop,
                               pnv_phb3_root_bus_set_prop,
                               NULL, NULL);

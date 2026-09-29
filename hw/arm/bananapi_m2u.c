@@ -19,16 +19,23 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/allwinner-r40.h"
 #include "hw/arm/boot.h"
 
-static struct arm_boot_info bpim2u_binfo;
+#define TYPE_BPIM2U_MACHINE MACHINE_TYPE_NAME("bpim2u")
+OBJECT_DECLARE_SIMPLE_TYPE(Bpim2uMachineState, BPIM2U_MACHINE)
+
+struct Bpim2uMachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
+};
 
 /*
  * R40 can boot from mmc0 and mmc2, and bpim2u has two mmc interface, one is
@@ -61,6 +68,7 @@ static void mmc_attach_drive(AwR40State *s, AwSdHostState *mmc, int unit,
 
 static void bpim2u_init(MachineState *machine)
 {
+    Bpim2uMachineState *bpms = BPIM2U_MACHINE(machine);
     bool bootroom_loaded = false;
     AwR40State *r40;
     I2CBus *i2c;
@@ -119,10 +127,10 @@ static void bpim2u_init(MachineState *machine)
     memory_region_add_subregion(get_system_memory(),
                                 r40->memmap[AW_R40_DEV_SDRAM], machine->ram);
 
-    bpim2u_binfo.loader_start = r40->memmap[AW_R40_DEV_SDRAM];
-    bpim2u_binfo.ram_size = machine->ram_size;
-    bpim2u_binfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
-    arm_load_kernel(&r40->cpus[0], machine, &bpim2u_binfo);
+    bpms->bootinfo.loader_start = r40->memmap[AW_R40_DEV_SDRAM];
+    bpms->bootinfo.ram_size = machine->ram_size;
+    bpms->bootinfo.psci_conduit = QEMU_PSCI_CONDUIT_SMC;
+    arm_load_kernel(&r40->cpus[0], machine, &bpms->bootinfo);
 }
 
 static void bpim2u_machine_init(MachineClass *mc)
@@ -141,6 +149,8 @@ static void bpim2u_machine_init(MachineClass *mc)
     mc->valid_cpu_types = valid_cpu_types;
     mc->default_ram_size = 1 * GiB;
     mc->default_ram_id = "bpim2u.ram";
+    mc->auto_create_sdcard = true;
 }
 
-DEFINE_MACHINE("bpim2u", bpim2u_machine_init)
+DEFINE_MACHINE_EXTENDED("bpim2u", MACHINE, Bpim2uMachineState,
+                        bpim2u_machine_init, false, false, NULL)

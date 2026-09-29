@@ -1,11 +1,12 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
 #include "exec/cpu-common.h"
-#include "exec/address-spaces.h"
+#include "accel/tcg/cpu-loop.h"
+#include "system/address-spaces.h"
 #include "target/arm/arm-powerctl.h"
 #include "hw/misc/tegra30_flow.h"
 
@@ -124,7 +125,7 @@ static const VMStateDescription tegra30_flow_vmstate = {
     }
 };
 
-static void tegra30_flow_class_init(ObjectClass *klass, void *data)
+static void tegra30_flow_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

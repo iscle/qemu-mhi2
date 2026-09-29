@@ -12,11 +12,12 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
+#include "qemu/bswap.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
-#include "hw/loader.h"
-#include "hw/qdev-core.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/loader.h"
+#include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
 #include "trace.h"
@@ -48,6 +49,7 @@ struct ARTISTState {
 
     struct vram_buffer vram_buffer[16];
 
+    bool disable;
     uint16_t width;
     uint16_t height;
     uint16_t depth;
@@ -1211,8 +1213,8 @@ static uint64_t artist_reg_read(void *opaque, hwaddr addr, unsigned size)
         break;
 
     case 0x380004:
-        /* 0x02000000 Buserror */
-        val = 0x6dc20006;
+        /* magic number detected by SeaBIOS-hppa */
+        val = s->disable ? 0 : 0x6dc20006;
         break;
 
     default:
@@ -1309,7 +1311,7 @@ static void artist_draw_line(void *opaque, uint8_t *d, const uint8_t *src,
     }
 }
 
-static void artist_update_display(void *opaque)
+static bool artist_update_display(void *opaque)
 {
     ARTISTState *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -1322,8 +1324,10 @@ static void artist_update_display(void *opaque)
     artist_draw_cursor(s);
 
     if (first >= 0) {
-        dpy_gfx_update(s->con, 0, first, s->width, last - first + 1);
+        qemu_console_update(s->con, 0, first, s->width, last - first + 1);
     }
+
+    return true;
 }
 
 static void artist_invalidate(void *opaque)
@@ -1420,7 +1424,7 @@ static void artist_realizefn(DeviceState *dev, Error **errp)
     s->misc_video |= 0x0A000000;
     s->misc_ctrl  |= 0x00800000;
 
-    s->con = graphic_console_init(dev, 0, &artist_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &artist_ops, s);
     qemu_console_resize(s->con, s->width, s->height);
 }
 
@@ -1432,7 +1436,7 @@ static int vmstate_artist_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_artist = {
     .name = "artist",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .post_load = vmstate_artist_post_load,
     .fields = (const VMStateField[]) {
@@ -1470,22 +1474,23 @@ static const VMStateDescription vmstate_artist = {
         VMSTATE_UINT32(font_write1, ARTISTState),
         VMSTATE_UINT32(font_write2, ARTISTState),
         VMSTATE_UINT32(font_write_pos_y, ARTISTState),
+        VMSTATE_BOOL(disable, ARTISTState),
         VMSTATE_END_OF_LIST()
     }
 };
 
-static Property artist_properties[] = {
+static const Property artist_properties[] = {
     DEFINE_PROP_UINT16("width",        ARTISTState, width, 1280),
     DEFINE_PROP_UINT16("height",       ARTISTState, height, 1024),
     DEFINE_PROP_UINT16("depth",        ARTISTState, depth, 8),
-    DEFINE_PROP_END_OF_LIST(),
+    DEFINE_PROP_BOOL("disable",        ARTISTState, disable, false),
 };
 
 static void artist_reset(DeviceState *qdev)
 {
 }
 
-static void artist_class_init(ObjectClass *klass, void *data)
+static void artist_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

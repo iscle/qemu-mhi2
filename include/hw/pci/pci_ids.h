@@ -168,6 +168,11 @@
 #define PCI_DEVICE_ID_LSI_SAS1078        0x0060
 #define PCI_DEVICE_ID_LSI_SAS0079        0x0079
 
+#define PCI_VENDOR_ID_NS                 0x100b
+#define PCI_DEVICE_ID_NS_87415           0x0002
+#define PCI_DEVICE_ID_NS_87560_LIO       0x000e
+#define PCI_DEVICE_ID_NS_87560_USB       0x0012
+
 #define PCI_VENDOR_ID_DEC                0x1011
 #define PCI_DEVICE_ID_DEC_21143          0x0019
 
@@ -191,6 +196,7 @@
 #define PCI_DEVICE_ID_APPLE_UNI_N_AGP    0x0020
 #define PCI_DEVICE_ID_APPLE_U3_AGP       0x004b
 #define PCI_DEVICE_ID_APPLE_UNI_N_GMAC   0x0021
+#define PCI_DEVICE_ID_APPLE_VIRTIO_BLK   0x1a00
 
 #define PCI_VENDOR_ID_SUN                0x108e
 #define PCI_DEVICE_ID_SUN_EBUS           0x1000
@@ -289,5 +295,7 @@
 #define PCI_VENDOR_ID_SYNOPSYS           0x16C3
 
 #define PCI_VENDOR_ID_NVIDIA             0x10de
+
+#define PCI_VENDOR_ID_ASPEED             0x1A03
 
 #endif

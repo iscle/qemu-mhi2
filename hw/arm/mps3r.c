@@ -27,14 +27,14 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
-#include "qapi/qmp/qlist.h"
-#include "exec/address-spaces.h"
-#include "cpu.h"
-#include "sysemu/sysemu.h"
-#include "hw/boards.h"
-#include "hw/or-irq.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
+#include "qobject/qlist.h"
+#include "system/address-spaces.h"
+#include "target/arm/cpu.h"
+#include "system/system.h"
+#include "hw/core/boards.h"
+#include "hw/core/or-irq.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/boot.h"
 #include "hw/arm/bsa.h"
 #include "hw/char/cmsdk-apb-uart.h"
@@ -58,15 +58,7 @@ typedef struct RAMInfo {
     int flags;
 } RAMInfo;
 
-/*
- * The MPS3 DDR is 3GiB, but on a 32-bit host QEMU doesn't permit
- * emulation of that much guest RAM, so artificially make it smaller.
- */
-#if HOST_LONG_BITS == 32
-#define MPS3_DDR_SIZE (1 * GiB)
-#else
 #define MPS3_DDR_SIZE (3 * GiB)
-#endif
 
 /*
  * Flag values:
@@ -583,14 +575,14 @@ static void mps3r_set_default_ram_info(MPS3RMachineClass *mmc)
     g_assert_not_reached();
 }
 
-static void mps3r_class_init(ObjectClass *oc, void *data)
+static void mps3r_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
     mc->init = mps3r_common_init;
 }
 
-static void mps3r_an536_class_init(ObjectClass *oc, void *data)
+static void mps3r_an536_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     MPS3RMachineClass *mmc = MPS3R_MACHINE_CLASS(oc);

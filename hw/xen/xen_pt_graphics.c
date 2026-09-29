@@ -6,6 +6,7 @@
 #include "hw/xen/xen_pt.h"
 #include "hw/xen/xen_igd.h"
 #include "xen-host-pci-device.h"
+#include "system/physmem.h"
 
 static unsigned long igd_guest_opregion;
 static unsigned long igd_host_opregion;
@@ -222,7 +223,7 @@ void xen_pt_setup_vga(XenPCIPassthroughState *s, XenHostPCIDevice *dev,
     }
 
     /* Currently we fixed this address as a primary for legacy BIOS. */
-    cpu_physical_memory_write(0xc0000, bios, bios_size);
+    physical_memory_write(0xc0000, bios, bios_size);
 }
 
 uint32_t igd_read_opregion(XenPCIPassthroughState *s)
@@ -347,7 +348,7 @@ static const IGDDeviceIDInfo igd_combo_id_infos[] = {
     {0x162D, 0x9cc3, 0x03}, /* BDWGT3SRVR, BDWM_w7 */
 };
 
-static void isa_bridge_class_init(ObjectClass *klass, void *data)
+static void isa_bridge_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -363,7 +364,7 @@ static const TypeInfo isa_bridge_info = {
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PCIDevice),
     .class_init = isa_bridge_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
         { },
     },

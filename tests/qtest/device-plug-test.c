@@ -12,17 +12,8 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qstring.h"
-
-static void system_reset(QTestState *qtest)
-{
-    QDict *resp;
-
-    resp = qtest_qmp(qtest, "{'execute': 'system_reset'}");
-    g_assert(qdict_haskey(resp, "return"));
-    qobject_unref(resp);
-}
+#include "qobject/qdict.h"
+#include "qobject/qstring.h"
 
 static void wait_device_deleted_event(QTestState *qtest, const char *id)
 {
@@ -58,7 +49,7 @@ static void process_device_remove(QTestState *qtest, const char *id)
      * handled, removing the device.
      */
     qtest_qmp_device_del_send(qtest, id);
-    system_reset(qtest);
+    qtest_system_reset_nowait(qtest);
     wait_device_deleted_event(qtest, id);
 }
 
@@ -74,6 +65,10 @@ static void test_pci_unplug_request(void)
     }
 
     if (strcmp(arch, "i386") == 0 || strcmp(arch, "x86_64") == 0) {
+        if (!qtest_has_machine("pc")) {
+            g_test_skip("Machine 'pc' is not available");
+            return;
+        }
         machine_addition = "-machine pc";
     }
 
@@ -116,6 +111,10 @@ static void test_pci_unplug_json_request(void)
     }
 
     if (strcmp(arch, "i386") == 0 || strcmp(arch, "x86_64") == 0) {
+        if (!qtest_has_machine("pc")) {
+            g_test_skip("Machine 'pc' is not available");
+            return;
+        }
         machine_addition = "-machine pc";
     }
 

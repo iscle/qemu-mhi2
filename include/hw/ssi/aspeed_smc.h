@@ -26,7 +26,7 @@
 #define ASPEED_SMC_H
 
 #include "hw/ssi/ssi.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 struct AspeedSMCState;
@@ -47,7 +47,7 @@ struct AspeedSMCFlash {
 #define TYPE_ASPEED_SMC "aspeed.smc"
 OBJECT_DECLARE_TYPE(AspeedSMCState, AspeedSMCClass, ASPEED_SMC)
 
-#define ASPEED_SMC_R_MAX        (0x100 / 4)
+#define ASPEED_SMC_R_MAX        (0x300 / 4)
 #define ASPEED_SMC_CS_MAX       5
 
 struct AspeedSMCState {
@@ -80,8 +80,6 @@ struct AspeedSMCState {
 
     AspeedSMCFlash flashes[ASPEED_SMC_CS_MAX];
 
-    uint8_t snoop_index;
-    uint8_t snoop_dummies;
     bool unselect;
 };
 
@@ -116,6 +114,7 @@ struct AspeedSMCClass {
                            AspeedSegments *seg);
     void (*dma_ctrl)(AspeedSMCState *s, uint32_t value);
     int (*addr_width)(const AspeedSMCState *s);
+    int (*data_fifo_offset_to_cs)(const AspeedSMCState *s, uint32_t offset);
     const MemoryRegionOps *reg_ops;
 };
 

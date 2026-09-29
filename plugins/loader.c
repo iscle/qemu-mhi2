@@ -29,11 +29,8 @@
 #include "qemu/xxhash.h"
 #include "qemu/plugin.h"
 #include "qemu/memalign.h"
-#include "hw/core/cpu.h"
+#include "qemu/target-info.h"
 #include "exec/tb-flush.h"
-#ifndef CONFIG_USER_ONLY
-#include "hw/boards.h"
-#endif
 
 #include "plugin.h"
 
@@ -128,7 +125,7 @@ static int plugin_add(void *opaque, const char *name, const char *value,
                 /* Will treat arg="argname" as "argname=on" */
                 fullarg = g_strdup_printf("%s=%s", value, "on");
             } else {
-                fullarg = g_strdup_printf("%s", value);
+                fullarg = g_strdup(value);
             }
             warn_report("using 'arg=%s' is deprecated", value);
             error_printf("Please use '%s' directly\n", fullarg);
@@ -256,7 +253,7 @@ static int plugin_load(struct qemu_plugin_desc *desc, const qemu_info_t *info, E
          * call a full uninstall if the plugin did not yet call it.
          */
         if (!ctx->uninstalling) {
-            plugin_reset_uninstall(ctx->id, NULL, false);
+            plugin_reset_uninstall(ctx->id, NULL, NULL, false);
         }
     }
 
@@ -297,17 +294,11 @@ int qemu_plugin_load_list(QemuPluginList *head, Error **errp)
     struct qemu_plugin_desc *desc, *next;
     g_autofree qemu_info_t *info = g_new0(qemu_info_t, 1);
 
-    info->target_name = TARGET_NAME;
+    info->target_name = target_name();
     info->version.min = QEMU_PLUGIN_MIN_VERSION;
     info->version.cur = QEMU_PLUGIN_VERSION;
-#ifndef CONFIG_USER_ONLY
-    MachineState *ms = MACHINE(qdev_get_machine());
-    info->system_emulation = true;
-    info->system.smp_vcpus = ms->smp.cpus;
-    info->system.max_vcpus = ms->smp.max_cpus;
-#else
-    info->system_emulation = false;
-#endif
+
+    qemu_plugin_fillin_mode_info(info);
 
     QTAILQ_FOREACH_SAFE(desc, head, entry, next) {
         int err;
@@ -323,10 +314,12 @@ int qemu_plugin_load_list(QemuPluginList *head, Error **errp)
 
 struct qemu_plugin_reset_data {
     struct qemu_plugin_ctx *ctx;
-    qemu_plugin_simple_cb_t cb;
+    qemu_plugin_udata_cb_t cb;
+    void *userdata;
     bool reset;
 };
 
+QEMU_DISABLE_CFI
 static void plugin_reset_destroy__locked(struct qemu_plugin_reset_data *data)
 {
     struct qemu_plugin_ctx *ctx = data->ctx;
@@ -346,7 +339,7 @@ static void plugin_reset_destroy__locked(struct qemu_plugin_reset_data *data)
     if (data->reset) {
         g_assert(ctx->resetting);
         if (data->cb) {
-            data->cb(ctx->id);
+            data->cb(data->userdata);
         }
         ctx->resetting = false;
         g_free(data);
@@ -365,7 +358,7 @@ static void plugin_reset_destroy__locked(struct qemu_plugin_reset_data *data)
     g_assert(success);
     QTAILQ_REMOVE(&plugin.ctxs, ctx, entry);
     if (data->cb) {
-        data->cb(ctx->id);
+        data->cb(data->userdata);
     }
     if (!g_module_close(ctx->handle)) {
         warn_report("%s: %s", __func__, g_module_error());
@@ -379,20 +372,20 @@ static void plugin_reset_destroy(struct qemu_plugin_reset_data *data)
 {
     qemu_rec_mutex_lock(&plugin.lock);
     plugin_reset_destroy__locked(data);
-    qemu_rec_mutex_lock(&plugin.lock);
+    qemu_rec_mutex_unlock(&plugin.lock);
 }
 
 static void plugin_flush_destroy(CPUState *cpu, run_on_cpu_data arg)
 {
     struct qemu_plugin_reset_data *data = arg.host_ptr;
 
-    g_assert(cpu_in_exclusive_context(cpu));
-    tb_flush(cpu);
+    tb_flush__exclusive_or_serial();
     plugin_reset_destroy(data);
 }
 
 void plugin_reset_uninstall(qemu_plugin_id_t id,
-                            qemu_plugin_simple_cb_t cb,
+                            qemu_plugin_udata_cb_t cb,
+                            void *userdata,
                             bool reset)
 {
     struct qemu_plugin_reset_data *data;
@@ -410,6 +403,7 @@ void plugin_reset_uninstall(qemu_plugin_id_t id,
     data = g_new(struct qemu_plugin_reset_data, 1);
     data->ctx = ctx;
     data->cb = cb;
+    data->userdata = userdata;
     data->reset = reset;
     /*
      * Only flush the code cache if the vCPUs have been created. If so,

@@ -22,8 +22,8 @@
 
 #include "qapi/error.h"
 #include "qapi/qobject-input-visitor.h"
-#include "qapi/qmp/qdict.h"
-#include "qapi/qmp/qobject.h"
+#include "qobject/qdict.h"
+#include "qobject/qobject.h"
 #include "qom/object.h"
 #include "qemu/module.h"
 #include "qemu/option.h"
@@ -135,7 +135,7 @@ static void dummy_init(Object *obj)
 }
 
 
-static void dummy_class_init(ObjectClass *cls, void *data)
+static void dummy_class_init(ObjectClass *cls, const void *data)
 {
     object_class_property_add_str(cls, "sv",
                                   dummy_get_sv,
@@ -164,7 +164,7 @@ static const TypeInfo dummy_info = {
     .instance_finalize = dummy_finalize,
     .class_size = sizeof(DummyObjectClass),
     .class_init = dummy_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }
@@ -264,7 +264,7 @@ static void dummy_dev_unparent(Object *obj)
     object_unparent(OBJECT(dev->bus));
 }
 
-static void dummy_dev_class_init(ObjectClass *klass, void *opaque)
+static void dummy_dev_class_init(ObjectClass *klass, const void *opaque)
 {
     klass->unparent = dummy_dev_unparent;
 }
@@ -288,7 +288,7 @@ static void dummy_bus_unparent(Object *obj)
     object_unparent(OBJECT(bus->backend));
 }
 
-static void dummy_bus_class_init(ObjectClass *klass, void *opaque)
+static void dummy_bus_class_init(ObjectClass *klass, const void *opaque)
 {
     klass->unparent = dummy_bus_unparent;
 }
@@ -336,7 +336,7 @@ static QemuOptsList qemu_object_opts = {
 };
 
 
-static void test_dummy_createv(void)
+static void test_dummy_createv_tree(void)
 {
     Error *err = NULL;
     Object *parent = object_get_objects_root();
@@ -351,6 +351,7 @@ static void test_dummy_createv(void)
                               NULL));
 
     g_assert(err == NULL);
+    g_assert_cmpint(dobj->parent_obj.ref, ==, 1);
     g_assert_cmpstr(dobj->sv, ==, "Hiss hiss hiss");
     g_assert(dobj->bv == true);
     g_assert(dobj->av == DUMMY_PLATYPUS);
@@ -362,9 +363,30 @@ static void test_dummy_createv(void)
 }
 
 
-static Object *new_helper(Error **errp,
-                          Object *parent,
-                          ...)
+static void test_dummy_createv_parentless(void)
+{
+    Error *err = NULL;
+    DummyObject *dobj = DUMMY_OBJECT(
+        object_new_with_props_parentless(TYPE_DUMMY,
+                                         &err,
+                                         "bv", "yes",
+                                         "sv", "Hiss hiss hiss",
+                                         "av", "platypus",
+                                         NULL));
+
+    g_assert(err == NULL);
+    g_assert_cmpint(dobj->parent_obj.ref, ==, 1);
+    g_assert_cmpstr(dobj->sv, ==, "Hiss hiss hiss");
+    g_assert(dobj->bv == true);
+    g_assert(dobj->av == DUMMY_PLATYPUS);
+
+    object_unref(OBJECT(dobj));
+}
+
+
+static Object *new_helper_tree(Error **errp,
+                               Object *parent,
+                               ...)
 {
     va_list vargs;
     Object *obj;
@@ -373,25 +395,26 @@ static Object *new_helper(Error **errp,
     obj = object_new_with_propv(TYPE_DUMMY,
                                 parent,
                                 "dummy0",
-                                errp,
-                                vargs);
+                                vargs,
+                                errp);
     va_end(vargs);
     return obj;
 }
 
-static void test_dummy_createlist(void)
+static void test_dummy_createlist_tree(void)
 {
     Error *err = NULL;
     Object *parent = object_get_objects_root();
     DummyObject *dobj = DUMMY_OBJECT(
-        new_helper(&err,
-                   parent,
-                   "bv", "yes",
-                   "sv", "Hiss hiss hiss",
-                   "av", "platypus",
-                   NULL));
+        new_helper_tree(&err,
+                        parent,
+                        "bv", "yes",
+                        "sv", "Hiss hiss hiss",
+                        "av", "platypus",
+                        NULL));
 
     g_assert(err == NULL);
+    g_assert_cmpint(dobj->parent_obj.ref, ==, 1);
     g_assert_cmpstr(dobj->sv, ==, "Hiss hiss hiss");
     g_assert(dobj->bv == true);
     g_assert(dobj->av == DUMMY_PLATYPUS);
@@ -402,13 +425,45 @@ static void test_dummy_createlist(void)
     object_unparent(OBJECT(dobj));
 }
 
+static Object *new_helper_parentless(Error **errp,
+                                     ...)
+{
+    va_list vargs;
+    Object *obj;
+
+    va_start(vargs, errp);
+    obj = object_new_with_propv_parentless(TYPE_DUMMY,
+                                           vargs,
+                                           errp);
+    va_end(vargs);
+    return obj;
+}
+
+static void test_dummy_createlist_parentless(void)
+{
+    Error *err = NULL;
+    DummyObject *dobj = DUMMY_OBJECT(
+        new_helper_parentless(&err,
+                              "bv", "yes",
+                              "sv", "Hiss hiss hiss",
+                              "av", "platypus",
+                              NULL));
+
+    g_assert(err == NULL);
+    g_assert_cmpint(dobj->parent_obj.ref, ==, 1);
+    g_assert_cmpstr(dobj->sv, ==, "Hiss hiss hiss");
+    g_assert(dobj->bv == true);
+    g_assert(dobj->av == DUMMY_PLATYPUS);
+
+    object_unref(OBJECT(dobj));
+}
+
 static bool test_create_obj(QDict *qdict, Error **errp)
 {
     Visitor *v = qobject_input_visitor_new_keyval(QOBJECT(qdict));
-    Object *obj = user_creatable_add_type(TYPE_DUMMY, "dev0", qdict, v, errp);
-
+    Object *obj = object_new_with_props_from_qdict(
+        TYPE_DUMMY, object_get_objects_root(), "dev0", qdict, v, errp);
     visit_free(v);
-    object_unref(obj);
     return !!obj;
 }
 
@@ -610,7 +665,7 @@ static void test_dummy_delchild(void)
 static void test_qom_partial_path(void)
 {
     Object *root  = object_get_objects_root();
-    Object *cont1 = container_get(root, "/cont1");
+    Object *cont1 = object_property_add_new_container(root, "cont1");
     Object *obj1  = object_new(TYPE_DUMMY);
     Object *obj2a = object_new(TYPE_DUMMY);
     Object *obj2b = object_new(TYPE_DUMMY);
@@ -658,8 +713,14 @@ int main(int argc, char **argv)
     type_register_static(&dummy_bus_info);
     type_register_static(&dummy_backend_info);
 
-    g_test_add_func("/qom/proplist/createlist", test_dummy_createlist);
-    g_test_add_func("/qom/proplist/createv", test_dummy_createv);
+    g_test_add_func("/qom/proplist/createlist/tree",
+                    test_dummy_createlist_tree);
+    g_test_add_func("/qom/proplist/createlist/parentless",
+                    test_dummy_createlist_parentless);
+    g_test_add_func("/qom/proplist/createv/tree",
+                    test_dummy_createv_tree);
+    g_test_add_func("/qom/proplist/createv/parentless",
+                    test_dummy_createv_parentless);
     g_test_add_func("/qom/proplist/createcmdline", test_dummy_createcmdl);
     g_test_add_func("/qom/proplist/badenum", test_dummy_badenum);
     g_test_add_func("/qom/proplist/getenum", test_dummy_getenum);

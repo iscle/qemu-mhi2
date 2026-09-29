@@ -21,7 +21,16 @@ import sys
 import re
 import string
 import hex_common
+from textwrap import dedent
 
+def gen_disabled_ieee_insn(f, tag, regs):
+    f.write("    if (!ctx->ieee_fp_extension) {\n")
+    for regtype, regid in regs:
+        reg = hex_common.get_register(tag, regtype, regid)
+        if reg.is_hvx_reg() and reg.is_written():
+            reg.gen_zero(f)
+    f.write("        return;\n")
+    f.write("    }\n")
 
 ##
 ## Generate the TCG code to call the helper
@@ -35,7 +44,6 @@ import hex_common
 ##        TCGv RsV = hex_gpr[insn->regno[1]];
 ##        TCGv RtV = hex_gpr[insn->regno[2]];
 ##        <GEN>
-##        gen_log_reg_write(ctx, RdN, RdV);
 ##    }
 ##
 ##       where <GEN> depends on hex_common.skip_qemu_helper(tag)
@@ -50,6 +58,18 @@ def gen_tcg_func(f, tag, regs, imms):
 
     f.write("    Insn *insn G_GNUC_UNUSED = ctx->insn;\n")
 
+    if "A_PRIV" in hex_common.attribdict[tag]:
+        f.write(dedent("""\
+#ifdef CONFIG_USER_ONLY
+    hex_gen_exception_end_tb(ctx, HEX_CAUSE_PRIV_USER_NO_SINSN);
+#else
+"""))
+    if "A_GUEST" in hex_common.attribdict[tag]:
+        f.write(dedent("""\
+#ifdef CONFIG_USER_ONLY
+    hex_gen_exception_end_tb(ctx, HEX_CAUSE_PRIV_USER_NO_GINSN);
+#else
+"""))
     if hex_common.need_ea(tag):
         f.write("    TCGv EA G_GNUC_UNUSED = tcg_temp_new();\n")
 
@@ -63,7 +83,25 @@ def gen_tcg_func(f, tag, regs, imms):
         i = 1 if immlett.isupper() else 0
         f.write(f"    int {hex_common.imm_name(immlett)} = insn->immed[{i}];\n")
 
+    if "A_HVX_IEEE_FP" in hex_common.attribdict[tag]:
+        gen_disabled_ieee_insn(f, tag, regs)
+
     if hex_common.is_idef_parser_enabled(tag):
+        gpr_operands = [
+            hex_common.get_register(tag, regtype, regid)
+            for regtype, regid in regs
+            if hex_common.get_register(tag, regtype, regid).may_alias_gpr()
+        ]
+        dests = [reg for reg in gpr_operands if reg.is_written()]
+        for reg in gpr_operands:
+            if reg.is_written() or not reg.is_read():
+                continue
+            src = reg.reg_tcg()
+            for dest in dests:
+                f.write(hex_common.code_fmt(f"""\
+                    {src} = gen_unalias_gpr_src({src}, {dest.reg_tcg()});
+                """))
+
         declared = []
         ## Handle registers
         for regtype, regid in regs:
@@ -73,10 +111,14 @@ def gen_tcg_func(f, tag, regs, imms):
         for immlett, bits, immshift in imms:
             declared.append(hex_common.imm_name(immlett))
 
-        arguments = ", ".join(["ctx", "ctx->insn", "ctx->pkt"] + declared)
+        arguments = ", ".join(["ctx", "ctx->insn", "&ctx->pkt"] + declared)
         f.write(f"    emit_{tag}({arguments});\n")
 
     elif hex_common.skip_qemu_helper(tag):
+        if "A_FPOP" in hex_common.attribdict[tag]:
+            f.write("    TCGv pkt_need_commit = ")
+            f.write("tcg_constant_tl(ctx->need_commit);\n")
+
         f.write(f"    fGEN_TCG_{tag}({hex_common.semdict[tag]});\n")
     else:
         ## Generate the call to the helper
@@ -95,8 +137,13 @@ def gen_tcg_func(f, tag, regs, imms):
     for regtype, regid in regs:
         reg = hex_common.get_register(tag, regtype, regid)
         if reg.is_written():
-            reg.log_write(f, tag)
+            reg.gen_write(f, tag)
 
+    if (
+        "A_PRIV" in hex_common.attribdict[tag]
+        or "A_GUEST" in hex_common.attribdict[tag]
+    ):
+        f.write("#endif   /* CONFIG_USER_ONLY */\n")
     f.write("}\n\n")
 
 
@@ -108,30 +155,23 @@ def gen_def_tcg_func(f, tag, tagregs, tagimms):
 
 
 def main():
-    is_idef_parser_enabled = hex_common.read_common_files()
+    args = hex_common.parse_common_args(
+        "Emit functions calling generated code implementing instruction semantics (helpers, idef-parser)"
+    )
     tagregs = hex_common.get_tagregs()
     tagimms = hex_common.get_tagimms()
 
-    output_file = sys.argv[-1]
-    with open(output_file, "w") as f:
+    with open(args.out, "w") as f:
         f.write("#ifndef HEXAGON_TCG_FUNCS_H\n")
         f.write("#define HEXAGON_TCG_FUNCS_H\n\n")
-        if is_idef_parser_enabled:
+        if args.idef_parser:
             f.write('#include "idef-generated-emitter.h.inc"\n\n')
 
         for tag in hex_common.tags:
-            ## Skip the priv instructions
-            if "A_PRIV" in hex_common.attribdict[tag]:
-                continue
-            ## Skip the guest instructions
-            if "A_GUEST" in hex_common.attribdict[tag]:
-                continue
-            ## Skip the diag instructions
-            if tag == "Y6_diag":
-                continue
-            if tag == "Y6_diag0":
-                continue
-            if tag == "Y6_diag1":
+            if hex_common.tag_ignore(tag):
+                f.write(f"static void generate_{tag}"
+                        f"(DisasContext *ctx)\n")
+                f.write("{\n}\n\n")
                 continue
 
             gen_def_tcg_func(f, tag, tagregs, tagimms)

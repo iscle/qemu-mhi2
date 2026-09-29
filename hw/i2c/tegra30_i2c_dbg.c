@@ -13,7 +13,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 
@@ -100,7 +100,7 @@ static const VMStateDescription tegra30_i2c_dbg_vmstate = {
     }
 };
 
-static void tegra30_i2c_dbg_class_init(ObjectClass *klass, void *data)
+static void tegra30_i2c_dbg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);

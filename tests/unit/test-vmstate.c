@@ -30,6 +30,7 @@
 #include "../migration/savevm.h"
 #include "qemu/module.h"
 #include "io/channel-file.h"
+#include "qapi/error.h"
 
 static int temp_fd;
 
@@ -68,8 +69,7 @@ static void save_vmstate(const VMStateDescription *desc, void *obj)
     QEMUFile *f = open_test_file(true);
 
     /* Save file with vmstate */
-    int ret = vmstate_save_state(f, desc, obj, NULL);
-    g_assert(!ret);
+    vmstate_save_vmsd(f, desc, obj, NULL, &error_abort);
     qemu_put_byte(f, QEMU_VM_EOF);
     g_assert(!qemu_file_get_error(f));
     qemu_fclose(f);
@@ -107,21 +107,23 @@ static int load_vmstate_one(const VMStateDescription *desc, void *obj,
                             int version, const uint8_t *wire, size_t size)
 {
     QEMUFile *f;
-    int ret;
+    Error *local_err = NULL;
 
     f = open_test_file(true);
     qemu_put_buffer(f, wire, size);
     qemu_fclose(f);
 
     f = open_test_file(false);
-    ret = vmstate_load_state(f, desc, obj, version);
-    if (ret) {
+    if (!vmstate_load_vmsd(f, desc, obj, version, &local_err)) {
+        error_report_err(local_err);
         g_assert(qemu_file_get_error(f));
-    } else{
-        g_assert(!qemu_file_get_error(f));
+        qemu_fclose(f);
+        return -EINVAL;
     }
+
+    g_assert(!qemu_file_get_error(f));
     qemu_fclose(f);
-    return ret;
+    return 0;
 }
 
 
@@ -365,7 +367,7 @@ static void test_load_v1(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .b = 200, .e = 500, .f = 600 };
-    vmstate_load_state(loading, &vmstate_versioned, &obj, 1);
+    vmstate_load_vmsd(loading, &vmstate_versioned, &obj, 1, &error_abort);
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 200);
@@ -391,7 +393,7 @@ static void test_load_v2(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj;
-    vmstate_load_state(loading, &vmstate_versioned, &obj, 2);
+    vmstate_load_vmsd(loading, &vmstate_versioned, &obj, 2, &error_abort);
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
     g_assert_cmpint(obj.c, ==, 30);
@@ -428,8 +430,7 @@ static void test_save_noskip(void)
     QEMUFile *fsave = open_test_file(true);
     TestStruct obj = { .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, .f = 6,
                        .skip_c_e = false };
-    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL);
-    g_assert(!ret);
+    vmstate_save_vmsd(fsave, &vmstate_skipping, &obj, NULL, &error_abort);
     g_assert(!qemu_file_get_error(fsave));
 
     uint8_t expected[] = {
@@ -450,8 +451,7 @@ static void test_save_skip(void)
     QEMUFile *fsave = open_test_file(true);
     TestStruct obj = { .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, .f = 6,
                        .skip_c_e = true };
-    int ret = vmstate_save_state(fsave, &vmstate_skipping, &obj, NULL);
-    g_assert(!ret);
+    vmstate_save_vmsd(fsave, &vmstate_skipping, &obj, NULL, &error_abort);
     g_assert(!qemu_file_get_error(fsave));
 
     uint8_t expected[] = {
@@ -480,7 +480,7 @@ static void test_load_noskip(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .skip_c_e = false };
-    vmstate_load_state(loading, &vmstate_skipping, &obj, 2);
+    vmstate_load_vmsd(loading, &vmstate_skipping, &obj, 2, &error_abort);
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
@@ -504,7 +504,7 @@ static void test_load_skip(void)
 
     QEMUFile *loading = open_test_file(false);
     TestStruct obj = { .skip_c_e = true, .c = 300, .e = 500 };
-    vmstate_load_state(loading, &vmstate_skipping, &obj, 2);
+    vmstate_load_vmsd(loading, &vmstate_skipping, &obj, 2, &error_abort);
     g_assert(!qemu_file_get_error(loading));
     g_assert_cmpint(obj.a, ==, 10);
     g_assert_cmpint(obj.b, ==, 20);
@@ -583,7 +583,7 @@ static void test_arr_ptr_str_no0_load(void)
 
 static uint8_t wire_arr_ptr_0[] = {
     0x00, 0x00, 0x00, 0x00,
-    VMS_NULLPTR_MARKER,
+    VMS_MARKER_PTR_NULL,
     0x00, 0x00, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x03,
     QEMU_VM_EOF
@@ -631,7 +631,7 @@ const VMStateDescription vmsd_arpp = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_ARRAY_OF_POINTER(ar, TestArrayOfPtrToInt,
-                AR_SIZE, 0, vmstate_info_int32, int32_t*),
+                AR_SIZE, 0, vmstate_info_int32, int32_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -663,6 +663,88 @@ static void test_arr_ptr_prim_0_load(void)
             g_assert_cmpint(ar_gt[idx], ==, ar[idx]);
         }
     }
+}
+
+static uint8_t wire_arr_ptr_with_nulls[] = {
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x00,
+    VMS_MARKER_PTR_NULL,
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x02,
+    VMS_MARKER_PTR_VALID,
+    0x00, 0x00, 0x00, 0x03,
+    QEMU_VM_EOF
+};
+
+typedef struct {
+    uint32_t       ar_items_num;
+    TestStructTriv **ar;
+} TestVArrayOfPtrToStuctWithNULLs;
+
+const VMStateDescription vmsd_arps_with_nulls = {
+    .name = "test/arps_with_nulls",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VARRAY_OF_POINTER_TO_STRUCT_UINT32_ALLOC(
+            ar, TestVArrayOfPtrToStuctWithNULLs, ar_items_num,
+            0, vmsd_tst, TestStructTriv),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void test_arr_ptr_nulls_str_save(void)
+{
+    TestStructTriv ar[AR_SIZE] = { {.i = 0}, {.i = 1}, {.i = 2}, {.i = 3} };
+    TestVArrayOfPtrToStuctWithNULLs sample = {};
+    int idx;
+
+    sample.ar_items_num = AR_SIZE;
+    sample.ar = g_new0(TestStructTriv*, sample.ar_items_num);
+    sample.ar[0] = g_new0(TestStructTriv, 1);
+    *sample.ar[0] = ar[0];
+    /* note, sample.ar[1] remains NULL */
+    sample.ar[2] = g_new0(TestStructTriv, 1);
+    *sample.ar[2] = ar[2];
+    sample.ar[3] = g_new0(TestStructTriv, 1);
+    *sample.ar[3] = ar[3];
+
+    save_vmstate(&vmsd_arps_with_nulls, &sample);
+    compare_vmstate(wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls));
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        g_free(sample.ar[idx]);
+    }
+    g_free(sample.ar);
+}
+
+static void test_arr_ptr_nulls_str_load(void)
+{
+    TestStructTriv ar_gt[AR_SIZE] = {{.i = 0}, {.i = 0}, {.i = 2}, {.i = 3} };
+    TestVArrayOfPtrToStuctWithNULLs obj = {};
+    int idx;
+
+    obj.ar_items_num = AR_SIZE;
+    obj.ar = g_new0(TestStructTriv*, obj.ar_items_num);
+
+    save_buffer(wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls));
+    SUCCESS(load_vmstate_one(
+                &vmsd_arps_with_nulls, &obj, 1,
+                wire_arr_ptr_with_nulls, sizeof(wire_arr_ptr_with_nulls)));
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        if (idx == 1) {
+            g_assert_cmpint((uintptr_t)(obj.ar[idx]), ==, 0);
+        } else {
+            /* compare the target array ar with the ground truth array ar_gt */
+            g_assert_cmpint(ar_gt[idx].i, ==, obj.ar[idx]->i);
+        }
+    }
+
+    for (idx = 0; idx < AR_SIZE; ++idx) {
+        g_free(obj.ar[idx]);
+    }
+    g_free(obj.ar);
 }
 
 /* test QTAILQ migration */
@@ -773,7 +855,7 @@ static void test_load_q(void)
     TestQtailq tgt;
 
     QTAILQ_INIT(&tgt.q);
-    vmstate_load_state(fload, &vmstate_q, &tgt, 1);
+    vmstate_load_vmsd(fload, &vmstate_q, &tgt, 1, &error_abort);
     char eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(tgt.i16, ==, obj_q.i16);
@@ -891,29 +973,29 @@ static void destroy_domain(gpointer data)
     g_free(domain);
 }
 
-static int domain_preload(void *opaque)
+static bool domain_preload(void *opaque, Error **errp)
 {
     TestGTreeDomain *domain = opaque;
 
     domain->mappings = g_tree_new_full((GCompareDataFunc)interval_cmp,
                                        NULL, g_free, g_free);
-    return 0;
+    return true;
 }
 
-static int iommu_preload(void *opaque)
+static bool iommu_preload(void *opaque, Error **errp)
 {
     TestGTreeIOMMU *iommu = opaque;
 
     iommu->domains = g_tree_new_full((GCompareDataFunc)int_cmp,
                                      NULL, NULL, destroy_domain);
-    return 0;
+    return true;
 }
 
 static const VMStateDescription vmstate_domain = {
     .name = "domain",
     .version_id = 1,
     .minimum_version_id = 1,
-    .pre_load = domain_preload,
+    .pre_load_errp = domain_preload,
     .fields = (const VMStateField[]) {
         VMSTATE_INT32(id, TestGTreeDomain),
         VMSTATE_GTREE_V(mappings, TestGTreeDomain, 1,
@@ -949,7 +1031,7 @@ static const VMStateDescription vmstate_iommu = {
     .name = "iommu",
     .version_id = 1,
     .minimum_version_id = 1,
-    .pre_load = iommu_preload,
+    .pre_load_errp = iommu_preload,
     .fields = (const VMStateField[]) {
         VMSTATE_INT32(id, TestGTreeIOMMU),
         VMSTATE_GTREE_DIRECT_KEY_V(domains, TestGTreeIOMMU, 1,
@@ -1127,7 +1209,7 @@ static void test_gtree_load_domain(void)
 
     fload = open_test_file(false);
 
-    vmstate_load_state(fload, &vmstate_domain, dest_domain, 1);
+    vmstate_load_vmsd(fload, &vmstate_domain, dest_domain, 1, &error_abort);
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(orig_domain->id, ==, dest_domain->id);
@@ -1241,7 +1323,7 @@ static void test_gtree_load_iommu(void)
     qemu_fclose(fsave);
 
     fload = open_test_file(false);
-    vmstate_load_state(fload, &vmstate_iommu, dest_iommu, 1);
+    vmstate_load_vmsd(fload, &vmstate_iommu, dest_iommu, 1, &error_abort);
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(orig_iommu->id, ==, dest_iommu->id);
@@ -1376,7 +1458,8 @@ static void test_load_qlist(void)
     qemu_fclose(fsave);
 
     fload = open_test_file(false);
-    vmstate_load_state(fload, &vmstate_container, dest_container, 1);
+    vmstate_load_vmsd(fload, &vmstate_container, dest_container, 1,
+                      &error_abort);
     eof = qemu_get_byte(fload);
     g_assert(!qemu_file_get_error(fload));
     g_assert_cmpint(eof, ==, QEMU_VM_EOF);
@@ -1393,22 +1476,22 @@ typedef struct TmpTestStruct {
     int64_t diff;
 } TmpTestStruct;
 
-static int tmp_child_pre_save(void *opaque)
+static bool tmp_child_pre_save(void *opaque, Error **errp)
 {
     struct TmpTestStruct *tts = opaque;
 
     tts->diff = tts->parent->b - tts->parent->a;
 
-    return 0;
+    return true;
 }
 
-static int tmp_child_post_load(void *opaque, int version_id)
+static bool tmp_child_post_load(void *opaque, int version_id, Error **errp)
 {
     struct TmpTestStruct *tts = opaque;
 
     tts->parent->b = tts->parent->a + tts->diff;
 
-    return 0;
+    return true;
 }
 
 static const VMStateDescription vmstate_tmp_back_to_parent = {
@@ -1421,8 +1504,8 @@ static const VMStateDescription vmstate_tmp_back_to_parent = {
 
 static const VMStateDescription vmstate_tmp_child = {
     .name = "test/tmp_child",
-    .pre_save = tmp_child_pre_save,
-    .post_load = tmp_child_post_load,
+    .pre_save_errp = tmp_child_pre_save,
+    .post_load_errp = tmp_child_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_INT64(diff, TmpTestStruct),
         VMSTATE_STRUCT_POINTER(parent, TmpTestStruct,
@@ -1509,6 +1592,10 @@ int main(int argc, char **argv)
                     test_arr_ptr_prim_0_save);
     g_test_add_func("/vmstate/array/ptr/prim/0/load",
                     test_arr_ptr_prim_0_load);
+    g_test_add_func("/vmstate/array/ptr-nulls/str/save",
+                    test_arr_ptr_nulls_str_save);
+    g_test_add_func("/vmstate/array/ptr-nulls/str/load",
+                    test_arr_ptr_nulls_str_load);
     g_test_add_func("/vmstate/qtailq/save/saveq", test_save_q);
     g_test_add_func("/vmstate/qtailq/load/loadq", test_load_q);
     g_test_add_func("/vmstate/gtree/save/savedomain", test_gtree_save_domain);

@@ -488,7 +488,15 @@ static void run_bench(void)
 {
     bench_func_t f;
 
+    /*
+     * These implementation-defined choices for various things IEEE
+     * doesn't specify match those used by the Arm architecture.
+     */
     set_float_2nan_prop_rule(float_2nan_prop_s_ab, &soft_status);
+    set_float_3nan_prop_rule(float_3nan_prop_s_cab, &soft_status);
+    set_float_infzeronan_rule(float_infzeronan_dnan_if_qnan, &soft_status);
+    set_float_default_nan_pattern(0b01000000, &soft_status);
+    set_float_ftz_detection(float_ftz_before_rounding, &soft_status);
 
     f = bench_funcs[operation][precision];
     g_assert(f);
@@ -607,7 +615,7 @@ static void set_soft_precision(enum rounding rounding)
     default:
         g_assert_not_reached();
     }
-    soft_status.float_rounding_mode = mode;
+    set_float_rounding_mode(mode, &soft_status);
 }
 
 static void parse_args(int argc, char *argv[])
@@ -664,10 +672,10 @@ static void parse_args(int argc, char *argv[])
             tester = val;
             break;
         case 'z':
-            soft_status.flush_inputs_to_zero = 1;
+            set_flush_inputs_to_zero(true, &soft_status);
             break;
         case 'Z':
-            soft_status.flush_to_zero = 1;
+            set_flush_to_zero(true, &soft_status);
             break;
         }
     }

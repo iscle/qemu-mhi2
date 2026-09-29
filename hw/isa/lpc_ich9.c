@@ -30,14 +30,14 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "cpu.h"
+#include "target/i386/cpu.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/range.h"
 #include "hw/dma/i8257.h"
 #include "hw/isa/isa.h"
 #include "migration/vmstate.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/isa/apm.h"
 #include "hw/pci/pci.h"
 #include "hw/southbridge/ich9.h"
@@ -45,9 +45,9 @@
 #include "hw/acpi/ich9.h"
 #include "hw/acpi/ich9_timer.h"
 #include "hw/pci/pci_bus.h"
-#include "hw/qdev-properties.h"
-#include "sysemu/runstate.h"
-#include "sysemu/sysemu.h"
+#include "hw/core/qdev-properties.h"
+#include "system/runstate.h"
+#include "system/system.h"
 #include "hw/core/cpu.h"
 #include "hw/nvram/fw_cfg.h"
 #include "qemu/cutils.h"
@@ -132,6 +132,11 @@ static void ich9_cc_init(ICH9LPCState *lpc)
 static void ich9_cc_reset(ICH9LPCState *lpc)
 {
     uint8_t *c = lpc->chip_config;
+    uint32_t gcs = ICH9_CC_GCS_DEFAULT;
+
+    if (lpc->pin_strap.spkr_hi) {
+        gcs |= ICH9_CC_GCS_NO_REBOOT;
+    }
 
     memset(lpc->chip_config, 0, sizeof(lpc->chip_config));
 
@@ -142,7 +147,7 @@ static void ich9_cc_reset(ICH9LPCState *lpc)
     pci_set_long(c + ICH9_CC_D27IR, ICH9_CC_DIR_DEFAULT);
     pci_set_long(c + ICH9_CC_D26IR, ICH9_CC_DIR_DEFAULT);
     pci_set_long(c + ICH9_CC_D25IR, ICH9_CC_DIR_DEFAULT);
-    pci_set_long(c + ICH9_CC_GCS, ICH9_CC_GCS_DEFAULT);
+    pci_set_long(c + ICH9_CC_GCS, gcs);
 
     ich9_cc_update(lpc);
 }
@@ -182,7 +187,6 @@ static uint64_t ich9_cc_read(void *opaque, hwaddr addr,
 }
 
 /* IRQ routing */
-/* */
 static void ich9_lpc_rout(uint8_t pirq_rout, int *pic_irq, int *pic_dis)
 {
     *pic_irq = pirq_rout & ICH9_LPC_PIRQ_ROUT_MASK;
@@ -679,25 +683,12 @@ static void ich9_lpc_initfn(Object *obj)
 {
     ICH9LPCState *lpc = ICH9_LPC_DEVICE(obj);
 
-    static const uint8_t acpi_enable_cmd = ICH9_APM_ACPI_ENABLE;
-    static const uint8_t acpi_disable_cmd = ICH9_APM_ACPI_DISABLE;
-
     object_initialize_child(obj, "rtc", &lpc->rtc, TYPE_MC146818_RTC);
 
     qdev_init_gpio_out_named(DEVICE(lpc), lpc->gsi, ICH9_GPIO_GSI,
                              IOAPIC_NUM_PINS);
 
-    object_property_add_uint8_ptr(obj, ACPI_PM_PROP_SCI_INT,
-                                  &lpc->sci_gsi, OBJ_PROP_FLAG_READ);
-    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_ENABLE_CMD,
-                                  &acpi_enable_cmd, OBJ_PROP_FLAG_READ);
-    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_DISABLE_CMD,
-                                  &acpi_disable_cmd, OBJ_PROP_FLAG_READ);
-    object_property_add_uint64_ptr(obj, ICH9_LPC_SMI_NEGOTIATED_FEAT_PROP,
-                                   &lpc->smi_negotiated_features,
-                                   OBJ_PROP_FLAG_READ);
-
-    ich9_pm_add_properties(obj, &lpc->pm);
+    ich9_pm_reset_properties(&lpc->pm);
 }
 
 static void ich9_lpc_realize(PCIDevice *d, Error **errp)
@@ -826,7 +817,7 @@ static const VMStateDescription vmstate_ich9_lpc = {
     }
 };
 
-static Property ich9_lpc_properties[] = {
+static const Property ich9_lpc_properties[] = {
     DEFINE_PROP_BOOL("noreboot", ICH9LPCState, pin_strap.spkr_hi, false),
     DEFINE_PROP_BOOL("smm-compat", ICH9LPCState, pm.smm_compat, false),
     DEFINE_PROP_BOOL("smm-enabled", ICH9LPCState, pm.smm_enabled, false),
@@ -840,7 +831,6 @@ static Property ich9_lpc_properties[] = {
                      pm.swsmi_timer_enabled, true),
     DEFINE_PROP_BOOL("x-smi-periodic-timer", ICH9LPCState,
                      pm.periodic_timer_enabled, true),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void ich9_send_gpe(AcpiDeviceIf *adev, AcpiEventStatusBits ev)
@@ -876,13 +866,16 @@ static void build_ich9_isa_aml(AcpiDevAmlIf *adev, Aml *scope)
     qbus_build_aml(bus, scope);
 }
 
-static void ich9_lpc_class_init(ObjectClass *klass, void *data)
+static void ich9_lpc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(klass);
     AcpiDeviceIfClass *adevc = ACPI_DEVICE_IF_CLASS(klass);
     AcpiDevAmlIfClass *amldevc = ACPI_DEV_AML_IF_CLASS(klass);
+
+    static const uint8_t acpi_enable_cmd = ICH9_APM_ACPI_ENABLE;
+    static const uint8_t acpi_disable_cmd = ICH9_APM_ACPI_DISABLE;
 
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     device_class_set_legacy_reset(dc, ich9_lpc_reset);
@@ -908,6 +901,25 @@ static void ich9_lpc_class_init(ObjectClass *klass, void *data)
     adevc->ospm_status = ich9_pm_ospm_status;
     adevc->send_event = ich9_send_gpe;
     amldevc->build_dev_aml = build_ich9_isa_aml;
+
+    object_class_property_add_uint8_ptr(klass, ACPI_PM_PROP_SCI_INT,
+                                        offsetof(ICH9LPCState, sci_gsi),
+                                        OBJ_PROP_FLAG_READ);
+    object_class_property_add_uint64_ptr(klass,
+                                         ICH9_LPC_SMI_NEGOTIATED_FEAT_PROP,
+                                         offsetof(ICH9LPCState,
+                                                  smi_negotiated_features),
+                                         OBJ_PROP_FLAG_READ);
+    object_class_static_property_add_uint8_ptr(klass,
+                                               ACPI_PM_PROP_ACPI_ENABLE_CMD,
+                                               &acpi_enable_cmd,
+                                               OBJ_PROP_FLAG_READ);
+    object_class_static_property_add_uint8_ptr(klass,
+                                               ACPI_PM_PROP_ACPI_DISABLE_CMD,
+                                               &acpi_disable_cmd,
+                                               OBJ_PROP_FLAG_READ);
+
+    ich9_pm_add_class_properties(klass, offsetof(ICH9LPCState, pm));
 }
 
 static const TypeInfo ich9_lpc_info = {
@@ -916,7 +928,7 @@ static const TypeInfo ich9_lpc_info = {
     .instance_size = sizeof(ICH9LPCState),
     .instance_init = ich9_lpc_initfn,
     .class_init  = ich9_lpc_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_HOTPLUG_HANDLER },
         { TYPE_ACPI_DEVICE_IF },
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },

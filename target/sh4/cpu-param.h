@@ -8,13 +8,9 @@
 #ifndef SH4_CPU_PARAM_H
 #define SH4_CPU_PARAM_H
 
-#define TARGET_LONG_BITS 32
 #define TARGET_PAGE_BITS 12  /* 4k */
-#define TARGET_PHYS_ADDR_SPACE_BITS  32
-#ifdef CONFIG_USER_ONLY
-# define TARGET_VIRT_ADDR_SPACE_BITS 31
-#else
-# define TARGET_VIRT_ADDR_SPACE_BITS 32
-#endif
+
+/* qemu-user does not emulate the MMU, so no need to limit to 31 bits. */
+#define TARGET_VIRT_ADDR_SPACE_BITS 32
 
 #endif

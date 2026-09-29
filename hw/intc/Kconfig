@@ -8,6 +8,9 @@ config I8259
 config PL190
     bool
 
+config HEX_L2VIC
+    bool
+
 config IOAPIC
     bool
     select I8259
@@ -23,17 +26,22 @@ config APIC
 
 config ARM_GIC
     bool
-    select ARM_GICV3_TCG if TCG
+    select ARM_GICV3 if TCG || HVF || WHPX
     select ARM_GIC_KVM if KVM
     select MSI_NONBROKEN
 
-config ARM_GICV3_TCG
+config ARM_GICV3
     bool
-    depends on ARM_GIC && TCG
+    depends on ARM_GIC
 
 config ARM_GIC_KVM
     bool
     depends on ARM_GIC && KVM
+
+config ARM_GICV5
+    bool
+    depends on TCG
+    select MSI_NONBROKEN
 
 config XICS
     bool
@@ -111,4 +119,6 @@ config LOONGARCH_EXTIOI
     bool
 
 config TEGRA30_ICTLR
+
+config LOONGARCH_DINTC
     bool

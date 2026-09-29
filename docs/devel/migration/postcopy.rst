@@ -33,25 +33,6 @@ will now cause the transition from precopy to postcopy.
 It can be issued immediately after migration is started or any
 time later on.  Issuing it after the end of a migration is harmless.
 
-Blocktime is a postcopy live migration metric, intended to show how
-long the vCPU was in state of interruptible sleep due to pagefault.
-That metric is calculated both for all vCPUs as overlapped value, and
-separately for each vCPU. These values are calculated on destination
-side.  To enable postcopy blocktime calculation, enter following
-command on destination monitor:
-
-``migrate_set_capability postcopy-blocktime on``
-
-Postcopy blocktime can be retrieved by query-migrate qmp command.
-postcopy-blocktime value of qmp command will show overlapped blocking
-time for all vCPU, postcopy-vcpu-blocktime will show list of blocking
-time per vCPU.
-
-.. note::
-  During the postcopy phase, the bandwidth limits set using
-  ``migrate_set_parameter`` is ignored (to avoid delaying requested pages that
-  the destination is waiting for).
-
 Postcopy internals
 ==================
 
@@ -312,3 +293,46 @@ explicitly) to be sent in a separate preempt channel, rather than queued in
 the background migration channel.  Anyone who cares about latencies of page
 faults during a postcopy migration should enable this feature.  By default,
 it's not enabled.
+
+Postcopy with multifd
+---------------------
+
+The ``multifd`` capability can be enabled together with ``postcopy-ram``
+since the 10.1 QEMU release.  The two features apply to different phases of
+the migration:
+
+  - During the precopy phase, guest pages are sent over the multifd channels
+    as usual, so the initial RAM transfer can use all of them.
+
+  - Just before switching to postcopy, the source flushes and syncs the
+    multifd channels.  This guarantees that all the pages already queued on
+    those channels are loaded on the destination *before* the destination
+    CPUs are started, which is required because loading a page in a multifd
+    receive thread is not atomic with regard to a running vCPU.
+
+  - During the postcopy phase the multifd channels are no longer used for
+    guest pages.  Both the background stream and the pages requested by the
+    destination go through the background migration channel instead, or
+    through the preempt channel for the requested pages when postcopy
+    preemption is enabled.
+
+Consequently, multifd only speeds up the precopy phase of a postcopy
+migration.  The bandwidth available once postcopy has started is the same as
+without multifd.
+
+Postcopy blocktime statistics
+-----------------------------
+
+Blocktime is a postcopy live migration metric, intended to show how
+long the vCPU was in state of interruptible sleep due to pagefault.
+That metric is calculated both for all vCPUs as overlapped value, and
+separately for each vCPU. These values are calculated on destination
+side.  To enable postcopy blocktime calculation, enter following
+command on destination monitor:
+
+``migrate_set_capability postcopy-blocktime on``
+
+Postcopy blocktime can be retrieved by query-migrate qmp command.
+postcopy-blocktime value of qmp command will show overlapped blocking
+time for all vCPU, postcopy-vcpu-blocktime will show list of blocking
+time per vCPU.

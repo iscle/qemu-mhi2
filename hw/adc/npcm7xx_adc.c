@@ -16,9 +16,9 @@
 
 #include "qemu/osdep.h"
 #include "hw/adc/npcm7xx_adc.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
-#include "hw/registerfields.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/registerfields.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -229,7 +229,6 @@ static void npcm7xx_adc_init(Object *obj)
 {
     NPCM7xxADCState *s = NPCM7XX_ADC(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
-    int i;
 
     sysbus_init_irq(sbd, &s->irq);
 
@@ -240,12 +239,6 @@ static void npcm7xx_adc_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     s->clock = qdev_init_clock_in(DEVICE(s), "clock", NULL, NULL, 0);
 
-    for (i = 0; i < NPCM7XX_ADC_NUM_INPUTS; ++i) {
-        object_property_add_uint32_ptr(obj, "adci[*]",
-                &s->adci[i], OBJ_PROP_FLAG_READWRITE);
-    }
-    object_property_add_uint32_ptr(obj, "vref",
-            &s->vref, OBJ_PROP_FLAG_WRITE);
     npcm7xx_adc_calibrate(s);
 }
 
@@ -267,15 +260,15 @@ static const VMStateDescription vmstate_npcm7xx_adc = {
     },
 };
 
-static Property npcm7xx_timer_properties[] = {
+static const Property npcm7xx_timer_properties[] = {
     DEFINE_PROP_UINT32("iref", NPCM7xxADCState, iref, NPCM7XX_ADC_DEFAULT_IREF),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void npcm7xx_adc_class_init(ObjectClass *klass, void *data)
+static void npcm7xx_adc_class_init(ObjectClass *klass, const void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
+    int i;
 
     dc->desc = "NPCM7xx ADC Module";
     dc->vmsd = &vmstate_npcm7xx_adc;
@@ -283,6 +276,17 @@ static void npcm7xx_adc_class_init(ObjectClass *klass, void *data)
     rc->phases.hold = npcm7xx_adc_hold_reset;
 
     device_class_set_props(dc, npcm7xx_timer_properties);
+
+    for (i = 0; i < NPCM7XX_ADC_NUM_INPUTS; ++i) {
+        g_autofree char *adciprop = g_strdup_printf("adci[%u]", i);
+
+        object_class_property_add_uint32_ptr(klass, adciprop,
+                offsetof(NPCM7xxADCState, adci[i]),
+                OBJ_PROP_FLAG_READWRITE);
+    }
+    object_class_property_add_uint32_ptr(klass, "vref",
+                offsetof(NPCM7xxADCState, vref),
+                OBJ_PROP_FLAG_WRITE);
 }
 
 static const TypeInfo npcm7xx_adc_info = {

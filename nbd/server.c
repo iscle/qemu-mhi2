@@ -1411,7 +1411,9 @@ static coroutine_fn int nbd_negotiate(NBDClient *client, Error **errp)
         ....options sent, ending in NBD_OPT_EXPORT_NAME or NBD_OPT_GO....
      */
 
-    qio_channel_set_blocking(client->ioc, false, NULL);
+    if (!qio_channel_set_blocking(client->ioc, false, errp)) {
+        return -EINVAL;
+    }
     qio_channel_set_follow_coroutine_ctx(client->ioc, true);
 
     trace_nbd_negotiate_begin();
@@ -1793,6 +1795,7 @@ static const BlockDevOps nbd_block_ops = {
 };
 
 static int nbd_export_create(BlockExport *blk_exp, BlockExportOptions *exp_args,
+                             AioContext *const *multithread, size_t mt_count,
                              Error **errp)
 {
     NBDExport *exp = container_of(blk_exp, NBDExport, common);
@@ -1827,6 +1830,11 @@ static int nbd_export_create(BlockExport *blk_exp, BlockExportOptions *exp_args,
     if (nbd_export_find(name)) {
         error_setg(errp, "NBD server already has export named '%s'", name);
         return -EEXIST;
+    }
+
+    if (multithread) {
+        error_setg(errp, "NBD export does not support multi-threading");
+        return -EINVAL;
     }
 
     size = blk_getlength(blk);
@@ -2026,6 +2034,7 @@ static void nbd_export_delete(BlockExport *blk_exp)
 const BlockExportDriver blk_exp_nbd = {
     .type               = BLOCK_EXPORT_TYPE_NBD,
     .instance_size      = sizeof(NBDExport),
+    .supports_inactive  = true,
     .create             = nbd_export_create,
     .delete             = nbd_export_delete,
     .request_shutdown   = nbd_export_request_shutdown,
@@ -2709,7 +2718,6 @@ static int coroutine_fn nbd_co_receive_request(NBDRequestData *req,
         break;
 
     case NBD_CMD_CACHE:
-        check_length = true;
         break;
 
     case NBD_CMD_WRITE_ZEROES:
@@ -2743,7 +2751,7 @@ static int coroutine_fn nbd_co_receive_request(NBDRequestData *req,
         req->complete = true;
     }
     if (check_length && request->len > NBD_MAX_BUFFER_SIZE) {
-        /* READ, WRITE, CACHE */
+        /* READ, WRITE */
         error_setg(errp, "len (%" PRIu64 ") is larger than max len (%u)",
                    request->len, NBD_MAX_BUFFER_SIZE);
         return -EINVAL;
@@ -2899,7 +2907,6 @@ static coroutine_fn int nbd_do_cmd_cache(NBDClient *client, NBDRequest *request,
     NBDExport *exp = client->exp;
 
     assert(request->type == NBD_CMD_CACHE);
-    assert(request->len <= NBD_MAX_BUFFER_SIZE);
 
     ret = blk_co_preadv(exp->common.blk, request->from, request->len,
                         NULL, BDRV_REQ_COPY_ON_READ | BDRV_REQ_PREFETCH);
@@ -2920,6 +2927,22 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
     NBDExport *exp = client->exp;
     char *msg;
     size_t i;
+    bool inactive;
+
+    WITH_GRAPH_RDLOCK_GUARD() {
+        inactive = bdrv_is_inactive(blk_bs(exp->common.blk));
+        if (inactive) {
+            switch (request->type) {
+            case NBD_CMD_READ:
+                /* These commands are allowed on inactive nodes */
+                break;
+            default:
+                /* Return an error for the rest */
+                return nbd_send_generic_reply(client, request, -EPERM,
+                                              "export is inactive", errp);
+            }
+        }
+    }
 
     switch (request->type) {
     case NBD_CMD_CACHE:
@@ -2965,7 +2988,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
                                       "flush failed", errp);
 
     case NBD_CMD_TRIM:
-        ret = blk_co_pdiscard(exp->common.blk, request->from, request->len);
+        ret = blk_co_pdiscard(exp->common.blk, request->from, request->len, 0);
         if (ret >= 0 && request->flags & NBD_CMD_FLAG_FUA) {
             ret = blk_co_flush(exp->common.blk);
         }
@@ -3273,6 +3296,8 @@ void nbd_client_new(QIOChannelSocket *sioc,
     object_ref(OBJECT(client->ioc));
     client->close_fn = close_fn;
     client->owner = owner;
+
+    nbd_set_socket_send_buffer(sioc);
 
     co = qemu_coroutine_create(nbd_co_client_start, client);
     qemu_coroutine_enter(co);

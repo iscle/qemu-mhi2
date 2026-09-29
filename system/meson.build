@@ -1,30 +1,39 @@
-specific_ss.add(when: 'CONFIG_SYSTEM_ONLY', if_true: [files(
-  'arch_init.c',
-  'ioport.c',
-  'memory.c',
-  'physmem.c',
-  'watchpoint.c',
-)])
+system_ss.add(files(
+  'vl.c',
+), sdl, libpmem, libdaxctl)
 
 system_ss.add(files(
+  'arch_init.c',
   'balloon.c',
   'bootdevice.c',
   'cpus.c',
   'cpu-timers.c',
-  'datadir.c',
   'dirtylimit.c',
   'dma-helpers.c',
+  'exit-with-parent.c',
   'globals.c',
+  'ioport.c',
+  'ram-block-attributes.c',
+  'ram-discard-manager.c',
   'memory_mapping.c',
+  'memory.c',
+  'physmem.c',
+  'physmem-qmp-cmds.c',
   'qdev-monitor.c',
   'qtest.c',
   'rtc.c',
   'runstate-action.c',
-  'runstate-hmp-cmds.c',
   'runstate.c',
-  'tpm-hmp-cmds.c',
-  'vl.c',
-), sdl, libpmem, libdaxctl)
+  'watchpoint.c',
+))
+
+if have_hmp
+  system_ss.add(files(
+    'dirtylimit-hmp-cmds.c',
+    'runstate-hmp-cmds.c',
+    'tpm-hmp-cmds.c',
+  ))
+endif
 
 if have_tpm
   system_ss.add(files('tpm.c'))

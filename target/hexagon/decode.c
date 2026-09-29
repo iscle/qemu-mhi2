@@ -26,14 +26,6 @@
 
 #define fZXTN(N, M, VAL) ((VAL) & ((1LL << (N)) - 1))
 
-enum {
-    EXT_IDX_noext = 0,
-    EXT_IDX_noext_AFTER = 4,
-    EXT_IDX_mmvec = 4,
-    EXT_IDX_mmvec_AFTER = 8,
-    XX_LAST_EXT_IDX
-};
-
 /*
  *  Certain operand types represent a non-contiguous set of values.
  *  For example, the compound compare-and-jump instruction can only access
@@ -193,6 +185,8 @@ static bool decode_opcode_can_jump(int opcode)
     if ((GET_ATTRIB(opcode, A_JUMP)) ||
         (GET_ATTRIB(opcode, A_CALL)) ||
         (opcode == J2_trap0) ||
+        (opcode == J2_trap1) ||
+        (opcode == J2_rte) ||
         (opcode == J2_pause)) {
         /* Exception to A_JUMP attribute */
         if (opcode == J4_hintjumpr) {
@@ -236,9 +230,9 @@ static void decode_set_insn_attr_fields(Packet *pkt)
             if (GET_ATTRIB(opcode, A_SCALAR_STORE) &&
                 !GET_ATTRIB(opcode, A_MEMSIZE_0B)) {
                 if (pkt->insn[i].slot == 0) {
-                    pkt->pkt_has_store_s0 = true;
+                    pkt->pkt_has_scalar_store_s0 = true;
                 } else {
-                    pkt->pkt_has_store_s1 = true;
+                    pkt->pkt_has_scalar_store_s1 = true;
                 }
             }
         }
@@ -371,6 +365,18 @@ static void decode_shuffle_for_execution(Packet *packet)
             break;
         }
     }
+    /*
+     * And at the very very very end, move any RTE's, since they update
+     * user/supervisor mode.
+     */
+#if !defined(CONFIG_USER_ONLY)
+    for (i = 0; i < last_insn; i++) {
+        if (packet->insn[i].opcode == J2_rte) {
+            decode_send_insn_to(packet, i, last_insn);
+            break;
+        }
+    }
+#endif
 }
 
 static void
@@ -489,7 +495,8 @@ decode_insns(DisasContext *ctx, Insn *insn, uint32_t encoding)
             insn->iclass = iclass_bits(encoding);
             return 1;
         }
-        g_assert_not_reached();
+        /* Invalid non-duplex encoding */
+        return 0;
     } else {
         uint32_t iclass = get_duplex_iclass(encoding);
         unsigned int slot0_subinsn = get_slot0_subinsn(encoding);
@@ -509,8 +516,14 @@ decode_insns(DisasContext *ctx, Insn *insn, uint32_t encoding)
                 insn->iclass = iclass_bits(encoding);
                 return 2;
             }
+            /*
+             * Slot0 decode failed after slot1 succeeded. This is an invalid
+             * duplex encoding (both sub-instructions must be valid).
+             */
+            ctx->insn = --insn;
         }
-        g_assert_not_reached();
+        /* Invalid duplex encoding - return 0 to signal failure */
+        return 0;
     }
 }
 
@@ -536,21 +549,35 @@ static bool decode_parsebits_is_loopend(uint32_t encoding32)
     return bits == 0x2;
 }
 
+/*
+ * Check that the packet's instructions can be grouped into slots: walk them
+ * in encoding order handing out slots in strictly decreasing order, and fail
+ * if an instruction has no valid slot at or below the running slot.  Two
+ * instructions may legally share a slot, so this does not require unique
+ * slots, only that every instruction fits.
+ */
 static bool has_valid_slot_assignment(Packet *pkt)
 {
-    int used_slots = 0;
-    for (int i = 0; i < pkt->num_insns; i++) {
-        int slot_mask;
-        Insn *insn = &pkt->insn[i];
-        if (decode_opcode_ends_loop(insn->opcode)) {
+    int i;
+    int slot = 3;
+
+    for (i = 0; i < pkt->num_insns; i++) {
+        SlotMask valid_slots;
+        if (decode_opcode_ends_loop(pkt->insn[i].opcode)) {
             /* We overload slot 0 for endloop. */
             continue;
         }
-        slot_mask = 1 << insn->slot;
-        if (used_slots & slot_mask) {
+        if (slot < 0) {
             return false;
         }
-        used_slots |= slot_mask;
+        valid_slots = get_valid_slots(pkt, i);
+        while (!(valid_slots & (1 << slot))) {
+            if (slot <= 0) {
+                return false;
+            }
+            slot--;
+        }
+        slot--;
     }
     return true;
 }
@@ -648,6 +675,22 @@ decode_set_slot_number(Packet *pkt)
     return has_valid_slot_assignment(pkt);
 }
 
+bool opcode_supported(uint16_t opcode, const HexagonCPUDef *hex_def)
+{
+    HexagonVersion hex_version = hex_def->hex_version;
+#include "tag_rev_info.c.inc"
+
+    struct tag_rev_info info = tag_rev_info[opcode];
+    if (hex_version == HEX_VER_ANY) {
+        return true;
+    }
+    if ((info.introduced != HEX_VER_NONE && hex_version < info.introduced) ||
+        (info.removed != HEX_VER_NONE && hex_version >= info.removed)) {
+        return false;
+    }
+    return true;
+}
+
 /*
  * decode_packet
  * Decodes packet with given words
@@ -674,7 +717,10 @@ int decode_packet(DisasContext *ctx, int max_words, const uint32_t *words,
         encoding32 = words[words_read];
         end_of_packet = is_packet_end(encoding32);
         new_insns = decode_insns(ctx, insn, encoding32);
-        g_assert(new_insns > 0);
+        if (new_insns == 0) {
+            /* Invalid instruction encoding */
+            return 0;
+        }
         /*
          * If we saw an extender, mark next word extended so immediate
          * decode works
@@ -691,6 +737,17 @@ int decode_packet(DisasContext *ctx, int max_words, const uint32_t *words,
         /* Ran out of words! */
         return 0;
     }
+
+    /*
+     * Check that all the opcodes are supported in this Hexagon definition
+     * If not, return decode error
+     */
+    for (i = 0; i < num_insns; i++) {
+        if (!opcode_supported(pkt->insn[i].opcode, ctx->hex_def)) {
+            return 0;
+        }
+    }
+
     pkt->encod_pkt_size_in_bytes = words_read * 4;
     pkt->pkt_has_hvx = false;
     for (i = 0; i < num_insns; i++) {
@@ -745,19 +802,34 @@ int decode_packet(DisasContext *ctx, int max_words, const uint32_t *words,
 
 /* Used for "-d in_asm" logging */
 int disassemble_hexagon(uint32_t *words, int nwords, bfd_vma pc,
-                        GString *buf)
+                        GString *buf, const HexagonCPUConfig *cfg)
 {
+    HexagonCPUDef any_def = {
+        .hex_version = HEX_VER_ANY,  /* Allow decode to accept anything */
+    };
     DisasContext ctx;
-    Packet pkt;
 
     memset(&ctx, 0, sizeof(DisasContext));
-    ctx.pkt = &pkt;
+    ctx.hex_def = &any_def;
 
-    if (decode_packet(&ctx, nwords, words, &pkt, true) > 0) {
-        snprint_a_pkt_disas(buf, &pkt, words, pc);
-        return pkt.encod_pkt_size_in_bytes;
+    if (decode_packet(&ctx, nwords, words, &ctx.pkt, true) > 0) {
+        snprint_a_pkt_disas(buf, &ctx.pkt, words, pc, cfg);
+        return ctx.pkt.encod_pkt_size_in_bytes;
     } else {
-        g_string_assign(buf, "<invalid>");
-        return 0;
+        for (int i = 0; i < nwords; i++) {
+            g_string_append_printf(buf, "0x" TARGET_FMT_lx "\t", words[i]);
+            if (i == 0) {
+                g_string_append(buf, "{");
+            }
+            g_string_append(buf, "\t");
+            g_string_append(buf, "<invalid>");
+            if (i < nwords - 1) {
+                pc += 4;
+                g_string_append_printf(buf, "\n0x" TARGET_FMT_lx ":  ",
+                                       (target_ulong)pc);
+            }
+        }
+        g_string_append(buf, " }");
+        return nwords * sizeof(uint32_t);
     }
 }

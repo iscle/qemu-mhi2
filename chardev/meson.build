@@ -3,6 +3,7 @@ chardev_ss.add(files(
   'char-file.c',
   'char-io.c',
   'char-mux.c',
+  'char-hub.c',
   'char-null.c',
   'char-pipe.c',
   'char-ringbuf.c',
@@ -29,10 +30,13 @@ endif
 chardev_ss = chardev_ss.apply({})
 
 system_ss.add(files(
-    'char-hmp-cmds.c',
     'msmouse.c',
     'wctablet.c',
     'testdev.c'))
+
+if have_hmp
+    system_ss.add(files('char-hmp-cmds.c'))
+endif
 
 chardev_modules = {}
 

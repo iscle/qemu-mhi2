@@ -26,19 +26,20 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "trace.h"
 #include "qemu/timer.h"
 #include "hw/ppc/xics.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qapi/visitor.h"
 #include "migration/vmstate.h"
 #include "hw/intc/intc.h"
-#include "hw/irq.h"
-#include "sysemu/kvm.h"
-#include "sysemu/reset.h"
+#include "hw/core/irq.h"
+#include "system/kvm.h"
+#include "system/reset.h"
 #include "target/ppc/cpu.h"
 
 void icp_pic_print_info(ICPState *icp, GString *buf)
@@ -222,6 +223,13 @@ void icp_irq(ICSState *ics, int server, int nr, uint8_t priority)
 
     trace_xics_icp_irq(server, nr, priority);
 
+    if (!icp) {
+        qemu_log_mask(LOG_GUEST_ERROR, "XICS: invalid server %d for IRQ 0x%x\n",
+                      server, nr);
+        ics_reject(ics, nr);
+        return;
+    }
+
     if ((priority >= CPPR(icp))
         || (XISR(icp) && (icp->pending_priority <= priority))) {
         ics_reject(ics, nr);
@@ -335,6 +343,8 @@ static void icp_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+
+    vmstate_register(NULL, icp->cs->cpu_index, &vmstate_icp_server, icp);
 }
 
 static void icp_unrealize(DeviceState *dev)
@@ -344,14 +354,13 @@ static void icp_unrealize(DeviceState *dev)
     vmstate_unregister(NULL, &vmstate_icp_server, icp);
 }
 
-static Property icp_properties[] = {
+static const Property icp_properties[] = {
     DEFINE_PROP_LINK(ICP_PROP_XICS, ICPState, xics, TYPE_XICS_FABRIC,
                      XICSFabric *),
     DEFINE_PROP_LINK(ICP_PROP_CPU, ICPState, cs, TYPE_CPU, CPUState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void icp_class_init(ObjectClass *klass, void *data)
+static void icp_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -667,7 +676,7 @@ static const VMStateDescription vmstate_ics = {
     .post_load = ics_post_load,
     .fields = (const VMStateField[]) {
         /* Sanity check */
-        VMSTATE_UINT32_EQUAL(nr_irqs, ICSState, NULL),
+        VMSTATE_UINT32_EQUAL(nr_irqs, ICSState),
 
         VMSTATE_STRUCT_VARRAY_POINTER_UINT32(irqs, ICSState, nr_irqs,
                                              vmstate_ics_irq,
@@ -676,14 +685,13 @@ static const VMStateDescription vmstate_ics = {
     },
 };
 
-static Property ics_properties[] = {
+static const Property ics_properties[] = {
     DEFINE_PROP_UINT32("nr-irqs", ICSState, nr_irqs, 0),
     DEFINE_PROP_LINK(ICS_PROP_XICS, ICSState, xics, TYPE_XICS_FABRIC,
                      XICSFabric *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void ics_class_init(ObjectClass *klass, void *data)
+static void ics_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

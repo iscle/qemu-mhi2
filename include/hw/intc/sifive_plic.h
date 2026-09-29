@@ -21,7 +21,7 @@
 #ifndef HW_SIFIVE_PLIC_H
 #define HW_SIFIVE_PLIC_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "qom/object.h"
 
 #define TYPE_SIFIVE_PLIC "riscv.sifive.plic"
@@ -76,8 +76,8 @@ struct SiFivePLICState {
     qemu_irq *s_external_irqs;
 };
 
-DeviceState *sifive_plic_create(hwaddr addr, char *hart_config,
-    uint32_t num_harts,
+DeviceState *sifive_plic_create(MemoryRegion *container,
+    hwaddr addr, char *hart_config, uint32_t num_harts,
     uint32_t hartid_base, uint32_t num_sources,
     uint32_t num_priorities, uint32_t priority_base,
     uint32_t pending_base, uint32_t enable_base,

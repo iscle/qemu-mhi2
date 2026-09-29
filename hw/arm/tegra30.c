@@ -3,14 +3,14 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/qdev-core.h"
-#include "hw/sysbus.h"
+#include "hw/core/qdev.h"
+#include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/usb/hcd-ehci.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/sd/sdhci.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/arm/tegra30.h"
 
 static void tegra30_init(Object *obj)
@@ -290,7 +290,7 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     info_report("Tegra30 realized");
 }
 
-static void tegra30_class_init(ObjectClass *oc, void *data)
+static void tegra30_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

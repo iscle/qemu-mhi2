@@ -7,7 +7,8 @@ common_ss.add(when: 'CONFIG_MIPS_DIS', if_true: files('mips.c', 'nanomips.c'))
 common_ss.add(when: 'CONFIG_RISCV_DIS', if_true: files(
     'riscv.c',
     'riscv-xthead.c',
-    'riscv-xventana.c'
+    'riscv-xventana.c',
+    'riscv-xlrbr.c'
 ))
 common_ss.add(when: 'CONFIG_SH4_DIS', if_true: files('sh4.c'))
 common_ss.add(when: 'CONFIG_SPARC_DIS', if_true: files('sparc.c'))
@@ -19,5 +20,7 @@ common_ss.add(when: 'CONFIG_TCG', if_true: files(
     'objdump.c'
 ))
 common_ss.add(files('disas-common.c'))
-system_ss.add(files('disas-mon.c'))
+if have_hmp
+  system_ss.add(files('disas-mon.c'))
+endif
 specific_ss.add(capstone)

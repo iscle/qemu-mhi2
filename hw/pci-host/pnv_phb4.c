@@ -8,6 +8,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/bswap.h"
 #include "qapi/visitor.h"
 #include "qapi/error.h"
 #include "target/ppc/cpu.h"
@@ -17,8 +18,8 @@
 #include "hw/pci/pcie_port.h"
 #include "hw/ppc/pnv.h"
 #include "hw/ppc/pnv_xscom.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
 #include "qom/object.h"
 #include "trace.h"
 
@@ -1362,7 +1363,7 @@ DECLARE_INSTANCE_CHECKER(IOMMUMemoryRegion, PNV_PHB4_IOMMU_MEMORY_REGION,
                          TYPE_PNV_PHB4_IOMMU_MEMORY_REGION)
 
 static void pnv_phb4_iommu_memory_region_class_init(ObjectClass *klass,
-                                                    void *data)
+                                                    const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 
@@ -1688,16 +1689,15 @@ static void pnv_phb4_xive_notify(XiveNotifier *xf, uint32_t srcno,
     }
 }
 
-static Property pnv_phb4_properties[] = {
+static const Property pnv_phb4_properties[] = {
     DEFINE_PROP_UINT32("index", PnvPHB4, phb_id, 0),
     DEFINE_PROP_UINT32("chip-id", PnvPHB4, chip_id, 0),
     DEFINE_PROP_LINK("pec", PnvPHB4, pec, TYPE_PNV_PHB4_PEC,
                      PnvPhb4PecState *),
     DEFINE_PROP_LINK("phb-base", PnvPHB4, phb_base, TYPE_PNV_PHB, PnvPHB *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void pnv_phb4_class_init(ObjectClass *klass, void *data)
+static void pnv_phb4_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     XiveNotifierClass *xfc = XIVE_NOTIFIER_CLASS(klass);
@@ -1715,24 +1715,19 @@ static const TypeInfo pnv_phb4_type_info = {
     .instance_init = pnv_phb4_instance_init,
     .instance_size = sizeof(PnvPHB4),
     .class_init    = pnv_phb4_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
             { TYPE_XIVE_NOTIFIER },
             { },
     }
 };
 
-static const TypeInfo pnv_phb5_type_info = {
-    .name          = TYPE_PNV_PHB5,
-    .parent        = TYPE_PNV_PHB4,
-    .instance_size = sizeof(PnvPHB4),
-};
 
 static void pnv_phb4_root_bus_get_prop(Object *obj, Visitor *v,
                                        const char *name,
                                        void *opaque, Error **errp)
 {
     PnvPHB4RootBus *bus = PNV_PHB4_ROOT_BUS(obj);
-    uint64_t value = 0;
+    uint32_t value = 0;
 
     if (strcmp(name, "phb-id") == 0) {
         value = bus->phb_id;
@@ -1740,7 +1735,7 @@ static void pnv_phb4_root_bus_get_prop(Object *obj, Visitor *v,
         value = bus->chip_id;
     }
 
-    visit_type_size(v, name, &value, errp);
+    visit_type_uint32(v, name, &value, errp);
 }
 
 static void pnv_phb4_root_bus_set_prop(Object *obj, Visitor *v,
@@ -1749,9 +1744,9 @@ static void pnv_phb4_root_bus_set_prop(Object *obj, Visitor *v,
 
 {
     PnvPHB4RootBus *bus = PNV_PHB4_ROOT_BUS(obj);
-    uint64_t value;
+    uint32_t value;
 
-    if (!visit_type_size(v, name, &value, errp)) {
+    if (!visit_type_uint32(v, name, &value, errp)) {
         return;
     }
 
@@ -1762,16 +1757,16 @@ static void pnv_phb4_root_bus_set_prop(Object *obj, Visitor *v,
     }
 }
 
-static void pnv_phb4_root_bus_class_init(ObjectClass *klass, void *data)
+static void pnv_phb4_root_bus_class_init(ObjectClass *klass, const void *data)
 {
     BusClass *k = BUS_CLASS(klass);
 
-    object_class_property_add(klass, "phb-id", "int",
+    object_class_property_add(klass, "phb-id", "uint32",
                               pnv_phb4_root_bus_get_prop,
                               pnv_phb4_root_bus_set_prop,
                               NULL, NULL);
 
-    object_class_property_add(klass, "chip-id", "int",
+    object_class_property_add(klass, "chip-id", "uint32",
                               pnv_phb4_root_bus_get_prop,
                               pnv_phb4_root_bus_set_prop,
                               NULL, NULL);
@@ -1794,7 +1789,6 @@ static void pnv_phb4_register_types(void)
 {
     type_register_static(&pnv_phb4_root_bus_info);
     type_register_static(&pnv_phb4_type_info);
-    type_register_static(&pnv_phb5_type_info);
     type_register_static(&pnv_phb4_iommu_memory_region_info);
 }
 

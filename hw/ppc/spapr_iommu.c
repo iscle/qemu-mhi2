@@ -21,10 +21,10 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "sysemu/kvm.h"
+#include "system/kvm.h"
 #include "kvm_ppc.h"
 #include "migration/vmstate.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "trace.h"
 
 #include "hw/ppc/spapr.h"
@@ -285,7 +285,7 @@ static const VMStateDescription vmstate_spapr_tce_table = {
     .post_load = spapr_tce_table_post_load,
     .fields = (const VMStateField []) {
         /* Sanity check */
-        VMSTATE_UINT32_EQUAL(liobn, SpaprTceTable, NULL),
+        VMSTATE_UINT32_EQUAL(liobn, SpaprTceTable),
 
         /* IOMMU state */
         VMSTATE_UINT32(mig_nb_table, SpaprTceTable),
@@ -668,7 +668,7 @@ int spapr_tcet_dma_dt(void *fdt, int node_off, const char *propname,
                         tcet->liobn, 0, tcet->nb_table << tcet->page_shift);
 }
 
-static void spapr_tce_table_class_init(ObjectClass *klass, void *data)
+static void spapr_tce_table_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = spapr_tce_table_realize;
@@ -693,7 +693,8 @@ static const TypeInfo spapr_tce_table_info = {
     .class_init = spapr_tce_table_class_init,
 };
 
-static void spapr_iommu_memory_region_class_init(ObjectClass *klass, void *data)
+static void spapr_iommu_memory_region_class_init(ObjectClass *klass,
+                                                 const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

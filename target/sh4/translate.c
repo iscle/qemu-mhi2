@@ -19,11 +19,12 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "tcg/tcg-op.h"
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
+#include "exec/translation-block.h"
 #include "exec/translator.h"
+#include "exec/target_page.h"
 #include "exec/log.h"
 #include "qemu/qemu-print.h"
 
@@ -46,6 +47,9 @@ typedef struct DisasContext {
     uint16_t opcode;
 
     bool has_movcal;
+#ifdef CONFIG_USER_ONLY
+    bool in_gusa_exclusive;
+#endif
 } DisasContext;
 
 #if defined(CONFIG_USER_ONLY)
@@ -53,7 +57,7 @@ typedef struct DisasContext {
 #define UNALIGN(C)   (ctx->tbflags & TB_FLAG_UNALIGN ? MO_UNALN : MO_ALIGN)
 #else
 #define IS_USER(ctx) (!(ctx->tbflags & (1u << SR_MD)))
-#define UNALIGN(C)   0
+#define UNALIGN(C)   MO_ALIGN
 #endif
 
 /* Target-specific values for ctx->base.is_jmp.  */
@@ -217,32 +221,20 @@ static inline void gen_save_cpu_state(DisasContext *ctx, bool save_pc)
     }
 }
 
-static inline bool use_exit_tb(DisasContext *ctx)
+static bool use_goto_tb(DisasContext *ctx, vaddr dest)
 {
-    return (ctx->tbflags & TB_FLAG_GUSA_EXCLUSIVE) != 0;
-}
-
-static bool use_goto_tb(DisasContext *ctx, target_ulong dest)
-{
-    if (use_exit_tb(ctx)) {
-        return false;
-    }
     return translator_use_goto_tb(&ctx->base, dest);
 }
 
-static void gen_goto_tb(DisasContext *ctx, int n, target_ulong dest)
+static void gen_goto_tb(DisasContext *ctx, unsigned tb_slot_idx, vaddr dest)
 {
     if (use_goto_tb(ctx, dest)) {
-        tcg_gen_goto_tb(n);
+        tcg_gen_goto_tb(tb_slot_idx);
         tcg_gen_movi_i32(cpu_pc, dest);
-        tcg_gen_exit_tb(ctx->base.tb, n);
+        tcg_gen_exit_tb(ctx->base.tb, tb_slot_idx);
     } else {
         tcg_gen_movi_i32(cpu_pc, dest);
-        if (use_exit_tb(ctx)) {
-            tcg_gen_exit_tb(NULL, 0);
-        } else {
-            tcg_gen_lookup_and_goto_ptr();
-        }
+        tcg_gen_lookup_and_goto_ptr();
     }
     ctx->base.is_jmp = DISAS_NORETURN;
 }
@@ -254,11 +246,7 @@ static void gen_jump(DisasContext * ctx)
            delayed jump as immediate jump are conditinal jumps */
         tcg_gen_mov_i32(cpu_pc, cpu_delayed_pc);
         tcg_gen_discard_i32(cpu_delayed_pc);
-        if (use_exit_tb(ctx)) {
-            tcg_gen_exit_tb(NULL, 0);
-        } else {
-            tcg_gen_lookup_and_goto_ptr();
-        }
+        tcg_gen_lookup_and_goto_ptr();
         ctx->base.is_jmp = DISAS_NORETURN;
     } else {
         gen_goto_tb(ctx, 0, ctx->delayed_pc);
@@ -266,13 +254,14 @@ static void gen_jump(DisasContext * ctx)
 }
 
 /* Immediate conditional jump (bt or bf) */
-static void gen_conditional_jump(DisasContext *ctx, target_ulong dest,
+static void gen_conditional_jump(DisasContext *ctx, vaddr dest,
                                  bool jump_if_true)
 {
     TCGLabel *l1 = gen_new_label();
     TCGCond cond_not_taken = jump_if_true ? TCG_COND_EQ : TCG_COND_NE;
 
-    if (ctx->tbflags & TB_FLAG_GUSA_EXCLUSIVE) {
+#ifdef CONFIG_USER_ONLY
+    if (ctx->in_gusa_exclusive) {
         /* When in an exclusive region, we must continue to the end.
            Therefore, exit the region on a taken branch, but otherwise
            fall through to the next instruction.  */
@@ -285,6 +274,7 @@ static void gen_conditional_jump(DisasContext *ctx, target_ulong dest,
         ctx->base.is_jmp = DISAS_NEXT;
         return;
     }
+#endif
 
     gen_save_cpu_state(ctx, false);
     tcg_gen_brcondi_i32(cond_not_taken, cpu_sr_t, 0, l1);
@@ -303,7 +293,8 @@ static void gen_delayed_conditional_jump(DisasContext * ctx)
     tcg_gen_mov_i32(ds, cpu_delayed_cond);
     tcg_gen_discard_i32(cpu_delayed_cond);
 
-    if (ctx->tbflags & TB_FLAG_GUSA_EXCLUSIVE) {
+#ifdef CONFIG_USER_ONLY
+    if (ctx->in_gusa_exclusive) {
         /* When in an exclusive region, we must continue to the end.
            Therefore, exit the region on a taken branch, but otherwise
            fall through to the next instruction.  */
@@ -317,6 +308,7 @@ static void gen_delayed_conditional_jump(DisasContext * ctx)
         ctx->base.is_jmp = DISAS_NEXT;
         return;
     }
+#endif
 
     tcg_gen_brcondi_i32(TCG_COND_NE, ds, 0, l1);
     gen_goto_tb(ctx, 1, ctx->base.pc_next + 2);
@@ -373,11 +365,6 @@ static inline void gen_store_fpr64(DisasContext *ctx, TCGv_i64 t, int reg)
 
 #define CHECK_FPSCR_PR_0 \
     if (ctx->tbflags & FPSCR_PR) {          \
-        goto do_illegal;                    \
-    }
-
-#define CHECK_FPSCR_PR_1 \
-    if (!(ctx->tbflags & FPSCR_PR)) {       \
         goto do_illegal;                    \
     }
 
@@ -693,14 +680,8 @@ static void _decode_opc(DisasContext * ctx)
         tcg_gen_add_i32(REG(B11_8), REG(B11_8), REG(B7_4));
         return;
     case 0x300e: /* addc Rm,Rn */
-        {
-            TCGv t0, t1;
-            t0 = tcg_constant_tl(0);
-            t1 = tcg_temp_new();
-            tcg_gen_add2_i32(t1, cpu_sr_t, cpu_sr_t, t0, REG(B7_4), t0);
-            tcg_gen_add2_i32(REG(B11_8), cpu_sr_t,
-                             REG(B11_8), t0, t1, cpu_sr_t);
-        }
+        tcg_gen_addcio_i32(REG(B11_8), cpu_sr_t,
+                           REG(B11_8), REG(B7_4), cpu_sr_t);
         return;
     case 0x300f: /* addv Rm,Rn */
         {
@@ -1745,22 +1726,22 @@ static void _decode_opc(DisasContext * ctx)
         return;
     case 0xf0ed: /* fipr FVm,FVn */
         CHECK_FPU_ENABLED
-        CHECK_FPSCR_PR_1
+        CHECK_FPSCR_PR_0
         {
-            TCGv m = tcg_constant_i32((ctx->opcode >> 8) & 3);
-            TCGv n = tcg_constant_i32((ctx->opcode >> 10) & 3);
+            TCGv m = tcg_constant_i32(((ctx->opcode >> 8) & 3) << 2);
+            TCGv n = tcg_constant_i32(((ctx->opcode >> 10) & 3) << 2);
             gen_helper_fipr(tcg_env, m, n);
             return;
         }
         break;
     case 0xf0fd: /* ftrv XMTRX,FVn */
         CHECK_FPU_ENABLED
-        CHECK_FPSCR_PR_1
+        CHECK_FPSCR_PR_0
         {
             if ((ctx->opcode & 0x0300) != 0x0100) {
                 goto do_illegal;
             }
-            TCGv n = tcg_constant_i32((ctx->opcode >> 10) & 3);
+            TCGv n = tcg_constant_i32(((ctx->opcode >> 10) & 3) << 2);
             gen_helper_ftrv(tcg_env, n);
             return;
         }
@@ -1791,7 +1772,6 @@ static void _decode_opc(DisasContext * ctx)
         gen_helper_raise_fpu_disable(tcg_env);
     }
     ctx->base.is_jmp = DISAS_NORETURN;
-    return;
 }
 
 static void decode_opc(DisasContext * ctx)
@@ -1804,16 +1784,18 @@ static void decode_opc(DisasContext * ctx)
         /* go out of the delay slot */
         ctx->envflags &= ~TB_FLAG_DELAY_SLOT_MASK;
 
+#ifdef CONFIG_USER_ONLY
         /* When in an exclusive region, we must continue to the end
            for conditional branches.  */
-        if (ctx->tbflags & TB_FLAG_GUSA_EXCLUSIVE
-            && old_flags & TB_FLAG_DELAY_SLOT_COND) {
+        if (ctx->in_gusa_exclusive && old_flags & TB_FLAG_DELAY_SLOT_COND) {
             gen_delayed_conditional_jump(ctx);
             return;
         }
+
         /* Otherwise this is probably an invalid gUSA region.
            Drop the GUSA bits so the next TB doesn't see them.  */
         ctx->envflags &= ~TB_FLAG_GUSA_MASK;
+#endif
 
         tcg_gen_movi_i32(cpu_flags, ctx->envflags);
         if (old_flags & TB_FLAG_DELAY_SLOT_COND) {
@@ -1831,7 +1813,6 @@ static void decode_opc(DisasContext * ctx)
  */
 static void gen_restart_exclusive(DisasContext *ctx)
 {
-    ctx->envflags |= TB_FLAG_GUSA_EXCLUSIVE;
     gen_save_cpu_state(ctx, false);
     gen_helper_exclusive(tcg_env);
     ctx->base.is_jmp = DISAS_NORETURN;
@@ -1939,16 +1920,16 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
     NEXT_INSN;
     switch (ctx->opcode & 0xf00f) {
     case 0x300c: /* add Rm,Rn */
-        op_opc = INDEX_op_add_i32;
+        op_opc = INDEX_op_add;
         goto do_reg_op;
     case 0x2009: /* and Rm,Rn */
-        op_opc = INDEX_op_and_i32;
+        op_opc = INDEX_op_and;
         goto do_reg_op;
     case 0x200a: /* xor Rm,Rn */
-        op_opc = INDEX_op_xor_i32;
+        op_opc = INDEX_op_xor;
         goto do_reg_op;
     case 0x200b: /* or Rm,Rn */
-        op_opc = INDEX_op_or_i32;
+        op_opc = INDEX_op_or;
     do_reg_op:
         /* The operation register should be as expected, and the
            other input cannot depend on the load.  */
@@ -1975,15 +1956,15 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
             goto fail;
         }
         op_dst = B11_8;
-        op_opc = INDEX_op_xor_i32;
+        op_opc = INDEX_op_xor;
         op_arg = tcg_constant_i32(-1);
         break;
 
     case 0x7000 ... 0x700f: /* add #imm,Rn */
-        if (op_dst != B11_8 || mv_src >= 0) {
+        if (op_dst != B11_8 || (mv_src >= 0 && mv_src != ld_dst)) {
             goto fail;
         }
-        op_opc = INDEX_op_add_i32;
+        op_opc = INDEX_op_add;
         op_arg = tcg_constant_i32(B7_0s);
         break;
 
@@ -1994,7 +1975,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         if ((ld_dst == B11_8) + (ld_dst == B7_4) != 1 || mv_src >= 0) {
             goto fail;
         }
-        op_opc = INDEX_op_setcond_i32;  /* placeholder */
+        op_opc = INDEX_op_setcond;  /* placeholder */
         op_src = (ld_dst == B11_8 ? B7_4 : B11_8);
         op_arg = REG(op_src);
 
@@ -2029,7 +2010,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         if (ld_dst != B11_8 || ld_dst != B7_4 || mv_src >= 0) {
             goto fail;
         }
-        op_opc = INDEX_op_setcond_i32;
+        op_opc = INDEX_op_setcond;
         op_arg = tcg_constant_i32(0);
 
         NEXT_INSN;
@@ -2086,7 +2067,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
                                 ctx->memidx, ld_mop);
         break;
 
-    case INDEX_op_add_i32:
+    case INDEX_op_add:
         if (op_dst != st_src) {
             goto fail;
         }
@@ -2104,7 +2085,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         }
         break;
 
-    case INDEX_op_and_i32:
+    case INDEX_op_and:
         if (op_dst != st_src) {
             goto fail;
         }
@@ -2118,7 +2099,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         }
         break;
 
-    case INDEX_op_or_i32:
+    case INDEX_op_or:
         if (op_dst != st_src) {
             goto fail;
         }
@@ -2132,7 +2113,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         }
         break;
 
-    case INDEX_op_xor_i32:
+    case INDEX_op_xor:
         if (op_dst != st_src) {
             goto fail;
         }
@@ -2146,7 +2127,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
         }
         break;
 
-    case INDEX_op_setcond_i32:
+    case INDEX_op_setcond:
         if (st_src == ld_dst) {
             goto fail;
         }
@@ -2187,7 +2168,7 @@ static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
      * tb->icount * insn_start.
      */
     for (i = 1; i < max_insns; ++i) {
-        tcg_gen_insn_start(pc + i * 2, ctx->envflags);
+        tcg_gen_insn_start(pc + i * 2, ctx->envflags, 0);
         ctx->base.insn_start = tcg_last_op();
     }
 }
@@ -2219,11 +2200,13 @@ static void sh4_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
         int backup = sextract32(ctx->tbflags, TB_FLAG_GUSA_SHIFT, 8);
         int max_insns = (pc_end - pc) / 2;
 
+        ctx->in_gusa_exclusive = ctx->base.tb->cflags & CF_STEP_ATOMIC;
+
         if (pc != pc_end + backup || max_insns < 2) {
             /* This is a malformed gUSA region.  Don't do anything special,
                since the interpreter is likely to get confused.  */
             ctx->envflags &= ~TB_FLAG_GUSA_MASK;
-        } else if (tbflags & TB_FLAG_GUSA_EXCLUSIVE) {
+        } else if (ctx->in_gusa_exclusive) {
             /* Regardless of single-stepping or the end of the page,
                we must complete execution of the gUSA region while
                holding the exclusive lock.  */
@@ -2247,7 +2230,7 @@ static void sh4_tr_insn_start(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
 
-    tcg_gen_insn_start(ctx->base.pc_next, ctx->envflags);
+    tcg_gen_insn_start(ctx->base.pc_next, ctx->envflags, 0);
 }
 
 static void sh4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
@@ -2257,7 +2240,7 @@ static void sh4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
 
 #ifdef CONFIG_USER_ONLY
     if (unlikely(ctx->envflags & TB_FLAG_GUSA_MASK)
-        && !(ctx->envflags & TB_FLAG_GUSA_EXCLUSIVE)) {
+        && !ctx->in_gusa_exclusive) {
         /*
          * We're in an gUSA region, and we have not already fallen
          * back on using an exclusive region.  Attempt to parse the
@@ -2287,10 +2270,12 @@ static void sh4_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs)
 {
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
 
-    if (ctx->tbflags & TB_FLAG_GUSA_EXCLUSIVE) {
+#ifdef CONFIG_USER_ONLY
+    if (ctx->in_gusa_exclusive) {
         /* Ending the region of exclusivity.  Clear the bits.  */
         ctx->envflags &= ~TB_FLAG_GUSA_MASK;
     }
+#endif
 
     switch (ctx->base.is_jmp) {
     case DISAS_STOP:
@@ -2317,10 +2302,11 @@ static const TranslatorOps sh4_tr_ops = {
     .tb_stop            = sh4_tr_tb_stop,
 };
 
-void gen_intermediate_code(CPUState *cs, TranslationBlock *tb, int *max_insns,
-                           vaddr pc, void *host_pc)
+void sh4_translate_code(CPUState *cs, TranslationBlock *tb,
+                        int *max_insns, vaddr pc, void *host_pc)
 {
     DisasContext ctx;
 
-    translator_loop(cs, tb, max_insns, pc, host_pc, &sh4_tr_ops, &ctx.base);
+    translator_loop(cs, tb, max_insns, pc, host_pc, &sh4_tr_ops, &ctx.base,
+                    TCG_TYPE_VA);
 }

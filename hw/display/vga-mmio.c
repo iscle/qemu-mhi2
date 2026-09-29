@@ -24,9 +24,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/display/vga.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "ui/console.h"
 #include "vga_int.h"
 
@@ -108,16 +108,15 @@ static void vga_mmio_realizefn(DeviceState *dev, Error **errp)
     }
 
     sysbus_init_mmio(sbd, &s->vga.vram);
-    s->vga.con = graphic_console_init(dev, 0, s->vga.hw_ops, &s->vga);
+    s->vga.con = qemu_graphic_console_create(dev, 0, s->vga.hw_ops, &s->vga);
 }
 
-static Property vga_mmio_properties[] = {
+static const Property vga_mmio_properties[] = {
     DEFINE_PROP_UINT8("it_shift", VGAMmioState, it_shift, 0),
     DEFINE_PROP_UINT32("vgamem_mb", VGAMmioState, vga.vram_size_mb, 8),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void vga_mmio_class_initfn(ObjectClass *klass, void *data)
+static void vga_mmio_class_initfn(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

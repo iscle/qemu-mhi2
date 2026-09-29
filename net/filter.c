@@ -130,6 +130,7 @@ static void netfilter_set_netdev_id(Object *obj, const char *str, Error **errp)
 {
     NetFilterState *nf = NETFILTER(obj);
 
+    g_free(nf->netdev_id);
     nf->netdev_id = g_strdup(str);
 }
 
@@ -182,6 +183,7 @@ static void netfilter_set_position(Object *obj, const char *str, Error **errp)
 {
     NetFilterState *nf = NETFILTER(obj);
 
+    g_free(nf->position);
     nf->position = g_strdup(str);
 }
 
@@ -333,7 +335,7 @@ static void default_handle_event(NetFilterState *nf, int event, Error **errp)
     }
 }
 
-static void netfilter_class_init(ObjectClass *oc, void *data)
+static void netfilter_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
     NetFilterClass *nfc = NETFILTER_CLASS(oc);
@@ -363,7 +365,7 @@ static const TypeInfo netfilter_info = {
     .instance_size = sizeof(NetFilterState),
     .instance_init = netfilter_init,
     .instance_finalize = netfilter_finalize,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

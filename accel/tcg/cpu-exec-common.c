@@ -18,12 +18,76 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/cpus.h"
-#include "sysemu/tcg.h"
+#include "exec/log.h"
+#include "system/tcg.h"
 #include "qemu/plugin.h"
+#include "qemu/main-loop.h"
+#include "accel/tcg/cpu-loop.h"
 #include "internal-common.h"
 
 bool tcg_allowed;
+
+/*
+ * The bits of CPUState::tcg_cflags that tcg_cflags_set() never sets, because
+ * they are derived from gdb single-step, one-insn-per-tb and -d nochain.
+ */
+#define CF_DERIVED  (CF_COUNT_MASK | CF_NO_GOTO_TB | CF_NO_GOTO_PTR | \
+                     CF_SINGLE_STEP)
+
+bool tcg_cflags_has(CPUState *cpu, uint32_t flags)
+{
+    return cpu->tcg_cflags & flags;
+}
+
+void tcg_cflags_set(CPUState *cpu, uint32_t flags)
+{
+    assert((flags & CF_DERIVED) == 0);
+    cpu->tcg_cflags |= flags;
+}
+
+void tcg_update_cflags(CPUState *cpu)
+{
+    uint32_t cflags = cpu->tcg_cflags & ~CF_DERIVED;
+
+    /*
+     * Record gdb single-step.  We should be exiting the TB by raising
+     * EXCP_DEBUG, but to simplify other tests, disable chaining too.
+     *
+     * For singlestep and -d nochain, suppress goto_tb so that
+     * we can log -d cpu,exec after every TB.
+     */
+    if (unlikely(cpu_single_stepping(cpu))) {
+        cflags |= CF_NO_GOTO_TB | CF_NO_GOTO_PTR | CF_SINGLE_STEP | 1;
+    } else if (qatomic_read(&one_insn_per_tb)) {
+        cflags |= CF_NO_GOTO_TB | 1;
+    } else if (qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN)) {
+        cflags |= CF_NO_GOTO_TB;
+    }
+
+    cpu->tcg_cflags = cflags;
+}
+
+static void tcg_update_cflags_work(CPUState *cpu, run_on_cpu_data data)
+{
+    tcg_update_cflags(cpu);
+}
+
+void tcg_update_all_cflags(void)
+{
+    CPUState *cpu;
+
+    g_assert(bql_locked());
+
+    /*
+     * one-insn-per-tb and -d nochain can both be changed from the monitor
+     * while the vCPUs are running.  Queue the update onto each CPU rather
+     * than writing tcg_cflags from here, so that the field is only ever
+     * written by the CPU that owns it.
+     */
+    CPU_FOREACH(cpu) {
+        async_run_on_cpu(cpu, tcg_update_cflags_work, RUN_ON_CPU_NULL);
+    }
+}
 
 /* exit the current TB, but without causing any exception to be raised */
 void cpu_loop_exit_noexc(CPUState *cpu)

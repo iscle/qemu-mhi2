@@ -29,7 +29,8 @@
 #include "qapi/qmp/qerror.h"
 #include "qemu/ctype.h"
 #include "qemu/cutils.h"
-#include "sysemu/runstate.h"
+#include "qemu/lockable.h"
+#include "system/runstate.h"
 
 /* file descriptors passed via SCM_RIGHTS */
 typedef struct mon_fd_t mon_fd_t;

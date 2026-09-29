@@ -9,9 +9,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -123,7 +123,6 @@ static void mmx_ioc_init(Object *obj)
 static const Property mmx_ioc_properties[] = {
     DEFINE_PROP_LINK("i2c", MmxIocState, i2c, TYPE_TEGRA30_I2C,
                      Tegra30I2CState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static const VMStateDescription mmx_ioc_vmstate = {
@@ -137,7 +136,7 @@ static const VMStateDescription mmx_ioc_vmstate = {
     }
 };
 
-static void mmx_ioc_class_init(ObjectClass *klass, void *data)
+static void mmx_ioc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

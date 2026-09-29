@@ -13,11 +13,11 @@
 #include "qemu/notify.h"
 #include "qom/object_interfaces.h"
 #include "io/channel.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "hw/remote/machine.h"
 #include "io/channel-util.h"
 #include "qapi/error.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/pci/pci.h"
 #include "qemu/sockets.h"
 #include "monitor/monitor.h"
@@ -107,7 +107,11 @@ static void remote_object_machine_done(Notifier *notifier, void *data)
         error_report_err(err);
         return;
     }
-    qio_channel_set_blocking(ioc, false, NULL);
+    if (!qio_channel_set_blocking(ioc, false, &err)) {
+        error_report_err(err);
+        object_unref(OBJECT(ioc));
+        return;
+    }
 
     o->dev = dev;
 
@@ -150,7 +154,9 @@ static void remote_object_finalize(Object *obj)
     RemoteObjectClass *k = REMOTE_OBJECT_GET_CLASS(obj);
     RemoteObject *o = REMOTE_OBJECT(obj);
 
-    device_listener_unregister(&o->listener);
+    if (o->listener.unrealize) {
+        device_listener_unregister(&o->listener);
+    }
 
     if (o->ioc) {
         qio_channel_shutdown(o->ioc, QIO_CHANNEL_SHUTDOWN_BOTH, NULL);
@@ -163,7 +169,7 @@ static void remote_object_finalize(Object *obj)
     g_free(o->devid);
 }
 
-static void remote_object_class_init(ObjectClass *klass, void *data)
+static void remote_object_class_init(ObjectClass *klass, const void *data)
 {
     RemoteObjectClass *k = REMOTE_OBJECT_CLASS(klass);
 
@@ -188,7 +194,7 @@ static const TypeInfo remote_object_info = {
     .instance_finalize = remote_object_finalize,
     .class_size = sizeof(RemoteObjectClass),
     .class_init = remote_object_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

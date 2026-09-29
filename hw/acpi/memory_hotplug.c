@@ -1,8 +1,8 @@
 #include "qemu/osdep.h"
 #include "hw/acpi/memory_hotplug.h"
 #include "hw/mem/pc-dimm.h"
-#include "hw/boards.h"
-#include "hw/qdev-core.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 #include "qapi/error.h"
@@ -119,7 +119,6 @@ static void acpi_memory_hotplug_write(void *opaque, hwaddr addr, uint64_t data,
     MemStatus *mdev;
     ACPIOSTInfo *info;
     DeviceState *dev = NULL;
-    HotplugHandler *hotplug_ctrl = NULL;
     Error *local_err = NULL;
 
     if (!mem_st->dev_count) {
@@ -167,6 +166,8 @@ static void acpi_memory_hotplug_write(void *opaque, hwaddr addr, uint64_t data,
             mdev->is_removing = false;
             trace_mhp_acpi_clear_remove_evt(mem_st->selector);
         } else if (data & 8) {
+            const HotplugHandler *hotplug_ctrl;
+
             if (!mdev->is_enabled) {
                 trace_mhp_acpi_ejecting_invalid_slot(mem_st->selector);
                 break;
@@ -253,7 +254,7 @@ acpi_memory_slot_status(MemHotplugState *mem_st,
     return &mem_st->devs[slot];
 }
 
-void acpi_memory_plug_cb(HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
+void acpi_memory_plug_cb(const HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
                          DeviceState *dev, Error **errp)
 {
     MemStatus *mdev;
@@ -276,7 +277,7 @@ void acpi_memory_plug_cb(HotplugHandler *hotplug_dev, MemHotplugState *mem_st,
     }
 }
 
-void acpi_memory_unplug_request_cb(HotplugHandler *hotplug_dev,
+void acpi_memory_unplug_request_cb(const HotplugHandler *hotplug_dev,
                                    MemHotplugState *mem_st,
                                    DeviceState *dev, Error **errp)
 {

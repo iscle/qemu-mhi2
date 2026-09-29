@@ -24,7 +24,7 @@ print(f"adding upstream git repo @ {repourl}")
 # base for the user's branch. We thus need to figure out a common
 # ancestor between the user's branch and current git master.
 subprocess.check_call(["git", "remote", "add", "check-patch", repourl])
-subprocess.check_call(["git", "fetch", "check-patch", "master"])
+subprocess.check_call(["git", "fetch", "--refetch", "check-patch", "master"])
 
 ancestor = subprocess.check_output(["git", "merge-base",
                                     "check-patch/master", "HEAD"],
@@ -46,7 +46,11 @@ errors = False
 
 print("\nChecking all commits since %s...\n" % ancestor, flush=True)
 
-ret = subprocess.run(["scripts/checkpatch.pl", "--terse", ancestor + "..."])
+# We don't want "noise" for clean patches, but do want to see
+# the full commit hash for each violation, along with the
+# offending patch content
+ret = subprocess.run(["scripts/checkpatch.pl", "--emacs", "--quiet",
+                      ancestor + "..."])
 
 if ret.returncode != 0:
     print("    ❌ FAIL one or more commits failed scripts/checkpatch.pl")

@@ -3,7 +3,9 @@
 #
 
 ##
-# = Net devices
+# ***********
+# Net devices
+# ***********
 ##
 
 { 'include': 'sockets.json' }
@@ -102,13 +104,198 @@
     '*vectors': 'uint32' } }
 
 ##
-# @String:
+# @PasstSearch:
 #
-# A fat type wrapping 'str', to be embedded in lists.
+# @str: DNS domain name suffix for host name lookup, or "none".  See
+#     passt(1) option --search.
+#
+# Since: 10.1
+##
+{ 'struct': 'PasstSearch',
+  'data': {
+    'str': 'str' } }
+
+##
+# @PasstPortForward:
+#
+# @str: passt port forwarding specification, see passt(1) option
+#     --tcp-ports and --udp-ports.
+#
+# Since: 10.1
+##
+{ 'struct': 'PasstPortForward',
+  'data': {
+    'str': 'str' } }
+
+##
+# @PasstParameter:
+#
+# @str: Additional arguments for the passt executable, see passt(1)
+#
+# Since: 10.1
+##
+{ 'struct': 'PasstParameter',
+  'data': {
+    'str': 'str' } }
+
+##
+# @NetdevPasstOptions:
+#
+# Unprivileged user-mode network connectivity using passt
+#
+# @path: Filename of the passt program to run (by default 'passt', and
+#     use PATH)
+#
+# @quiet: don't print informational messages (default, passed as
+#     '--quiet')
+#
+# @vhost-user: enable vhost-user
+#
+# @mtu: assign MTU via DHCP/NDP
+#
+# @address: IPv4 or IPv6 address
+#
+# @netmask: IPv4 mask
+#
+# @mac: source MAC address
+#
+# @gateway: IPv4 or IPv6 address as gateway
+#
+# @interface: interface for addresses and routes
+#
+# @outbound: bind to address as outbound source
+#
+# @outbound-if4: bind to outbound interface for IPv4
+#
+# @outbound-if6: bind to outbound interface for IPv6
+#
+# @dns: IPv4 or IPv6 address as DNS
+#
+# @search: search domains
+#
+# @fqdn: FQDN to configure client with
+#
+# @dhcp-dns: enable/disable DNS list in DHCP/DHCPv6/NDP
+#
+# @dhcp-search: enable/disable list in DHCP/DHCPv6/NDP
+#
+# @map-host-loopback: addresse to refer to host
+#
+# @map-guest-addr: addr to translate to guest's address
+#
+# @dns-forward: forward DNS queries sent to
+#
+# @dns-host: host nameserver to direct queries to
+#
+# @tcp: enable/disable TCP
+#
+# @udp: enable/disable UDP
+#
+# @icmp: enable/disable ICMP
+#
+# @dhcp: enable/disable DHCP
+#
+# @ndp: enable/disable NDP
+#
+# @dhcpv6: enable/disable DHCPv6
+#
+# @ra: enable/disable route advertisements
+#
+# @freebind: bind to any address for forwarding
+#
+# @ipv4: enable/disable IPv4
+#
+# @ipv6: enable/disable IPv6
+#
+# @tcp-ports: TCP ports to forward
+#
+# @udp-ports: UDP ports to forward
+#
+# @param: parameter to pass to passt command
+#
+# Since: 10.1
+##
+{ 'struct': 'NetdevPasstOptions',
+  'data': {
+    '*path':               'str',
+    '*quiet':              'bool',
+    '*vhost-user':         'bool',
+    '*mtu':                'int',
+    '*address':            'str',
+    '*netmask':            'str',
+    '*mac':                'str',
+    '*gateway':            'str',
+    '*interface':          'str',
+    '*outbound':           'str',
+    '*outbound-if4':       'str',
+    '*outbound-if6':       'str',
+    '*dns':                'str',
+    '*search':             ['PasstSearch'],
+    '*fqdn':               'str',
+    '*dhcp-dns':           'bool',
+    '*dhcp-search':        'bool',
+    '*map-host-loopback':  'str',
+    '*map-guest-addr':     'str',
+    '*dns-forward':        'str',
+    '*dns-host':           'str',
+    '*tcp':                'bool',
+    '*udp':                'bool',
+    '*icmp':               'bool',
+    '*dhcp':               'bool',
+    '*ndp':                'bool',
+    '*dhcpv6':             'bool',
+    '*ra':                 'bool',
+    '*freebind':           'bool',
+    '*ipv4':               'bool',
+    '*ipv6':               'bool',
+    '*tcp-ports':          ['PasstPortForward'],
+    '*udp-ports':          ['PasstPortForward'],
+    '*param':              ['PasstParameter'] },
+    'if': 'CONFIG_PASST' }
+
+##
+# @NetdevUserDomainSuffix:
+#
+# @str: DNS domain name suffix for host name lookup, similar to
+#     resolv.conf(5)
 #
 # Since: 1.2
 ##
-{ 'struct': 'String',
+{ 'struct': 'NetdevUserDomainSuffix',
+  'data': {
+    'str': 'str' } }
+
+##
+# @NetdevUserHostForward:
+#
+# @str: Host port forwarding rule
+#
+# TODO: This string gets parsed by slirp_hostfwd().  We fail to
+#    document syntax and semantics here.  We do in qemu-options.hx.
+#    Parsing structured configuration from strings is a no-no for QMP.
+#    This should really be a struct.  Not sure it's worth the bother
+#    now.
+#
+# Since: 1.2
+##
+{ 'struct': 'NetdevUserHostForward',
+  'data': {
+    'str': 'str' } }
+
+##
+# @NetdevUserGuestForward:
+#
+# @str: Guest port forwarding rule
+#
+# TODO: This string gets parsed by slirp_guestfwd().  We fail to
+#    document syntax and semantics here.  We do in qemu-options.hx.
+#    Parsing structured configuration from strings is a no-no for QMP.
+#    This should really be a struct.  Not sure it's worth the bother
+#    now.
+#
+# Since: 1.2
+##
+{ 'struct': 'NetdevUserGuestForward',
   'data': {
     'str': 'str' } }
 
@@ -150,12 +337,12 @@
 # @domainname: guest-visible domain name of the virtual nameserver
 #     (since 3.0)
 #
-# @ipv6-prefix: IPv6 network prefix (default is fec0::) (since 2.6).
-#     The network prefix is given in the usual hexadecimal IPv6
-#     address notation.
+# @ipv6-prefix: IPv6 network prefix (default is fec0::).  The network
+#     prefix is given in the usual hexadecimal IPv6 address notation.
+#     (since 2.6)
 #
-# @ipv6-prefixlen: IPv6 network prefix length (default is 64) (since
-#     2.6)
+# @ipv6-prefixlen: IPv6 network prefix length (default is 64)
+#     (since 2.6)
 #
 # @ipv6-host: guest-visible IPv6 address of the host (since 2.6)
 #
@@ -166,8 +353,8 @@
 #
 # @smbserver: IP address of the built-in SMB server
 #
-# @hostfwd: redirect incoming TCP or UDP host connections to guest
-#     endpoints
+# @hostfwd: redirect incoming TCP, UDP or UNIX host connections to
+#     guest endpoints
 #
 # @guestfwd: forward guest TCP connections
 #
@@ -188,7 +375,7 @@
     '*bootfile':  'str',
     '*dhcpstart': 'str',
     '*dns':       'str',
-    '*dnssearch': ['String'],
+    '*dnssearch': ['NetdevUserDomainSuffix'],
     '*domainname': 'str',
     '*ipv6-prefix':      'str',
     '*ipv6-prefixlen':   'int',
@@ -196,8 +383,8 @@
     '*ipv6-dns':         'str',
     '*smb':       'str',
     '*smbserver': 'str',
-    '*hostfwd':   ['String'],
-    '*guestfwd':  ['String'],
+    '*hostfwd':   ['NetdevUserHostForward'],
+    '*guestfwd':  ['NetdevUserGuestForward'],
     '*tftp-server-name': 'str' } }
 
 ##
@@ -212,9 +399,21 @@
 # @fds: multiple file descriptors of already opened multiqueue capable
 #     tap
 #
-# @script: script to initialize the interface
+# @script: script to initialize the interface.  An empty string
+#     disables script execution.  Defaults to
+#     ``<sysconfdir>/qemu-ifup``, where ``<sysconfdir>`` is the
+#     system configuration directory at build time (typically /etc).
+#     Using "no" to disable script execution is deprecated (since
+#     11.2); use an empty string instead.  In a future version, "no"
+#     will be treated as a plain file name.
 #
-# @downscript: script to shut down the interface
+# @downscript: script to shut down the interface.  An empty string
+#     disables script execution.  Defaults to
+#     ``<sysconfdir>/qemu-ifdown``, where ``<sysconfdir>`` is the
+#     system configuration directory at build time (typically /etc).
+#     Using "no" to disable script execution is deprecated (since
+#     11.2); use an empty string instead.  In a future version, "no"
+#     will be treated as a plain file name.
 #
 # @br: bridge name (since 2.8)
 #
@@ -238,6 +437,31 @@
 # @poll-us: maximum number of microseconds that could be spent on busy
 #     polling for tap (since 2.7)
 #
+# @x-permit-local-migration: permit local migration for this TAP
+#     backend.  When set, local migration is enabled/disabled by
+#     migration parameter @local for this TAP backend.  When unset,
+#     migration parameter @local is ignored for this TAP backend.
+#
+#     To be able to do incoming local migration of a TAP backend,
+#     migration parameter @local must be set _before_ creating the
+#     TAP backend.  Otherwise, TAP backend is initialized as usual,
+#     opening/creating TAP devices in kernel.  In this case further
+#     local incoming migration (with migration parameter @local set
+#     after creating TAP backend with @x-permit-local-migration
+#     parameter set) will simply fail.
+#
+#     Moreover, when QEMU is in incoming migration state, migration
+#     parameter @local is set and @x-permit-local-migration is set,
+#     the following options are not supported and must not be set:
+#     @fd, @fds, @helper, @br, @ifname, @sndbuf, @vnet_hdr.
+#     Additionally, @script and @downscript must be explicitly
+#     disabled then.
+#     (default: false, since 11.2)
+#
+# Features:
+#
+# @unstable: Member @x-permit-local-migration is experimental.
+#
 # Since: 1.2
 ##
 { 'struct': 'NetdevTapOptions',
@@ -256,7 +480,9 @@
     '*vhostfds':   'str',
     '*vhostforce': 'bool',
     '*queues':     'uint32',
-    '*poll-us':    'uint32'} }
+    '*poll-us':    'uint32',
+    '*x-permit-local-migration': {
+      'type': 'bool', 'features' : [ 'unstable'] } } }
 
 ##
 # @NetdevSocketOptions:
@@ -387,8 +613,8 @@
 #
 # @hubid: hub identifier number
 #
-# @netdev: used to connect hub to a netdev instead of a device (since
-#     2.12)
+# @netdev: used to connect hub to a netdev instead of a device
+#     (since 2.12)
 #
 # Since: 1.2
 ##
@@ -454,25 +680,36 @@
 #     (default: 0).
 #
 # @inhibit: Don't load a default XDP program, use one already loaded
-#     to the interface (default: false).  Requires @sock-fds.
+#     to the interface (default: false).  Requires @sock-fds or
+#     @map-path.
 #
 # @sock-fds: A colon (:) separated list of file descriptors for
 #     already open but not bound AF_XDP sockets in the queue order.
 #     One fd per queue.  These descriptors should already be added
-#     into XDP socket map for corresponding queues.  Requires
-#     @inhibit.
+#     into XDP socket map for corresponding queues.  @sock-fds and
+#     @map-path are mutually exclusive.  Requires @inhibit.
+#
+# @map-path: The path to a pinned xsk map to push file descriptors
+#     for bound AF_XDP sockets into.  @map-path and @sock-fds are
+#     mutually exclusive.  Requires @inhibit.  (Since 10.1)
+#
+# @map-start-index: Use @map-path to insert xsk sockets starting from
+#     this index number (default: 0).  Requires @map-path.
+#     (Since 10.1)
 #
 # Since: 8.2
 ##
 { 'struct': 'NetdevAFXDPOptions',
   'data': {
-    'ifname':       'str',
-    '*mode':        'AFXDPMode',
-    '*force-copy':  'bool',
-    '*queues':      'int',
-    '*start-queue': 'int',
-    '*inhibit':     'bool',
-    '*sock-fds':    'str' },
+    'ifname':           'str',
+    '*mode':            'AFXDPMode',
+    '*force-copy':      'bool',
+    '*queues':          'int',
+    '*start-queue':     'int',
+    '*inhibit':         'bool',
+    '*sock-fds':        'str',
+    '*map-path':        'str',
+    '*map-start-index': 'int32' },
   'if': 'CONFIG_AF_XDP' }
 
 ##
@@ -510,8 +747,8 @@
 # @queues: number of queues to be created for multiqueue vhost-vdpa
 #     (default: 1)
 #
-# @x-svq: Start device with (experimental) shadow virtqueue.  (Since
-#     7.1) (default: false)
+# @x-svq: Start device with (experimental) shadow virtqueue.
+#     (Since 7.1) (default: false)
 #
 # Features:
 #
@@ -646,21 +883,12 @@
 #
 # @server: create server socket (default: false)
 #
-# @reconnect: For a client socket, if a socket is disconnected, then
-#     attempt a reconnect after the given number of seconds.  Setting
-#     this to zero disables this function.  (default: 0) (since 8.0)
+# @reconnect-ms: For a client socket, if a socket is disconnected,
+#     then attempt a reconnect after the given number of milliseconds.
+#     Setting this to zero disables this function.
+#     (default: 0) (Since: 9.2)
 #
-# @reconnect-ms: For a client socket, if a socket is disconnected, then
-#     attempt a reconnect after the given number of milliseconds.  Setting
-#     this to zero disables this function.  This member is mutually
-#     exclusive with @reconnect.  (default: 0) (Since: 9.2)
-#
-# Only SocketAddress types 'unix', 'inet' and 'fd' are supported.
-#
-# Features:
-#
-# @deprecated: Member @reconnect is deprecated.  Use @reconnect-ms
-#     instead.
+# Only `SocketAddress` types 'unix', 'inet' and 'fd' are supported.
 #
 # Since: 7.2
 ##
@@ -668,7 +896,6 @@
   'data': {
     'addr':   'SocketAddress',
     '*server': 'bool',
-    '*reconnect': { 'type': 'int', 'features': [ 'deprecated' ] },
     '*reconnect-ms': 'int' } }
 
 ##
@@ -680,7 +907,7 @@
 #
 # @local: local address
 #
-# Only SocketAddress types 'unix', 'inet' and 'fd' are supported.
+# Only `SocketAddress` types 'unix', 'inet' and 'fd' are supported.
 #
 # If remote address is present and it's a multicast address, local
 # address is optional.  Otherwise local address is required and remote
@@ -729,12 +956,19 @@
 #
 # @af-xdp: since 8.2
 #
+# @passt: since 10.1
+#
 # Since: 2.7
 ##
 { 'enum': 'NetClientDriver',
-  'data': [ 'none', 'nic', 'user', 'tap', 'l2tpv3', 'socket', 'stream',
-            'dgram', 'vde', 'bridge', 'hubport', 'netmap', 'vhost-user',
-            'vhost-vdpa',
+  'data': [ 'none', 'nic',
+            { 'name': 'user', 'if': 'CONFIG_SLIRP' },
+            'tap', 'l2tpv3', 'socket', 'stream', 'dgram',
+            { 'name': 'vde', 'if': 'CONFIG_VDE' },
+            'bridge', 'hubport',
+            { 'name': 'netmap', 'if': 'CONFIG_NETMAP' },
+            'vhost-user', 'vhost-vdpa',
+            { 'name': 'passt', 'if': 'CONFIG_PASST' },
             { 'name': 'af-xdp', 'if': 'CONFIG_AF_XDP' },
             { 'name': 'vmnet-host', 'if': 'CONFIG_VMNET' },
             { 'name': 'vmnet-shared', 'if': 'CONFIG_VMNET' },
@@ -756,16 +990,21 @@
   'discriminator': 'type',
   'data': {
     'nic':      'NetLegacyNicOptions',
-    'user':     'NetdevUserOptions',
+    'passt':    { 'type': 'NetdevPasstOptions',
+                  'if': 'CONFIG_PASST' },
+    'user':     { 'type': 'NetdevUserOptions',
+                  'if': 'CONFIG_SLIRP' },
     'tap':      'NetdevTapOptions',
     'l2tpv3':   'NetdevL2TPv3Options',
     'socket':   'NetdevSocketOptions',
     'stream':   'NetdevStreamOptions',
     'dgram':    'NetdevDgramOptions',
-    'vde':      'NetdevVdeOptions',
+    'vde':      { 'type': 'NetdevVdeOptions',
+                  'if': 'CONFIG_VDE' },
     'bridge':   'NetdevBridgeOptions',
     'hubport':  'NetdevHubPortOptions',
-    'netmap':   'NetdevNetmapOptions',
+    'netmap':   { 'type': 'NetdevNetmapOptions',
+                  'if': 'CONFIG_NETMAP' },
     'af-xdp':   { 'type': 'NetdevAFXDPOptions',
                   'if': 'CONFIG_AF_XDP' },
     'vhost-user': 'NetdevVhostUserOptions',
@@ -845,7 +1084,7 @@
 #
 # @name: net client name
 #
-# Returns: list of @RxFilterInfo for all NICs (or for the given NIC).
+# Returns: list of info for all NICs (or for the given NIC).
 #
 # Errors:
 #     - if the given @name doesn't exist
@@ -890,7 +1129,7 @@
 ##
 # @NIC_RX_FILTER_CHANGED:
 #
-# Emitted once until the 'query-rx-filter' command is executed, the
+# Emitted once until the `query-rx-filter` command is executed, the
 # first event will always be emitted
 #
 # @name: net client name
@@ -932,7 +1171,6 @@
 #
 # Since: 4.0
 ##
-
 { 'struct': 'AnnounceParameters',
   'data': { 'initial': 'int',
             'max': 'int',
@@ -1031,3 +1269,207 @@
 ##
 { 'event': 'NETDEV_STREAM_DISCONNECTED',
   'data': { 'netdev-id': 'str' } }
+
+##
+# @NETDEV_VHOST_USER_CONNECTED:
+#
+# Emitted when the vhost-user chardev is connected
+#
+# @netdev-id: QEMU netdev id that is connected
+#
+# @chardev-id: The character device id used by the QEMU netdev
+#
+# Since: 10.0
+#
+# .. qmp-example::
+#
+#     <- { "timestamp": {"seconds": 1739538638, "microseconds": 354181 },
+#          "event": "NETDEV_VHOST_USER_CONNECTED",
+#          "data": { "netdev-id": "netdev0", "chardev-id": "chr0" } }
+##
+{ 'event': 'NETDEV_VHOST_USER_CONNECTED',
+  'data': { 'netdev-id': 'str', 'chardev-id': 'str' } }
+
+##
+# @NETDEV_VHOST_USER_DISCONNECTED:
+#
+# Emitted when the vhost-user chardev is disconnected
+#
+# @netdev-id: QEMU netdev id that is disconnected
+#
+# Since: 10.0
+#
+# .. qmp-example::
+#
+#     <- { "timestamp": { "seconds": 1739538634, "microseconds": 920450 },
+#          "event": "NETDEV_VHOST_USER_DISCONNECTED",
+#          "data": { "netdev-id": "netdev0" } }
+##
+{ 'event': 'NETDEV_VHOST_USER_DISCONNECTED',
+  'data': { 'netdev-id': 'str' } }
+
+##
+# @UsernetInfo:
+#
+# Information about a user-mode network stack (slirp).
+#
+# @hub-id: The hub id, if available.
+#
+# @hub-name: The name of the hub.
+#
+# @info: Network information from slirp.
+#
+# Since: 11.2
+##
+{ 'struct': 'UsernetInfo',
+  'data': {
+    '*hub-id': 'int',
+    'hub-name': 'str',
+    'info': 'str' },
+  'if': 'CONFIG_SLIRP' }
+
+##
+# @x-query-usernet:
+#
+# Query user-mode network stack connection states.
+#
+# Features:
+#
+# @unstable: This command is meant for debugging.
+#
+# Returns: list of user-mode network stack information.
+#
+# Since: 11.2
+#
+# .. qmp-example::
+#
+#     -> { "execute": "x-query-usernet" }
+#     <- { "return": [ { "hub-id": 0, "hub-name": "vnet",
+#                        "info": "..." } ] }
+##
+{ 'command': 'x-query-usernet',
+  'returns': ['UsernetInfo'],
+  'if': 'CONFIG_SLIRP',
+  'features': [ 'unstable' ] }
+
+##
+# @NetFilterInfo:
+#
+# Information about a netfilter attached to a network client.
+#
+# @name: filter object name (QOM path component)
+#
+# @type: QOM type name (e.g. "filter-mirror")
+#
+# @info: filter properties as comma-separated key=value pairs
+#        (excluding @type)
+#
+# Since: 11.2
+##
+{ 'struct': 'NetFilterInfo',
+  'data': {
+    'name': 'str',
+    'type': 'str',
+    'info': 'str' } }
+
+##
+# @NetworkClientInfo:
+#
+# Information about a network client.
+#
+# @name: unique network client identifier
+#
+# @queue-index: index of this queue (0 for single-queue clients)
+#
+# @type: network client driver type
+#
+# @info-str: driver-specific formatted information string (e.g.
+#            "model=e1000,macaddr=52:54:00:12:34:56")
+#
+# @peer: the connected peer client (always a leaf; the peer's own
+#        peer field is never populated)
+#
+# @filters: attached netfilters
+#
+# Since: 11.2
+##
+{ 'struct': 'NetworkClientInfo',
+  'data': {
+    'name': 'str',
+    'queue-index': 'uint32',
+    'type': 'NetClientDriver',
+    'info-str': 'str',
+    '*peer': 'NetworkClientInfo',
+    'filters': ['NetFilterInfo'] } }
+
+##
+# @NetHubPortInfo:
+#
+# Information about a hub port.
+#
+# @name: hub port identifier
+#
+# @peer: the network client connected through this port
+#
+# Since: 11.2
+##
+{ 'struct': 'NetHubPortInfo',
+  'data': {
+    'name': 'str',
+    '*peer': 'NetworkClientInfo' } }
+
+##
+# @NetHubInfo:
+#
+# Information about a network hub.
+#
+# @id: hub identifier
+#
+# @ports: list of ports on this hub
+#
+# Since: 11.2
+##
+{ 'struct': 'NetHubInfo',
+  'data': {
+    'id': 'int',
+    'ports': ['NetHubPortInfo'] } }
+
+##
+# @NetworkInfo:
+#
+# Information about the network configuration.
+#
+# @hubs: network hubs and their ports
+#
+# @clients: network clients not associated with a hub
+#
+# Since: 11.2
+##
+{ 'struct': 'NetworkInfo',
+  'data': {
+    'hubs': ['NetHubInfo'],
+    'clients': ['NetworkClientInfo'] } }
+
+##
+# @x-query-network:
+#
+# Query the network configuration including hubs and clients.
+#
+# Features:
+#
+# @unstable: This command is meant for debugging.
+#
+# Returns: @NetworkInfo describing hubs and clients.
+#
+# Since: 11.2
+#
+# .. qmp-example::
+#
+#     -> { "execute": "x-query-network" }
+#     <- { "return": { "clients": [ { "name": "st0",
+#                      "queue-index": 0, "type": "stream",
+#                      "info-str": "listening" } ] } }
+##
+{ 'command': 'x-query-network',
+  'returns': 'NetworkInfo',
+  'features': [ 'unstable' ] }

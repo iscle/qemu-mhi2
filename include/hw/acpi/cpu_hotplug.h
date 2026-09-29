@@ -16,7 +16,7 @@
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/pc-hotplug.h"
 #include "hw/acpi/aml-build.h"
-#include "hw/hotplug.h"
+#include "hw/core/hotplug.h"
 #include "hw/acpi/cpu.h"
 
 typedef struct AcpiCpuHotplug {
@@ -25,7 +25,7 @@ typedef struct AcpiCpuHotplug {
     uint8_t sts[ACPI_GPE_PROC_LEN];
 } AcpiCpuHotplug;
 
-void legacy_acpi_cpu_plug_cb(HotplugHandler *hotplug_dev,
+void legacy_acpi_cpu_plug_cb(const HotplugHandler *hotplug_dev,
                              AcpiCpuHotplug *g, DeviceState *dev, Error **errp);
 
 void legacy_acpi_cpu_hotplug_init(MemoryRegion *parent, Object *owner,

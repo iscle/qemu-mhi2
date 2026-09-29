@@ -35,13 +35,6 @@ typedef struct GuestFD {
     };
 } GuestFD;
 
-/*
- * For ARM semihosting, we have a separate structure for routing
- * data for the console which is outside the guest fd address space.
- */
-extern GuestFD console_in_gf;
-extern GuestFD console_out_gf;
-
 /**
  * alloc_guestfd:
  *
@@ -76,6 +69,15 @@ GuestFD *get_guestfd(int guestfd);
  * Initialize the GuestFD for @guestfd to GuestFDHost using @hostfd.
  */
 void associate_guestfd(int guestfd, int hostfd);
+
+/**
+ * console_guestfd:
+ * @guestfd: GuestFD index
+ *
+ * Initialize the GuestFD for @guestfd to GuestFDConsole.
+ * I/O will be routed through the semihosting console chardev.
+ */
+void console_guestfd(int guestfd);
 
 /**
  * staticfile_guestfd:

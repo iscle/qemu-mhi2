@@ -21,19 +21,21 @@ import sys
 import re
 import string
 import hex_common
+import argparse
 
 
 ##
 ##     Generate data for printing each instruction (format string + operands)
 ##
 def regprinter(m):
-    str = m.group(1)
-    str += ":".join(["%d"] * len(m.group(2)))
-    str += m.group(3)
     if ("S" in m.group(1)) and (len(m.group(2)) == 1):
-        str += "/%s"
+        str = "%s"
     elif ("C" in m.group(1)) and (len(m.group(2)) == 1):
-        str += "/%s"
+        str = "%s"
+    else:
+        str = m.group(1)
+        str += ":".join(["%d"] * len(m.group(2)))
+        str += m.group(3)
     return str
 
 
@@ -96,11 +98,17 @@ def spacify(s):
 
 
 def main():
-    hex_common.read_semantics_file(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        "Emit opaque macro calls with information for printing string representations of instrucions"
+    )
+    parser.add_argument("semantics", help="semantics file")
+    parser.add_argument("out", help="output file")
+    args = parser.parse_args()
+    hex_common.read_semantics_file(args.semantics)
 
     immext_casere = re.compile(r"IMMEXT\(([A-Za-z])")
 
-    with open(sys.argv[-1], "w") as f:
+    with open(args.out, "w") as f:
         for tag in hex_common.tags:
             if not hex_common.behdict[tag]:
                 continue
@@ -135,11 +143,12 @@ def main():
                     else:
                         regno = ri
                     if len(b) == 1:
-                        f.write(f", insn->regno[{regno}]")
                         if "S" in a:
                             f.write(f", sreg2str(insn->regno[{regno}])")
                         elif "C" in a:
                             f.write(f", creg2str(insn->regno[{regno}])")
+                        else:
+                            f.write(f", insn->regno[{regno}]")
                     elif len(b) == 2:
                         f.write(f", insn->regno[{regno}] + 1" f", insn->regno[{regno}]")
                     else:

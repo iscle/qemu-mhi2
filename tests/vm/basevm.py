@@ -83,7 +83,7 @@ class BaseVM(object):
     # command to halt the guest, can be overridden by subclasses
     poweroff = "poweroff"
     # Time to wait for shutdown to finish.
-    shutdown_timeout_default = 30
+    shutdown_timeout_default = 90
     # enable IPv6 networking
     ipv6 = True
     # This is the timeout on the wait for console bytes.
@@ -312,12 +312,15 @@ class BaseVM(object):
         self._guest = guest
         # Init console so we can start consuming the chars.
         self.console_init()
-        usernet_info = guest.cmd("human-monitor-command",
-                                 command_line="info usernet")
-        self.ssh_port = get_info_usernet_hostfwd_port(usernet_info)
+        res = guest.cmd("x-query-usernet")
+        for entry in res:
+            port = get_info_usernet_hostfwd_port(entry['info'])
+            if port is not None:
+                self.ssh_port = port
+                break
         if not self.ssh_port:
-            raise Exception("Cannot find ssh port from 'info usernet':\n%s" % \
-                            usernet_info)
+            raise Exception("Cannot find ssh port from"
+                            " 'x-query-usernet': %s" % res)
 
     def console_init(self, timeout = None):
         if timeout == None:
@@ -520,8 +523,7 @@ def get_qemu_path(arch, build_path=None):
     if "QEMU" in os.environ:
         qemu_path = os.environ["QEMU"]
     elif build_path:
-        qemu_path = os.path.join(build_path, arch + "-softmmu")
-        qemu_path = os.path.join(qemu_path, "qemu-system-" + arch)
+        qemu_path = os.path.join(build_path, "qemu-system-" + arch)
     else:
         # Default is to use system path for qemu.
         qemu_path = "qemu-system-" + arch
@@ -613,8 +615,11 @@ def parse_args(vmcls):
     parser.add_argument("--source-path", default=None,
                         help="Path of source directory, "\
                         "for finding additional files. ")
-    parser.add_argument("--interactive", "-I", action="store_true",
-                        help="Interactively run command")
+    int_ops = parser.add_mutually_exclusive_group()
+    int_ops.add_argument("--interactive", "-I", action="store_true",
+                         help="Interactively run command")
+    int_ops.add_argument("--interactive-root", action="store_true",
+                         help="Interactively run command as root")
     parser.add_argument("--snapshot", "-s", action="store_true",
                         help="run tests with a snapshot")
     parser.add_argument("--genisoimage", default="genisoimage",
@@ -676,6 +681,8 @@ def main(vmcls, config=None):
         exitcode = 3
     if args.interactive:
         vm.ssh()
+    elif args.interactive_root:
+        vm.ssh_root()
 
     if not args.snapshot:
         vm.graceful_shutdown()

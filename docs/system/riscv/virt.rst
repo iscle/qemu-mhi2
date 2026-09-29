@@ -16,7 +16,7 @@ The ``virt`` machine supports the following devices:
 * Core Local Interruptor (CLINT)
 * Platform-Level Interrupt Controller (PLIC)
 * CFI parallel NOR flash memory
-* 1 NS16550 compatible UART
+* Either 1 or 2 NS16550 compatible UARTs
 * 1 Google Goldfish RTC
 * 1 SiFive Test device
 * 8 virtio-mmio transport devices
@@ -26,6 +26,9 @@ The ``virt`` machine supports the following devices:
 The hypervisor extension has been enabled for the default CPU, so virtual
 machines with hypervisor extension can simply be used without explicitly
 declaring.
+
+The second UART only exists if a backend is configured explicitly (e.g.
+with a second ``-serial`` command line option).
 
 Hardware configuration information
 ----------------------------------
@@ -94,6 +97,12 @@ command line:
 
   $ qemu-system-riscv64 -M virt -device riscv-iommu-pci (...)
 
+It also has support for the riscv-iommu-sys platform device:
+
+.. code-block:: bash
+
+  $ qemu-system-riscv64 -M virt,iommu-sys=on (...)
+
 Refer to :ref:`riscv-iommu` for more information on how the RISC-V IOMMU support
 works.
 
@@ -123,11 +132,22 @@ The following machine-specific options are supported:
   MSIs. When not specified, this option is assumed to be "none" which selects
   SiFive PLIC to handle wired interrupts.
 
+  This option also interacts with '-accel kvm'.  When using "aia=aplic-imsic"
+  with KVM, it is possible to set the use of the kernel irqchip in split mode
+  by using "-accel kvm,kernel-irqchip=split".  In this case the ``virt`` machine
+  will emulate the APLIC controller instead of using the APLIC controller from
+  the irqchip.  See :ref:`riscv-aia` for more details on all available AIA
+  modes.
+
 - aia-guests=nnn
 
   The number of per-HART VS-level AIA IMSIC pages to be emulated for a guest
   having AIA IMSIC (i.e. "aia=aplic-imsic" selected). When not specified,
   the default number of per-HART VS-level AIA IMSIC pages is 0.
+
+- iommu-sys=[on|off]
+
+  Enables the riscv-iommu-sys platform device. Defaults to 'off'.
 
 Running Linux kernel
 --------------------

@@ -43,8 +43,8 @@
 #include "qom/object_interfaces.h"
 #include "qemu/error-report.h"
 #include "trace.h"
-#include "sysemu/runstate.h"
-#include "hw/boards.h"
+#include "system/runstate.h"
+#include "hw/core/boards.h"
 #include "hw/remote/machine.h"
 #include "qapi/error.h"
 #include "qapi/qapi-visit-sockets.h"
@@ -52,12 +52,12 @@
 #include "qemu/notify.h"
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "libvfio-user.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 #include "hw/pci/pci.h"
 #include "qemu/timer.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "hw/remote/vfio-user-obj.h"
@@ -75,12 +75,17 @@ OBJECT_DECLARE_TYPE(VfuObject, VfuObjectClass, VFU_OBJECT)
  */
 #define VFU_OBJECT_ERROR(o, fmt, ...)                                     \
     {                                                                     \
+        error_report((fmt), ## __VA_ARGS__);                              \
         if (vfu_object_auto_shutdown()) {                                 \
-            error_setg(&error_abort, (fmt), ## __VA_ARGS__);              \
-        } else {                                                          \
-            error_report((fmt), ## __VA_ARGS__);                          \
+            /*                                                            \
+             * FIXME This looks inappropriate.  The error is serious      \
+             * enough programming error to warrant aborting the process   \
+             * when auto-shutdown is enabled, yet harmless enough to      \
+             * permit carrying on when it's disabled.  Makes no sense.    \
+             */                                                           \
+            abort();                                                      \
         }                                                                 \
-    }                                                                     \
+    }
 
 struct VfuObjectClass {
     ObjectClass parent_class;
@@ -156,7 +161,9 @@ static void vfu_object_set_socket(Object *obj, Visitor *v, const char *name,
 
     o->socket = NULL;
 
-    visit_type_SocketAddress(v, name, &o->socket, errp);
+    if (!visit_type_SocketAddress(v, name, &o->socket, errp)) {
+        return;
+    }
 
     if (o->socket->type != SOCKET_ADDRESS_TYPE_UNIX) {
         error_setg(errp, "vfu: Unsupported socket type - %s",
@@ -358,7 +365,7 @@ static int vfu_object_mr_rw(MemoryRegion *mr, uint8_t *buf, hwaddr offset,
     int access_size;
     uint64_t val;
 
-    if (memory_access_is_direct(mr, is_write)) {
+    if (memory_access_is_direct(mr, is_write, MEMTXATTRS_UNSPECIFIED)) {
         /**
          * Some devices expose a PCI expansion ROM, which could be buffer
          * based as compared to other regions which are primarily based on
@@ -368,9 +375,9 @@ static int vfu_object_mr_rw(MemoryRegion *mr, uint8_t *buf, hwaddr offset,
         ram_ptr = memory_region_get_ram_ptr(mr);
 
         if (is_write) {
-            memcpy((ram_ptr + offset), buf, size);
+            qemu_ram_move((ram_ptr + offset), buf, size);
         } else {
-            memcpy(buf, (ram_ptr + offset), size);
+            qemu_ram_move(buf, (ram_ptr + offset), size);
         }
 
         return 0;
@@ -746,7 +753,7 @@ static void vfu_object_init_ctx(VfuObject *o, Error **errp)
                                 LIBVFIO_USER_FLAG_ATTACH_NB,
                                 o, VFU_DEV_TYPE_PCI);
     if (o->vfu_ctx == NULL) {
-        error_setg(errp, "vfu: Failed to create context - %s", strerror(errno));
+        error_setg_errno(errp, errno, "vfu: Failed to create context");
         return;
     }
 
@@ -771,9 +778,9 @@ static void vfu_object_init_ctx(VfuObject *o, Error **errp)
 
     ret = vfu_pci_init(o->vfu_ctx, pci_type, PCI_HEADER_TYPE_NORMAL, 0);
     if (ret < 0) {
-        error_setg(errp,
-                   "vfu: Failed to attach PCI device %s to context - %s",
-                   o->device, strerror(errno));
+        error_setg_errno(errp, errno,
+                         "vfu: Failed to attach PCI device %s to context",
+                         o->device);
         goto fail;
     }
 
@@ -787,13 +794,14 @@ static void vfu_object_init_ctx(VfuObject *o, Error **errp)
                            VFU_REGION_FLAG_RW | VFU_REGION_FLAG_ALWAYS_CB,
                            NULL, 0, -1, 0);
     if (ret < 0) {
-        error_setg(errp,
-                   "vfu: Failed to setup config space handlers for %s- %s",
-                   o->device, strerror(errno));
+        error_setg_errno(errp, errno,
+                         "vfu: Failed to setup config space handlers for %s",
+                         o->device);
         goto fail;
     }
 
-    ret = vfu_setup_device_dma(o->vfu_ctx, &dma_register, &dma_unregister);
+    ret = vfu_setup_device_dma(o->vfu_ctx, LIBVFIO_USER_MAX_DMA_REGIONS,
+                               &dma_register, &dma_unregister);
     if (ret < 0) {
         error_setg(errp, "vfu: Failed to setup DMA handlers for %s",
                    o->device);
@@ -817,8 +825,8 @@ static void vfu_object_init_ctx(VfuObject *o, Error **errp)
 
     ret = vfu_realize_ctx(o->vfu_ctx);
     if (ret < 0) {
-        error_setg(errp, "vfu: Failed to realize device %s- %s",
-                   o->device, strerror(errno));
+        error_setg_errno(errp, errno, "vfu: Failed to realize device %s",
+                         o->device);
         goto fail;
     }
 
@@ -917,7 +925,7 @@ static void vfu_object_finalize(Object *obj)
     }
 }
 
-static void vfu_object_class_init(ObjectClass *klass, void *data)
+static void vfu_object_class_init(ObjectClass *klass, const void *data)
 {
     VfuObjectClass *k = VFU_OBJECT_CLASS(klass);
 
@@ -944,7 +952,7 @@ static const TypeInfo vfu_object_info = {
     .instance_finalize = vfu_object_finalize,
     .class_size = sizeof(VfuObjectClass),
     .class_init = vfu_object_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

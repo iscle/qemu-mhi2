@@ -25,17 +25,17 @@
 #include "qemu/osdep.h"
 #include "block/block_int-common.h"
 #include "qemu/units.h"
-#include "cpu.h"
-#include "hw/boards.h"
+#include "target/sparc/cpu.h"
+#include "hw/core/boards.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/sparc/sparc64.h"
 #include "hw/rtc/sun4v-rtc.h"
-#include "sysemu/block-backend.h"
+#include "system/block-backend.h"
 #include "qemu/error-report.h"
-#include "sysemu/qtest.h"
-#include "sysemu/sysemu.h"
+#include "system/qtest.h"
+#include "system/system.h"
 #include "qapi/error.h"
 
 typedef struct NiagaraBoardState {
@@ -137,7 +137,7 @@ static void niagara_init(MachineState *machine)
        outside of the partition RAM */
     if (dinfo) {
         BlockBackend *blk = blk_by_legacy_dinfo(dinfo);
-        int size = blk_getlength(blk);
+        int64_t size = blk_getlength(blk);
         if (size > 0) {
             memory_region_init_ram(&s->vdisk_ram, NULL, "sun4v_vdisk.ram", size,
                                    &error_fatal);
@@ -157,7 +157,7 @@ static void niagara_init(MachineState *machine)
     sun4v_rtc_init(NIAGARA_RTC_BASE);
 }
 
-static void niagara_class_init(ObjectClass *oc, void *data)
+static void niagara_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 

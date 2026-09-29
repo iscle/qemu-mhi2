@@ -18,14 +18,20 @@
 #include "virtio.h"
 #include "virtio-scsi.h"
 #include "dasd-ipl.h"
+#include "clp.h"
+#include "virtio-pci.h"
+#include "secure-ipl.h"
 
 static SubChannelId blk_schid = { .one = 1 };
 static char loadparm_str[LOADPARM_LEN + 1];
 QemuIplParameters qipl;
-IplParameterBlock iplb __attribute__((__aligned__(PAGE_SIZE)));
+/* Ensure that IPLB and IIRB are page aligned and sequential in memory */
+IplBlocks ipl_blocks __attribute__((__aligned__(PAGE_SIZE)));
+IplParameterBlock *iplb;
 bool have_iplb;
 static uint16_t cutype;
 LowCore *lowcore; /* Yes, this *is* a pointer to address 0 */
+ZiplBootMode boot_mode;
 
 #define LOADPARM_PROMPT "PROMPT  "
 #define LOADPARM_EMPTY  "        "
@@ -50,8 +56,9 @@ void write_subsystem_identification(void)
 
 void write_iplb_location(void)
 {
-    if (cutype == CU_TYPE_VIRTIO && virtio_get_device_type() != VIRTIO_ID_NET) {
-        lowcore->ptr_iplb = ptr2u32(&iplb);
+    if (virtio_is_supported(virtio_get_device()) &&
+        virtio_get_device_type() != VIRTIO_ID_NET) {
+        lowcore->ptr_iplb = ptr2u32(iplb);
     }
 }
 
@@ -71,6 +78,7 @@ static int is_dev_possibly_bootable(int dev_no, int sch_no)
     bool is_virtio;
     Schib schib;
     int r;
+    VDev *vdev = virtio_get_device();
 
     blk_schid.sch_no = sch_no;
     r = stsch_err(blk_schid, &schib);
@@ -91,7 +99,8 @@ static int is_dev_possibly_bootable(int dev_no, int sch_no)
      * Note: we always have to run virtio_is_supported() here to make
      * sure that the vdev.senseid data gets pre-initialized correctly
      */
-    is_virtio = virtio_is_supported(blk_schid);
+    vdev->schid = blk_schid;
+    is_virtio = virtio_is_supported(vdev);
 
     /* No specific devno given, just return whether the device is possibly bootable */
     if (dev_no < 0) {
@@ -149,7 +158,23 @@ static bool find_subch(int dev_no)
     return false;
 }
 
-static void menu_setup(void)
+static bool find_fid(uint32_t fid)
+{
+    ClpFhListEntry entry;
+    VDev *vdev = virtio_get_device();
+
+    if (find_pci_function(fid, &entry)) {
+        return false;
+    }
+
+    vdev->pci_fh = entry.fh;
+    vdev->vendor_id = entry.vendor_id;
+    virtio_pci_id2type(vdev, entry.device_id);
+
+    return vdev->dev_type != 0;
+}
+
+static void menu_setup(VDev *vdev)
 {
     if (memcmp(loadparm_str, LOADPARM_PROMPT, LOADPARM_LEN) == 0) {
         menu_set_parms(QIPL_FLAG_BM_OPTS_CMD, 0);
@@ -162,11 +187,14 @@ static void menu_setup(void)
         return;
     }
 
-    switch (iplb.pbt) {
+    switch (vdev->ipl_type) {
     case S390_IPL_TYPE_CCW:
+    case S390_IPL_TYPE_PCI:
     case S390_IPL_TYPE_QEMU_SCSI:
         menu_set_parms(qipl.qipl_flags & BOOT_MENU_FLAG_MASK,
                        qipl.boot_menu_timeout);
+        /* fall through */
+    default:
         return;
     }
 }
@@ -190,15 +218,19 @@ static void css_setup(void)
 static void boot_setup(void)
 {
     char lpmsg[] = "LOADPARM=[________]\n";
+    VDev *vdev = virtio_get_device();
 
-    if (have_iplb && memcmp(iplb.loadparm, NO_LOADPARM, LOADPARM_LEN) != 0) {
-        ebcdic_to_ascii((char *) iplb.loadparm, loadparm_str, LOADPARM_LEN);
+    if (have_iplb && memcmp(iplb->loadparm, NO_LOADPARM, LOADPARM_LEN) != 0) {
+        ebcdic_to_ascii((char *) iplb->loadparm, loadparm_str, LOADPARM_LEN);
     } else {
         sclp_get_loadparm_ascii(loadparm_str);
     }
 
     if (have_iplb) {
-        menu_setup();
+        vdev->ipl_type = iplb->pbt;
+        menu_setup(vdev);
+    } else {
+        vdev->ipl_type = QEMU_DEFAULT_IPL;
     }
 
     memcpy(lpmsg + 10, loadparm_str, 8);
@@ -216,21 +248,36 @@ static bool find_boot_device(void)
     VDev *vdev = virtio_get_device();
     bool found = false;
 
-    switch (iplb.pbt) {
+    switch (vdev->ipl_type) {
     case S390_IPL_TYPE_CCW:
         vdev->scsi_device_selected = false;
-        debug_print_int("device no. ", iplb.ccw.devno);
-        blk_schid.ssid = iplb.ccw.ssid & 0x3;
+        debug_print_int("device no. ", iplb->ccw.devno);
+        blk_schid.ssid = iplb->ccw.ssid & 0x3;
         debug_print_int("ssid ", blk_schid.ssid);
-        found = find_subch(iplb.ccw.devno);
+        found = find_subch(iplb->ccw.devno);
         break;
     case S390_IPL_TYPE_QEMU_SCSI:
         vdev->scsi_device_selected = true;
-        vdev->selected_scsi_device.channel = iplb.scsi.channel;
-        vdev->selected_scsi_device.target = iplb.scsi.target;
-        vdev->selected_scsi_device.lun = iplb.scsi.lun;
-        blk_schid.ssid = iplb.scsi.ssid & 0x3;
-        found = find_subch(iplb.scsi.devno);
+        vdev->selected_scsi_device.channel = iplb->scsi.channel;
+        vdev->selected_scsi_device.target = iplb->scsi.target;
+        vdev->selected_scsi_device.lun = iplb->scsi.lun;
+        vdev->ipl_type = iplb->scsi.bus;
+        switch (vdev->ipl_type) {
+        case S390_IPL_TYPE_CCW:
+            blk_schid.ssid = iplb->scsi.ssid & 0x3;
+            found = find_subch(iplb->scsi.devno);
+            break;
+        case S390_IPL_TYPE_PCI:
+            found = find_fid(iplb->scsi.fid);
+            break;
+        default:
+            puts("Unrecognized SCSI controller");
+            break;
+        }
+        break;
+     case S390_IPL_TYPE_PCI:
+        vdev->scsi_device_selected = false;
+        found = find_fid(iplb->pci.fid);
         break;
     default:
         puts("Unsupported IPLB");
@@ -245,15 +292,15 @@ static int virtio_setup(void)
     vdev->is_cdrom = false;
     int ret;
 
-    switch (vdev->senseid.cu_model) {
+    switch (vdev->dev_type) {
     case VIRTIO_ID_NET:
         puts("Network boot device detected");
         return 0;
     case VIRTIO_ID_BLOCK:
-        ret = virtio_blk_setup_device(blk_schid);
+        ret = virtio_blk_setup_device(vdev);
         break;
     case VIRTIO_ID_SCSI:
-        ret = virtio_scsi_setup_device(blk_schid);
+        ret = virtio_scsi_setup_device(vdev);
         break;
     default:
         puts("\n! No IPL device available !\n");
@@ -268,7 +315,7 @@ static int virtio_setup(void)
     return ret;
 }
 
-static void ipl_boot_device(void)
+static void ipl_ccw_device(void)
 {
     switch (cutype) {
     case CU_TYPE_DASD_3990:
@@ -277,11 +324,48 @@ static void ipl_boot_device(void)
         break;
     case CU_TYPE_VIRTIO:
         if (virtio_setup() == 0) {
-            zipl_load();
+            zipl_load(); /* only return on error */
+            virtio_reset(virtio_get_device());
         }
         break;
     default:
-        printf("Attempting to boot from unexpected device type 0x%X\n", cutype);
+        printf("Cannot boot CCW device with cu type 0x%X\n", cutype);
+    }
+}
+
+static void ipl_pci_device(void)
+{
+    VDev *vdev = virtio_get_device();
+    vdev->is_cdrom = false;
+
+    if (virtio_pci_setup_device()) {
+        return;
+    }
+
+    switch (vdev->dev_type) {
+    case VIRTIO_ID_SCSI:
+    case VIRTIO_ID_BLOCK:
+        if (virtio_setup() == 0) {
+            zipl_load(); /* only return on error */
+            virtio_reset(virtio_get_device());
+        }
+        break;
+    default:
+        printf("Cannot boot PCI device type 0x%X\n", vdev->dev_type);
+    }
+}
+
+static void ipl_boot_device(void)
+{
+    switch (virtio_get_device()->ipl_type) {
+    case S390_IPL_TYPE_CCW:
+        ipl_ccw_device();
+        break;
+    case S390_IPL_TYPE_PCI:
+        ipl_pci_device();
+        break;
+    default:
+        puts("Unrecognized IPL type!");
     }
 }
 
@@ -311,13 +395,38 @@ static void probe_boot_device(void)
 
 void main(void)
 {
+    int vcssb_len;
+
+    iplb = &ipl_blocks.iplb;
+
     copy_qipl();
     sclp_setup();
     css_setup();
-    have_iplb = store_iplb(&iplb);
+    have_iplb = store_iplb(iplb);
     if (!have_iplb) {
         boot_setup();
         probe_boot_device();
+    }
+
+    boot_mode = get_boot_mode(iplb->hdr_flags);
+    switch (boot_mode) {
+    case ZIPL_BOOT_MODE_SECURE:
+    case ZIPL_BOOT_MODE_SECURE_AUDIT:
+        if (!secure_ipl_supported()) {
+            panic("Unable to boot in secure/audit mode");
+        }
+
+        vcssb_len = zipl_secure_get_vcssb();
+        if (vcssb_len == 0) {
+            panic("Failed to query certificate storage information!");
+        }
+
+        if (vcssb_len == VCSSB_NO_VC) {
+            panic("Need at least one certificate for secure boot!");
+        }
+        break;
+    default:
+        break;
     }
 
     while (have_iplb) {

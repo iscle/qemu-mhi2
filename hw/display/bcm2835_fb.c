@@ -25,12 +25,13 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/display/bcm2835_fb.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
+#include "hw/core/hw-error.h"
+#include "hw/core/irq.h"
+#include "ui/console.h"
 #include "framebuffer.h"
 #include "ui/pixel_ops.h"
 #include "hw/misc/bcm2835_mbox_defs.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -149,7 +150,7 @@ static bool fb_use_offsets(BCM2835FBConfig *config)
         config->yres_virtual > config->yres;
 }
 
-static void fb_update_display(void *opaque)
+static bool fb_update_display(void *opaque)
 {
     BCM2835FBState *s = opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -160,7 +161,7 @@ static void fb_update_display(void *opaque)
     uint32_t xoff = 0, yoff = 0;
 
     if (s->lock || !s->config.xres) {
-        return;
+        return true;
     }
 
     src_width = bcm2835_fb_get_pitch(&s->config);
@@ -173,7 +174,7 @@ static void fb_update_display(void *opaque)
 
     switch (surface_bits_per_pixel(surface)) {
     case 0:
-        return;
+        return true;
     case 8:
         break;
     case 15:
@@ -206,11 +207,11 @@ static void fb_update_display(void *opaque)
                                draw_line_src16, s, &first, &last);
 
     if (first >= 0) {
-        dpy_gfx_update(s->con, 0, first, s->config.xres,
-                       last - first + 1);
+        qemu_console_update(s->con, 0, first, s->config.xres, last - first + 1);
     }
 
     s->invalidate = false;
+    return true;
 }
 
 void bcm2835_fb_validate_config(BCM2835FBConfig *config)
@@ -425,11 +426,11 @@ static void bcm2835_fb_realize(DeviceState *dev, Error **errp)
 
     bcm2835_fb_reset(dev);
 
-    s->con = graphic_console_init(dev, 0, &vgafb_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &vgafb_ops, s);
     qemu_console_resize(s->con, s->config.xres, s->config.yres);
 }
 
-static Property bcm2835_fb_props[] = {
+static const Property bcm2835_fb_props[] = {
     DEFINE_PROP_UINT32("vcram-base", BCM2835FBState, vcram_base, 0),/*required*/
     DEFINE_PROP_UINT32("vcram-size", BCM2835FBState, vcram_size,
                        DEFAULT_VCRAM_SIZE),
@@ -440,10 +441,9 @@ static Property bcm2835_fb_props[] = {
                        initial_config.pixo, 1), /* 1=RGB, 0=BGR */
     DEFINE_PROP_UINT32("alpha", BCM2835FBState,
                        initial_config.alpha, 2), /* alpha ignored */
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void bcm2835_fb_class_init(ObjectClass *klass, void *data)
+static void bcm2835_fb_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

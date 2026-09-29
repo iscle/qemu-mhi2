@@ -24,15 +24,17 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/mips/mips.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
+#include "exec/cpu-common.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
+#include "system/physmem.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -302,7 +304,7 @@ static void rc4030_write(void *opaque, hwaddr addr, uint64_t data,
         if (s->cache_ltag == 0x80000001 && s->cache_bmask == 0xf0f0f0f) {
             hwaddr dest = s->cache_ptag & ~0x1;
             dest += (s->cache_maint & 0x3) << 3;
-            cpu_physical_memory_write(dest, &val, 4);
+            physical_memory_write(dest, &val, 4);
         }
         break;
     /* Remote Speed Registers */
@@ -701,7 +703,7 @@ static void rc4030_unrealize(DeviceState *dev)
     object_unparent(OBJECT(&s->dma_mr));
 }
 
-static void rc4030_class_init(ObjectClass *klass, void *class_data)
+static void rc4030_class_init(ObjectClass *klass, const void *class_data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -720,7 +722,7 @@ static const TypeInfo rc4030_info = {
 };
 
 static void rc4030_iommu_memory_region_class_init(ObjectClass *klass,
-                                                  void *data)
+                                                  const void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 

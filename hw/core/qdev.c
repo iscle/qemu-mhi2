@@ -28,15 +28,16 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/qapi-events-qdev.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/option.h"
-#include "hw/irq.h"
-#include "hw/qdev-properties.h"
-#include "hw/boards.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-clock.h"
+#include "qom/compat-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-clock.h"
 #include "migration/vmstate.h"
 #include "trace.h"
 
@@ -263,17 +264,43 @@ static void device_reset_child_foreach(Object *obj, ResettableChildCallback cb,
 
 bool qdev_realize(DeviceState *dev, BusState *bus, Error **errp)
 {
-    assert(!dev->realized && !dev->parent_bus);
+    static int unattached_count;
+    bool unattached_parent = false;
+
+    assert(!dev->parent_bus);
+
+    if (!OBJECT(dev)->parent) {
+        gchar *name = g_strdup_printf("device[%d]", unattached_count++);
+
+        object_property_add_child(machine_get_container("unattached"),
+                                  name, OBJECT(dev));
+        unattached_parent = true;
+        g_free(name);
+    }
 
     if (bus) {
         if (!qdev_set_parent_bus(dev, bus, errp)) {
-            return false;
+            goto fail;
         }
     } else {
         assert(!DEVICE_GET_CLASS(dev)->bus_type);
     }
 
-    return object_property_set_bool(OBJECT(dev), "realized", true, errp);
+    if (object_property_set_bool(OBJECT(dev), "realized", true, errp)) {
+        return true;
+    }
+
+fail:
+    if (unattached_parent) {
+        /*
+         * Beware, this doesn't just revert
+         * object_property_add_child(), it also runs bus_remove()!
+         */
+        object_unparent(OBJECT(dev));
+        unattached_count--;
+    }
+
+    return false;
 }
 
 bool qdev_realize_and_unref(DeviceState *dev, BusState *bus, Error **errp)
@@ -411,6 +438,25 @@ char *qdev_get_dev_path(DeviceState *dev)
     return NULL;
 }
 
+char *qdev_get_human_name(DeviceState *dev)
+{
+    if (dev->id) {
+        return g_strdup(dev->id);
+    }
+    /*
+     * Fall back to a bus-specific device path, if the bus
+     * provides one (e.g. "PCI device 0000:00:04.0").
+     */
+    g_autofree char *path = qdev_get_dev_path(dev);
+    if (path) {
+        const char *bus_type = object_get_typename(OBJECT(dev->parent_bus));
+        char *name = g_strdup_printf("%s device %s", bus_type, path);
+        return name;
+    }
+
+    return object_get_canonical_path(OBJECT(dev));
+}
+
 void qdev_add_unplug_blocker(DeviceState *dev, Error *reason)
 {
     dev->unplug_blockers = g_slist_prepend(dev->unplug_blockers, reason);
@@ -455,12 +501,10 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
 {
     DeviceState *dev = DEVICE(obj);
     DeviceClass *dc = DEVICE_GET_CLASS(dev);
-    HotplugHandler *hotplug_ctrl;
+    const HotplugHandler *hotplug_ctrl;
     BusState *bus;
     NamedClockList *ncl;
     Error *local_err = NULL;
-    bool unattached_parent = false;
-    static int unattached_count;
 
     if (dev->hotplugged && !dc->hotpluggable) {
         error_setg(errp, "Device '%s' does not support hotplugging",
@@ -471,16 +515,6 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
     if (value && !dev->realized) {
         if (!check_only_migratable(obj, errp)) {
             goto fail;
-        }
-
-        if (!obj->parent) {
-            gchar *name = g_strdup_printf("device[%d]", unattached_count++);
-
-            object_property_add_child(container_get(qdev_get_machine(),
-                                                    "/unattached"),
-                                      name, obj);
-            unattached_parent = true;
-            g_free(name);
         }
 
         hotplug_ctrl = qdev_get_hotplug_handler(dev);
@@ -608,14 +642,6 @@ post_realize_fail:
 
 fail:
     error_propagate(errp, local_err);
-    if (unattached_parent) {
-        /*
-         * Beware, this doesn't just revert
-         * object_property_add_child(), it also runs bus_remove()!
-         */
-        object_unparent(OBJECT(dev));
-        unattached_count--;
-    }
 }
 
 static bool device_get_hotpluggable(Object *obj, Error **errp)
@@ -691,11 +717,10 @@ static void device_finalize(Object *obj)
         dev->canonical_path = NULL;
     }
 
-    qobject_unref(dev->opts);
     g_free(dev->id);
 }
 
-static void device_class_base_init(ObjectClass *class, void *data)
+static void device_class_base_init(ObjectClass *class, const void *data)
 {
     DeviceClass *klass = DEVICE_CLASS(class);
 
@@ -703,6 +728,7 @@ static void device_class_base_init(ObjectClass *class, void *data)
      * so do not propagate them to the subclasses.
      */
     klass->props_ = NULL;
+    klass->props_count_ = 0;
 }
 
 static void device_unparent(Object *obj)
@@ -732,7 +758,7 @@ device_vmstate_if_get_id(VMStateIf *obj)
     return qdev_get_dev_path(dev);
 }
 
-static void device_class_init(ObjectClass *class, void *data)
+static void device_class_init(ObjectClass *class, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(class);
     VMStateIfClass *vc = VMSTATE_IF_CLASS(class);
@@ -817,18 +843,26 @@ Object *qdev_get_machine(void)
     static Object *dev;
 
     if (dev == NULL) {
-        dev = container_get(object_get_root(), "/machine");
+        dev = object_resolve_path_component(object_get_root(), "machine");
+        /*
+         * Any call to this function before machine is created is treated
+         * as a programming error as of now.
+         */
+        assert(dev);
     }
 
     return dev;
 }
 
-char *qdev_get_human_name(DeviceState *dev)
+Object *machine_get_container(const char *name)
 {
-    g_assert(dev != NULL);
+    Object *container, *machine;
 
-    return dev->id ?
-           g_strdup(dev->id) : object_get_canonical_path(OBJECT(dev));
+    machine = qdev_get_machine();
+    container = object_resolve_path_component(machine, name);
+    assert(object_dynamic_cast(container, TYPE_CONTAINER));
+
+    return container;
 }
 
 static MachineInitPhase machine_phase;
@@ -855,7 +889,7 @@ static const TypeInfo device_type_info = {
     .class_init = device_class_init,
     .abstract = true,
     .class_size = sizeof(DeviceClass),
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_VMSTATE_IF },
         { TYPE_RESETTABLE_INTERFACE },
         { }

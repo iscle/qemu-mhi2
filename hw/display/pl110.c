@@ -8,9 +8,9 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
 #include "framebuffer.h"
@@ -210,7 +210,7 @@ static int pl110_enabled(PL110State *s)
   return (s->cr & PL110_CR_EN) && (s->cr & PL110_CR_PWR);
 }
 
-static void pl110_update_display(void *opaque)
+static bool pl110_update_display(void *opaque)
 {
     PL110State *s = (PL110State *)opaque;
     DisplaySurface *surface = qemu_console_surface(s->con);
@@ -221,7 +221,7 @@ static void pl110_update_display(void *opaque)
     int last;
 
     if (!pl110_enabled(s)) {
-        return;
+        return true;
     }
 
     if (s->cr & PL110_CR_BGR)
@@ -303,9 +303,10 @@ static void pl110_update_display(void *opaque)
                                &first, &last);
 
     if (first >= 0) {
-        dpy_gfx_update(s->con, 0, first, s->cols, last - first + 1);
+        qemu_console_update(s->con, 0, first, s->cols, last - first + 1);
     }
     s->invalidate = 0;
+    return true;
 }
 
 static void pl110_invalidate_display(void * opaque)
@@ -535,10 +536,9 @@ static const GraphicHwOps pl110_gfx_ops = {
     .gfx_update  = pl110_update_display,
 };
 
-static Property pl110_properties[] = {
+static const Property pl110_properties[] = {
     DEFINE_PROP_LINK("framebuffer-memory", PL110State, fbmem,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void pl110_realize(DeviceState *dev, Error **errp)
@@ -557,7 +557,7 @@ static void pl110_realize(DeviceState *dev, Error **errp)
     s->vblank_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    pl110_vblank_interrupt, s);
     qdev_init_gpio_in(dev, pl110_mux_ctrl_set, 1);
-    s->con = graphic_console_init(dev, 0, &pl110_gfx_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &pl110_gfx_ops, s);
 }
 
 static void pl110_init(Object *obj)
@@ -581,7 +581,7 @@ static void pl111_init(Object *obj)
     s->version = VERSION_PL111;
 }
 
-static void pl110_class_init(ObjectClass *klass, void *data)
+static void pl110_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

@@ -21,7 +21,8 @@
 #define SH4_CPU_H
 
 #include "cpu-qom.h"
-#include "exec/cpu-defs.h"
+#include "exec/cpu-common.h"
+#include "exec/cpu-interrupt.h"
 #include "qemu/cpu-float.h"
 
 /* CPU Subtypes */
@@ -83,8 +84,7 @@
 #define TB_FLAG_DELAY_SLOT_RTE   (1 << 2)
 #define TB_FLAG_PENDING_MOVCA    (1 << 3)
 #define TB_FLAG_GUSA_SHIFT       4                      /* [11:4] */
-#define TB_FLAG_GUSA_EXCLUSIVE   (1 << 12)
-#define TB_FLAG_UNALIGN          (1 << 13)
+#define TB_FLAG_UNALIGN          (1 << 12)
 #define TB_FLAG_SR_FD            (1 << SR_FD)           /* 15 */
 #define TB_FLAG_FPSCR_PR         FPSCR_PR               /* 19 */
 #define TB_FLAG_FPSCR_SZ         FPSCR_SZ               /* 20 */
@@ -95,8 +95,7 @@
 #define TB_FLAG_DELAY_SLOT_MASK  (TB_FLAG_DELAY_SLOT |       \
                                   TB_FLAG_DELAY_SLOT_COND |  \
                                   TB_FLAG_DELAY_SLOT_RTE)
-#define TB_FLAG_GUSA_MASK        ((0xff << TB_FLAG_GUSA_SHIFT) | \
-                                  TB_FLAG_GUSA_EXCLUSIVE)
+#define TB_FLAG_GUSA_MASK        (0xff << TB_FLAG_GUSA_SHIFT)
 #define TB_FLAG_FPSCR_MASK       (TB_FLAG_FPSCR_PR | \
                                   TB_FLAG_FPSCR_SZ | \
                                   TB_FLAG_FPSCR_FR)
@@ -124,8 +123,6 @@ typedef struct tlb_t {
 
 #define UTLB_SIZE 64
 #define ITLB_SIZE 4
-
-#define TARGET_INSN_START_EXTRA_WORDS 1
 
 enum sh_features {
     SH_FEATURE_SH4A = 1,
@@ -248,9 +245,11 @@ G_NORETURN void superh_cpu_do_unaligned_access(CPUState *cpu, vaddr addr,
                                                uintptr_t retaddr);
 
 void sh4_translate_init(void);
+void sh4_translate_code(CPUState *cs, TranslationBlock *tb,
+                        int *max_insns, vaddr pc, void *host_pc);
 
 #if !defined(CONFIG_USER_ONLY)
-hwaddr superh_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+hwaddr superh_cpu_get_phys_addr_debug(CPUState *cpu, vaddr addr);
 bool superh_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                          MMUAccessType access_type, int mmu_idx,
                          bool probe, uintptr_t retaddr);
@@ -275,7 +274,7 @@ void cpu_sh4_write_mmaped_utlb_data(CPUSH4State *s, hwaddr addr,
                                     uint32_t mem_value);
 #endif
 
-int cpu_sh4_is_cached(CPUSH4State * env, target_ulong addr);
+int cpu_sh4_is_cached(CPUSH4State *env, uint32_t addr);
 
 void cpu_load_tlb(CPUSH4State * env);
 
@@ -283,8 +282,6 @@ void cpu_load_tlb(CPUSH4State * env);
 
 /* MMU modes definitions */
 #define MMU_USER_IDX 1
-
-#include "exec/cpu-all.h"
 
 /* MMU control register */
 #define MMUCR    0x1F000010
@@ -365,14 +362,14 @@ static inline int cpu_ptel_pr (uint32_t ptel)
 #define PTEA_TC        (1 << 3)
 #define cpu_ptea_tc(ptea) (((ptea) & PTEA_TC) >> 3)
 
-static inline target_ulong cpu_read_sr(CPUSH4State *env)
+static inline uint32_t cpu_read_sr(CPUSH4State *env)
 {
     return env->sr | (env->sr_m << SR_M) |
                      (env->sr_q << SR_Q) |
                      (env->sr_t << SR_T);
 }
 
-static inline void cpu_write_sr(CPUSH4State *env, target_ulong sr)
+static inline void cpu_write_sr(CPUSH4State *env, uint32_t sr)
 {
     env->sr_m = (sr >> SR_M) & 1;
     env->sr_q = (sr >> SR_Q) & 1;
@@ -380,19 +377,7 @@ static inline void cpu_write_sr(CPUSH4State *env, target_ulong sr)
     env->sr = sr & ~((1u << SR_M) | (1u << SR_Q) | (1u << SR_T));
 }
 
-static inline void cpu_get_tb_cpu_state(CPUSH4State *env, vaddr *pc,
-                                        uint64_t *cs_base, uint32_t *flags)
-{
-    *pc = env->pc;
-    /* For a gUSA region, notice the end of the region.  */
-    *cs_base = env->flags & TB_FLAG_GUSA_MASK ? env->gregs[0] : 0;
-    *flags = env->flags
-            | (env->fpscr & TB_FLAG_FPSCR_MASK)
-            | (env->sr & TB_FLAG_SR_MASK)
-            | (env->movcal_backup ? TB_FLAG_PENDING_MOVCA : 0); /* Bit 3 */
-#ifdef CONFIG_USER_ONLY
-    *flags |= TB_FLAG_UNALIGN * !env_cpu(env)->prctl_unalign_sigbus;
-#endif
-}
+/* Set FPSCR and the derived float_status rounding/flush-to-zero state. */
+void cpu_load_fpscr(CPUSH4State *env, uint32_t val);
 
 #endif /* SH4_CPU_H */

@@ -242,6 +242,7 @@
 
 #define AHCI_SECTOR_SIZE                (512)
 #define ATAPI_SECTOR_SIZE              (2048)
+#define ATAPI_RAW_SECTOR_SIZE          (2352)
 
 #define AHCI_SIGNATURE_CDROM     (0xeb140101)
 #define AHCI_SIGNATURE_DISK      (0x00000101)
@@ -277,6 +278,7 @@ enum {
     CMD_READ_MAX       = 0xF8,
     CMD_READ_MAX_EXT   = 0x27,
     CMD_FLUSH_CACHE    = 0xE7,
+    CMD_INIT_DP        = 0x91, /* INITIALIZE DEVICE PARAMETERS */
     CMD_IDENTIFY       = 0xEC,
     CMD_PACKET         = 0xA0,
     CMD_PACKET_ID      = 0xA1,
@@ -322,6 +324,9 @@ enum {
 #define NCQ_DEVICE_MAGIC 0x40 /* for ncq device registers */
 #define ATA_DEVICE_DRIVE 0x10
 #define ATA_DEVICE_HEAD  0x0F
+
+/* ATA error register bits */
+#define ATA_ERR_ABRT     0x04
 
 /*** Structures ***/
 
@@ -485,6 +490,7 @@ typedef struct AHCIOpts {
     uint64_t buffer;    /* Pointer to source or destination guest buffer */
     bool atapi;         /* ATAPI command? */
     bool atapi_dma;     /* Use DMA for ATAPI? */
+    bool atapi_raw;     /* READ CD returning 2352-byte raw sectors */
     bool error;
     int (*pre_cb)(AHCIQState*, AHCICommand*, const struct AHCIOpts *);
     int (*mid_cb)(AHCIQState*, AHCICommand*, const struct AHCIOpts *);
@@ -636,6 +642,8 @@ void ahci_command_set_size(AHCICommand *cmd, uint64_t xbytes);
 void ahci_command_set_prd_size(AHCICommand *cmd, unsigned prd_size);
 void ahci_command_set_sizes(AHCICommand *cmd, uint64_t xbytes,
                             unsigned prd_size);
+void ahci_command_set_count(AHCICommand *cmd, uint16_t count);
+void ahci_command_expect_error(AHCICommand *cmd, uint8_t err);
 void ahci_command_set_acmd(AHCICommand *cmd, void *acmd);
 void ahci_command_enable_atapi_dma(AHCICommand *cmd);
 void ahci_command_adjust(AHCICommand *cmd, uint64_t lba_sect, uint64_t gbuffer,

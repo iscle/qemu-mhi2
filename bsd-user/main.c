@@ -36,8 +36,10 @@
 #include "qemu/help_option.h"
 #include "qemu/module.h"
 #include "qemu/plugin.h"
-#include "exec/exec-all.h"
 #include "user/guest-base.h"
+#include "user/page-protection.h"
+#include "accel/accel-ops.h"
+#include "accel/tcg/cpu-loop.h"
 #include "tcg/startup.h"
 #include "qemu/timer.h"
 #include "qemu/envlist.h"
@@ -48,10 +50,9 @@
 #include "qemu/guest-random.h"
 #include "gdbstub/user.h"
 #include "exec/page-vary.h"
+#include "exec/watchpoint.h"
 
-#include "host-os.h"
 #include "target_arch_cpu.h"
-
 
 /*
  * TODO: Remove these and rely only on qemu_real_host_page_size().
@@ -61,8 +62,7 @@ intptr_t qemu_host_page_mask;
 
 static bool opt_one_insn_per_tb;
 static unsigned long opt_tb_size;
-uintptr_t guest_base;
-bool have_guest_base;
+
 /*
  * When running 32-on-64 we should make sure we can fit all of the possible
  * guest address space into a contiguous chunk of virtual host memory.
@@ -89,6 +89,7 @@ bool have_guest_base;
 #endif
 
 unsigned long reserved_va;
+unsigned long guest_addr_max;
 
 const char *interp_prefix = CONFIG_QEMU_INTERP_PREFIX;
 const char *qemu_uname_release;
@@ -174,6 +175,9 @@ static void usage(void)
            "-strace           log system calls\n"
            "-trace            [[enable=]<pattern>][,events=<file>][,file=<file>]\n"
            "                  specify tracing options\n"
+#ifdef CONFIG_PLUGIN
+           "-plugin           [file=]<file>[,<argname>=<argvalue>]\n"
+#endif
            "\n"
            "Environment variables:\n"
            "QEMU_STRACE       Print system calls and arguments similar to the\n"
@@ -209,13 +213,8 @@ bool qemu_cpu_is_self(CPUState *cpu)
     return thread_cpu == cpu;
 }
 
-void qemu_cpu_kick(CPUState *cpu)
-{
-    cpu_exit(cpu);
-}
-
 /* Assumes contents are already zeroed.  */
-static void init_task_state(TaskState *ts)
+void init_task_state(TaskState *ts)
 {
     ts->sigaltstack_used = (struct target_sigaltstack) {
         .ss_sp = 0,
@@ -223,6 +222,36 @@ static void init_task_state(TaskState *ts)
         .ss_flags = TARGET_SS_DISABLE,
     };
 }
+
+static const char *cpu_type;
+
+CPUArchState *cpu_copy(CPUArchState *env)
+{
+    CPUState *cpu = env_cpu(env);
+    CPUState *new_cpu = cpu_create(cpu_type);
+    CPUArchState *new_env = cpu_env(new_cpu);
+    CPUBreakpoint *bp;
+
+    /* Reset non arch specific state */
+    cpu_reset(new_cpu);
+
+    new_cpu->tcg_cflags = cpu->tcg_cflags;
+    memcpy(new_env, env, sizeof(CPUArchState));
+
+    /*
+     * Clone all break/watchpoints.
+     * Note: Once we support ptrace with hw-debug register access, make sure
+     * BP_CPU break/watchpoints are handled correctly on clone.
+     */
+    QTAILQ_INIT(&new_cpu->breakpoints);
+    QTAILQ_FOREACH(bp, &cpu->breakpoints, entry) {
+        cpu_breakpoint_insert(new_cpu, bp->pc, bp->flags, NULL);
+    }
+
+    return new_env;
+}
+
+static QemuPluginList plugins = QTAILQ_HEAD_INITIALIZER(plugins);
 
 void gemu_log(const char *fmt, ...)
 {
@@ -254,7 +283,6 @@ int main(int argc, char **argv)
 {
     const char *filename;
     const char *cpu_model;
-    const char *cpu_type;
     const char *log_file = NULL;
     const char *log_mask = NULL;
     const char *seed_optarg = NULL;
@@ -306,6 +334,7 @@ int main(int argc, char **argv)
     cpu_model = NULL;
 
     qemu_add_opts(&qemu_trace_opts);
+    qemu_plugin_add_opts();
 
     optind = 1;
     for (;;) {
@@ -359,14 +388,6 @@ int main(int argc, char **argv)
             }
         } else if (!strcmp(r, "L")) {
             interp_prefix = argv[optind++];
-        } else if (!strcmp(r, "p")) {
-            unsigned size, want = qemu_real_host_page_size();
-
-            r = argv[optind++];
-            if (qemu_strtoui(r, NULL, 10, &size) || size != want) {
-                warn_report("Deprecated page size option cannot "
-                            "change host page size (%u)", want);
-            }
         } else if (!strcmp(r, "g")) {
             gdbstub = g_strdup(argv[optind++]);
         } else if (!strcmp(r, "r")) {
@@ -398,6 +419,11 @@ int main(int argc, char **argv)
             do_strace = 1;
         } else if (!strcmp(r, "trace")) {
             trace_opt_parse(optarg);
+#ifdef CONFIG_PLUGIN
+        } else if (!strcmp(r, "plugin")) {
+            r = argv[optind++];
+            qemu_plugin_opt_parse(r, &plugins);
+#endif
         } else if (!strcmp(r, "0")) {
             argv0 = argv[optind++];
         } else {
@@ -432,6 +458,7 @@ int main(int argc, char **argv)
         exit(1);
     }
     trace_init_file();
+    qemu_plugin_load_list(&plugins, &error_fatal);
 
     /* Zero out regs */
     memset(regs, 0, sizeof(struct target_pt_regs));
@@ -461,7 +488,7 @@ int main(int argc, char **argv)
                                  opt_one_insn_per_tb, &error_abort);
         object_property_set_int(OBJECT(accel), "tb-size",
                                 opt_tb_size, &error_abort);
-        ac->init_machine(NULL);
+        ac->init_machine(accel, NULL);
     }
 
     /*
@@ -500,13 +527,17 @@ int main(int argc, char **argv)
         /* MAX_RESERVED_VA + 1 is a large power of 2, so is aligned. */
         reserved_va = max_reserved_va;
     }
+    if (reserved_va != 0) {
+        guest_addr_max = reserved_va;
+    } else if (MIN(TARGET_VIRT_ADDR_SPACE_BITS, TARGET_ABI_BITS) <= 32) {
+        guest_addr_max = UINT32_MAX;
+    } else {
+        guest_addr_max = ~0ul;
+    }
 
     if (getenv("QEMU_STRACE")) {
         do_strace = 1;
     }
-
-    target_environ = envlist_to_environ(envlist, NULL);
-    envlist_free(envlist);
 
     {
         Error *err = NULL;
@@ -521,6 +552,9 @@ int main(int argc, char **argv)
         }
     }
 
+    target_environ = envlist_to_environ(envlist, NULL);
+    envlist_free(envlist);
+
     /*
      * Now that page sizes are configured we can do
      * proper page alignment for guest_base.
@@ -532,41 +566,10 @@ int main(int argc, char **argv)
         }
     }
 
-    /*
-     * If reserving host virtual address space, do so now.
-     * Combined with '-B', ensure that the chosen range is free.
-     */
-    if (reserved_va) {
-        void *p;
-
-        if (have_guest_base) {
-            p = mmap((void *)guest_base, reserved_va + 1, PROT_NONE,
-                     MAP_ANON | MAP_PRIVATE | MAP_FIXED | MAP_EXCL, -1, 0);
-        } else {
-            p = mmap(NULL, reserved_va + 1, PROT_NONE,
-                     MAP_ANON | MAP_PRIVATE, -1, 0);
-        }
-        if (p == MAP_FAILED) {
-            const char *err = strerror(errno);
-            char *sz = size_to_str(reserved_va + 1);
-
-            if (have_guest_base) {
-                error_report("Cannot allocate %s bytes at -B %p for guest "
-                             "address space: %s", sz, (void *)guest_base, err);
-            } else {
-                error_report("Cannot allocate %s bytes for guest "
-                             "address space: %s", sz, err);
-            }
-            exit(1);
-        }
-        guest_base = (uintptr_t)p;
-        have_guest_base = true;
-
-        /* Ensure that mmap_next_start is within range. */
-        if (reserved_va <= mmap_next_start) {
-            mmap_next_start = (reserved_va / 4 * 3)
-                              & TARGET_PAGE_MASK & qemu_host_page_mask;
-        }
+    /* Ensure that mmap_next_start is within range. */
+    if (reserved_va && reserved_va <= mmap_next_start) {
+        mmap_next_start = ((reserved_va / 4 * 3)
+                           & TARGET_PAGE_MASK & qemu_host_page_mask);
     }
 
     if (loader_exec(filename, argv + optind, target_environ, regs, info,
@@ -627,8 +630,7 @@ int main(int argc, char **argv)
     target_cpu_init(env, regs);
 
     if (gdbstub) {
-        gdbserver_start(gdbstub);
-        gdb_handlesig(cpu, 0, NULL, NULL, 0);
+        gdbserver_start(gdbstub, &error_fatal);
     }
     cpu_loop(env);
     /* never exits */

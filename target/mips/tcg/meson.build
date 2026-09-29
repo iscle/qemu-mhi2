@@ -18,6 +18,7 @@ mips_ss.add(files(
   'lmmi_helper.c',
   'msa_helper.c',
   'msa_translate.c',
+  'octeon_crypto.c',
   'op_helper.c',
   'rel6_translate.c',
   'translate.c',
@@ -36,5 +37,5 @@ mips_ss.add(when: 'TARGET_MIPS64', if_true: files(
 ))
 
 if have_system
-  subdir('sysemu')
+  subdir('system')
 endif

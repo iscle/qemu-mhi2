@@ -50,7 +50,7 @@ void *qcrypto_hmac_ctx_new(QCryptoHashAlgo alg,
                            const uint8_t *key, size_t nkey,
                            Error **errp)
 {
-    QCryptoHmacGcrypt *ctx;
+    g_autofree QCryptoHmacGcrypt *ctx = NULL;
     gcry_error_t err;
 
     if (!qcrypto_hmac_supports(alg)) {
@@ -66,7 +66,7 @@ void *qcrypto_hmac_ctx_new(QCryptoHashAlgo alg,
     if (err != 0) {
         error_setg(errp, "Cannot initialize hmac: %s",
                    gcry_strerror(err));
-        goto error;
+        return NULL;
     }
 
     err = gcry_mac_setkey(ctx->handle, (const void *)key, nkey);
@@ -74,14 +74,10 @@ void *qcrypto_hmac_ctx_new(QCryptoHashAlgo alg,
         error_setg(errp, "Cannot set key: %s",
                    gcry_strerror(err));
         gcry_mac_close(ctx->handle);
-        goto error;
+        return NULL;
     }
 
-    return ctx;
-
-error:
-    g_free(ctx);
-    return NULL;
+    return g_steal_pointer(&ctx);
 }
 
 static void
@@ -121,7 +117,9 @@ qcrypto_gcrypt_hmac_bytesv(QCryptoHmac *hmac,
         return -1;
     }
 
-    if (*resultlen == 0) {
+    if (resultlen == NULL) {
+        return 0;
+    } else if (*resultlen == 0) {
         *resultlen = ret;
         *result = g_new0(uint8_t, *resultlen);
     } else if (*resultlen != ret) {

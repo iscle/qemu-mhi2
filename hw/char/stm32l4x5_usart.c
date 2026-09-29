@@ -23,12 +23,12 @@
 #include "chardev/char-serial.h"
 #include "migration/vmstate.h"
 #include "hw/char/stm32l4x5_usart.h"
-#include "hw/clock.h"
-#include "hw/irq.h"
-#include "hw/qdev-clock.h"
-#include "hw/qdev-properties.h"
-#include "hw/qdev-properties-system.h"
-#include "hw/registerfields.h"
+#include "hw/core/clock.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "hw/core/registerfields.h"
 #include "trace.h"
 
 
@@ -280,10 +280,7 @@ buffer_drained:
 
 static void usart_cancel_transmit(Stm32l4x5UsartBaseState *s)
 {
-    if (s->watch_tag) {
-        g_source_remove(s->watch_tag);
-        s->watch_tag = 0;
-    }
+    g_clear_handle_id(&s->watch_tag, g_source_remove);
 }
 
 static void stm32l4x5_update_params(Stm32l4x5UsartBaseState *s)
@@ -444,6 +441,7 @@ static uint64_t stm32l4x5_usart_base_read(void *opaque, hwaddr addr,
         /* Reset RXNE flag */
         s->isr &= ~R_ISR_RXNE_MASK;
         stm32l4x5_update_irq(s);
+        qemu_chr_fe_accept_input(&s->chr);
         break;
     case A_TDR:
         retvalue = FIELD_EX32(s->tdr, TDR, TDR);
@@ -534,9 +532,8 @@ static const MemoryRegionOps stm32l4x5_usart_base_ops = {
     },
 };
 
-static Property stm32l4x5_usart_base_properties[] = {
+static const Property stm32l4x5_usart_base_properties[] = {
     DEFINE_PROP_CHR("chardev", Stm32l4x5UsartBaseState, chr),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void stm32l4x5_usart_base_init(Object *obj)
@@ -595,7 +592,8 @@ static void stm32l4x5_usart_base_realize(DeviceState *dev, Error **errp)
                              s, NULL, true);
 }
 
-static void stm32l4x5_usart_base_class_init(ObjectClass *klass, void *data)
+static void stm32l4x5_usart_base_class_init(ObjectClass *klass,
+                                            const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -606,21 +604,21 @@ static void stm32l4x5_usart_base_class_init(ObjectClass *klass, void *data)
     dc->vmsd = &vmstate_stm32l4x5_usart_base;
 }
 
-static void stm32l4x5_usart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_usart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 
     subc->type = STM32L4x5_USART;
 }
 
-static void stm32l4x5_uart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_uart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 
     subc->type = STM32L4x5_UART;
 }
 
-static void stm32l4x5_lpuart_class_init(ObjectClass *oc, void *data)
+static void stm32l4x5_lpuart_class_init(ObjectClass *oc, const void *data)
 {
     Stm32l4x5UsartBaseClass *subc = STM32L4X5_USART_BASE_CLASS(oc);
 

@@ -23,8 +23,10 @@ uint16_t pmbus_data2direct_mode(PMBusCoefficients c, uint32_t value)
 uint32_t pmbus_direct_mode2data(PMBusCoefficients c, uint16_t value)
 {
     /* X = (Y * 10^-R - b) / m */
-    uint32_t x = (value / pow(10, c.R) - c.b) / c.m;
-    return x;
+    double x = (value / pow(10, c.R) - c.b) / c.m;
+    return (x > 0
+              ? (x < G_MAXUINT32 ? (uint32_t)x : G_MAXUINT32)
+              : 0);
 }
 
 uint16_t pmbus_data2linear_mode(uint16_t value, int exp)
@@ -1243,6 +1245,16 @@ static int pmbus_write_data(SMBusDevice *smd, uint8_t *buf, uint8_t len)
     pmdev->in_buf_len = len;
     pmdev->in_buf = buf;
 
+    /* clear the output buffer on any new write transaction */
+    if (pmdev->out_buf_len != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: previous read was not completed, %d bytes dropped\n",
+                      __func__, pmdev->out_buf_len);
+
+        pmdev->out_buf_len = 0;
+        memset(pmdev->out_buf, 0, sizeof(pmdev->out_buf));
+    }
+
     pmdev->code = buf[0]; /* PMBus command code */
 
     if (pmdev->code == PMBUS_CLEAR_FAULTS) {
@@ -1902,7 +1914,7 @@ static void pmbus_device_finalize(Object *obj)
     g_free(pmdev->pages);
 }
 
-static void pmbus_device_class_init(ObjectClass *klass, void *data)
+static void pmbus_device_class_init(ObjectClass *klass, const void *data)
 {
     SMBusDeviceClass *k = SMBUS_DEVICE_CLASS(klass);
 

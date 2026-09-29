@@ -13,9 +13,10 @@
 #define PLUGIN_H
 
 #include <gmodule.h>
+#include "qemu/queue.h"
 #include "qemu/qht.h"
 
-#define QEMU_PLUGIN_MIN_VERSION 2
+#define QEMU_PLUGIN_MIN_VERSION 7
 
 /* global state */
 struct qemu_plugin_state {
@@ -75,7 +76,8 @@ void plugin_register_inline_op_on_entry(GArray **arr,
                                         uint64_t imm);
 
 void plugin_reset_uninstall(qemu_plugin_id_t id,
-                            qemu_plugin_simple_cb_t cb,
+                            qemu_plugin_udata_cb_t cb,
+                            void *userdata,
                             bool reset);
 
 void plugin_register_cb(qemu_plugin_id_t id, enum qemu_plugin_event ev,
@@ -117,5 +119,11 @@ int plugin_num_vcpus(void);
 struct qemu_plugin_scoreboard *plugin_scoreboard_new(size_t element_size);
 
 void plugin_scoreboard_free(struct qemu_plugin_scoreboard *score);
+
+/**
+ * qemu_plugin_fillin_mode_info() - populate mode specific info
+ * info: pointer to qemu_info_t structure
+ */
+void qemu_plugin_fillin_mode_info(qemu_info_t *info);
 
 #endif /* PLUGIN_H */

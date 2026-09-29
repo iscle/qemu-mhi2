@@ -24,9 +24,11 @@
 
 #include "qemu/osdep.h"
 #include "hw/isa/isa.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "hw/dma/i8257.h"
+#include "exec/cpu-common.h"
+#include "system/physmem.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -406,6 +408,19 @@ static int i8257_dma_read_memory(IsaDma *obj, int nchan, void *buf, int pos,
     hwaddr addr = ((r->pageh & 0x7f) << 24) | (r->page << 16) | r->now[ADDR];
 
     if (i8257_is_verify_transfer(r)) {
+        /*
+         * If the device is expecting this verify operation then
+         * it won't care about the nonexistent data. But if it
+         * is expecting a real read (i.e. the guest has misprogrammed
+         * the DMA controller and the device) it's going to try to do
+         * something with the buffer contents. Give it zeroes.
+         * (It's not clear whether this is exactly what happens if
+         * you do this on real hardware. In practice no device QEMU
+         * emulates has a use for verify on a memory-read transfer,
+         * so we don't care beyond avoiding the guest being able to
+         * trigger the caller reading uninitialized data.)
+         */
+        memset(buf, 0, len);
         return len;
     }
 
@@ -413,7 +428,7 @@ static int i8257_dma_read_memory(IsaDma *obj, int nchan, void *buf, int pos,
         int i;
         uint8_t *p = buf;
 
-        cpu_physical_memory_read (addr - pos - len, buf, len);
+        physical_memory_read(addr - pos - len, buf, len);
         /* What about 16bit transfers? */
         for (i = 0; i < len >> 1; i++) {
             uint8_t b = p[len - i - 1];
@@ -421,7 +436,7 @@ static int i8257_dma_read_memory(IsaDma *obj, int nchan, void *buf, int pos,
         }
     }
     else
-        cpu_physical_memory_read (addr + pos, buf, len);
+        physical_memory_read(addr + pos, buf, len);
 
     return len;
 }
@@ -441,7 +456,7 @@ static int i8257_dma_write_memory(IsaDma *obj, int nchan, void *buf, int pos,
         int i;
         uint8_t *p = buf;
 
-        cpu_physical_memory_write (addr - pos - len, buf, len);
+        physical_memory_write(addr - pos - len, buf, len);
         /* What about 16bit transfers? */
         for (i = 0; i < len; i++) {
             uint8_t b = p[len - i - 1];
@@ -449,7 +464,7 @@ static int i8257_dma_write_memory(IsaDma *obj, int nchan, void *buf, int pos,
         }
     }
     else
-        cpu_physical_memory_write (addr + pos, buf, len);
+        physical_memory_write(addr + pos, buf, len);
 
     return len;
 }
@@ -585,15 +600,14 @@ static void i8257_realize(DeviceState *dev, Error **errp)
     d->dma_bh = qemu_bh_new(i8257_dma_run, d);
 }
 
-static Property i8257_properties[] = {
+static const Property i8257_properties[] = {
     DEFINE_PROP_INT32("base", I8257State, base, 0x00),
     DEFINE_PROP_INT32("page-base", I8257State, page_base, 0x80),
     DEFINE_PROP_INT32("pageh-base", I8257State, pageh_base, 0x480),
     DEFINE_PROP_INT32("dshift", I8257State, dshift, 0),
-    DEFINE_PROP_END_OF_LIST()
 };
 
-static void i8257_class_init(ObjectClass *klass, void *data)
+static void i8257_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     IsaDmaClass *idc = ISADMA_CLASS(klass);
@@ -619,7 +633,7 @@ static const TypeInfo i8257_info = {
     .parent = TYPE_ISA_DEVICE,
     .instance_size = sizeof(I8257State),
     .class_init = i8257_class_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_ISADMA },
         { }
     }

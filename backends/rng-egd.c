@@ -11,7 +11,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/rng.h"
+#include "system/rng.h"
 #include "chardev/char-fe.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qerror.h"
@@ -24,7 +24,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(RngEgd, RNG_EGD)
 struct RngEgd {
     RngBackend parent;
 
-    CharBackend chr;
+    CharFrontend chr;
     char *chr_name;
 };
 
@@ -126,13 +126,7 @@ static void rng_egd_set_chardev(Object *obj, const char *value, Error **errp)
 static char *rng_egd_get_chardev(Object *obj, Error **errp)
 {
     RngEgd *s = RNG_EGD(obj);
-    Chardev *chr = qemu_chr_fe_get_driver(&s->chr);
-
-    if (chr && chr->label) {
-        return g_strdup(chr->label);
-    }
-
-    return NULL;
+    return qemu_chr_fe_backend_name(&s->chr);
 }
 
 static void rng_egd_finalize(Object *obj)
@@ -143,7 +137,7 @@ static void rng_egd_finalize(Object *obj)
     g_free(s->chr_name);
 }
 
-static void rng_egd_class_init(ObjectClass *klass, void *data)
+static void rng_egd_class_init(ObjectClass *klass, const void *data)
 {
     RngBackendClass *rbc = RNG_BACKEND_CLASS(klass);
 

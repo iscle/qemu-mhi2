@@ -15,7 +15,7 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/madvise.h"
-#include "sysemu/hostmem.h"
+#include "system/hostmem.h"
 #include "qom/object_interfaces.h"
 #include "qom/object.h"
 #include "qapi/visitor.h"
@@ -82,7 +82,7 @@ file_backend_memory_alloc(HostMemoryBackend *backend, Error **errp)
 
     backend->aligned = true;
     name = host_memory_backend_get_name(backend);
-    ram_flags = backend->share ? RAM_SHARED : 0;
+    ram_flags = backend->share ? RAM_SHARED : RAM_PRIVATE;
     ram_flags |= fb->readonly ? RAM_READONLY_FD : 0;
     ram_flags |= fb->rom == ON_OFF_AUTO_ON ? RAM_READONLY : 0;
     ram_flags |= backend->reserve ? 0 : RAM_NORESERVE;
@@ -134,7 +134,7 @@ static void file_memory_backend_get_align(Object *o, Visitor *v,
     HostMemoryBackendFile *fb = MEMORY_BACKEND_FILE(o);
     uint64_t val = fb->align;
 
-    visit_type_size(v, name, &val, errp);
+    visit_type_uint64(v, name, &val, errp);
 }
 
 static void file_memory_backend_set_align(Object *o, Visitor *v,
@@ -151,7 +151,7 @@ static void file_memory_backend_set_align(Object *o, Visitor *v,
         return;
     }
 
-    if (!visit_type_size(v, name, &val, errp)) {
+    if (!visit_type_uint64(v, name, &val, errp)) {
         return;
     }
     fb->align = val;
@@ -270,7 +270,7 @@ static void file_backend_unparent(Object *obj)
 }
 
 static void
-file_backend_class_init(ObjectClass *oc, void *data)
+file_backend_class_init(ObjectClass *oc, const void *data)
 {
     HostMemoryBackendClass *bc = MEMORY_BACKEND_CLASS(oc);
 
@@ -281,7 +281,7 @@ file_backend_class_init(ObjectClass *oc, void *data)
         file_memory_backend_get_discard_data, file_memory_backend_set_discard_data);
     object_class_property_add_str(oc, "mem-path",
         get_mem_path, set_mem_path);
-    object_class_property_add(oc, "align", "int",
+    object_class_property_add(oc, "align", "uint64",
         file_memory_backend_get_align,
         file_memory_backend_set_align,
         NULL, NULL);

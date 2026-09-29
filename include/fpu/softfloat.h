@@ -101,7 +101,7 @@ typedef enum {
 | Routine to raise any or all of the software IEC/IEEE floating-point
 | exception flags.
 *----------------------------------------------------------------------------*/
-static inline void float_raise(uint16_t flags, float_status *status)
+static inline void float_raise(FloatExceptionFlags flags, float_status *status)
 {
     status->float_exception_flags |= flags;
 }
@@ -120,14 +120,35 @@ bfloat16 bfloat16_squash_input_denormal(bfloat16 a, float_status *status);
 | Using these differs from negating an input or output before calling
 | the muladd function in that this means that a NaN doesn't have its
 | sign bit inverted before it is propagated.
-| We also support halving the result before rounding, as a special
-| case to support the ARM fused-sqrt-step instruction FRSQRTS.
+|
+| With float_muladd_suppress_add_product_zero, if A or B is zero
+| such that the product is a true zero, then return C without addition.
+| This preserves the sign of C when C is +/- 0.  Used for Hexagon.
 *----------------------------------------------------------------------------*/
 enum {
     float_muladd_negate_c = 1,
     float_muladd_negate_product = 2,
     float_muladd_negate_result = 4,
-    float_muladd_halve_result = 8,
+    float_muladd_suppress_add_product_zero = 8,
+};
+
+/*----------------------------------------------------------------------------
+| Options to indicate which negations to perform in float*_minmax()
+*----------------------------------------------------------------------------*/
+
+/* Flags for parts_minmax. */
+enum {
+    /* Set for minimum; clear for maximum. */
+    float_minmax_ismin = 1,
+    /* Set for the IEEE 754-2008 minNum() and maxNum() operations. */
+    float_minmax_isnum = 2,
+    /* Set for the IEEE 754-2008 minNumMag() and minNumMag() operations. */
+    float_minmax_ismag = 4,
+    /*
+     * Set for the IEEE 754-2019 minimumNumber() and maximumNumber()
+     * operations.
+     */
+    float_minmax_isnumber = 8,
 };
 
 /*----------------------------------------------------------------------------
@@ -188,6 +209,20 @@ float128 uint64_to_float128(uint64_t, float_status *status);
 float128 uint128_to_float128(Int128, float_status *status);
 
 /*----------------------------------------------------------------------------
+| OCP FP{4,8} conversion routines.
+*----------------------------------------------------------------------------*/
+
+float8_e4m3 float4_e2m1_to_float8_e4m3(float4_e2m1, float_status *status);
+
+bfloat16 float8_e4m3_to_bfloat16(float8_e4m3, float_status *status);
+float8_e4m3 bfloat16_to_float8_e4m3(bfloat16, bool sat, float_status *status);
+float8_e4m3 float32_to_float8_e4m3(float32, bool sat, float_status *status);
+
+bfloat16 float8_e5m2_to_bfloat16(float8_e5m2, float_status *status);
+float8_e5m2 bfloat16_to_float8_e5m2(bfloat16, bool sat, float_status *status);
+float8_e5m2 float32_to_float8_e5m2(float32, bool sat, float_status *status);
+
+/*----------------------------------------------------------------------------
 | Software half-precision conversion routines.
 *----------------------------------------------------------------------------*/
 
@@ -238,16 +273,11 @@ float16 float16_add(float16, float16, float_status *status);
 float16 float16_sub(float16, float16, float_status *status);
 float16 float16_mul(float16, float16, float_status *status);
 float16 float16_muladd(float16, float16, float16, int, float_status *status);
+float16 float16_muladd_scalbn(float16, float16, float16,
+                              int, int, float_status *status);
 float16 float16_div(float16, float16, float_status *status);
 float16 float16_scalbn(float16, int, float_status *status);
-float16 float16_min(float16, float16, float_status *status);
-float16 float16_max(float16, float16, float_status *status);
-float16 float16_minnum(float16, float16, float_status *status);
-float16 float16_maxnum(float16, float16, float_status *status);
-float16 float16_minnummag(float16, float16, float_status *status);
-float16 float16_maxnummag(float16, float16, float_status *status);
-float16 float16_minimum_number(float16, float16, float_status *status);
-float16 float16_maximum_number(float16, float16, float_status *status);
+float16 float16_minmax(float16, float16, float_status *status, int flags);
 float16 float16_sqrt(float16, float_status *status);
 FloatRelation float16_compare(float16, float16, float_status *status);
 FloatRelation float16_compare_quiet(float16, float16, float_status *status);
@@ -433,14 +463,7 @@ bfloat16 bfloat16_div(bfloat16, bfloat16, float_status *status);
 bfloat16 bfloat16_muladd(bfloat16, bfloat16, bfloat16, int,
                          float_status *status);
 float16 bfloat16_scalbn(bfloat16, int, float_status *status);
-bfloat16 bfloat16_min(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_max(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_minnum(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_maxnum(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_minnummag(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_maxnummag(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_minimum_number(bfloat16, bfloat16, float_status *status);
-bfloat16 bfloat16_maximum_number(bfloat16, bfloat16, float_status *status);
+bfloat16 bfloat16_minmax(bfloat16, bfloat16, float_status *status, int flags);
 bfloat16 bfloat16_sqrt(bfloat16, float_status *status);
 FloatRelation bfloat16_compare(bfloat16, bfloat16, float_status *status);
 FloatRelation bfloat16_compare_quiet(bfloat16, bfloat16, float_status *status);
@@ -597,19 +620,14 @@ float32 float32_mul(float32, float32, float_status *status);
 float32 float32_div(float32, float32, float_status *status);
 float32 float32_rem(float32, float32, float_status *status);
 float32 float32_muladd(float32, float32, float32, int, float_status *status);
+float32 float32_muladd_scalbn(float32, float32, float32,
+                              int, int, float_status *status);
 float32 float32_sqrt(float32, float_status *status);
 float32 float32_exp2(float32, float_status *status);
 float32 float32_log2(float32, float_status *status);
 FloatRelation float32_compare(float32, float32, float_status *status);
 FloatRelation float32_compare_quiet(float32, float32, float_status *status);
-float32 float32_min(float32, float32, float_status *status);
-float32 float32_max(float32, float32, float_status *status);
-float32 float32_minnum(float32, float32, float_status *status);
-float32 float32_maxnum(float32, float32, float_status *status);
-float32 float32_minnummag(float32, float32, float_status *status);
-float32 float32_maxnummag(float32, float32, float_status *status);
-float32 float32_minimum_number(float32, float32, float_status *status);
-float32 float32_maximum_number(float32, float32, float_status *status);
+float32 float32_minmax(float32, float32, float_status *status, int flags);
 bool float32_is_quiet_nan(float32, float_status *status);
 bool float32_is_signaling_nan(float32, float_status *status);
 float32 float32_silence_nan(float32, float_status *status);
@@ -792,18 +810,13 @@ float64 float64_mul(float64, float64, float_status *status);
 float64 float64_div(float64, float64, float_status *status);
 float64 float64_rem(float64, float64, float_status *status);
 float64 float64_muladd(float64, float64, float64, int, float_status *status);
+float64 float64_muladd_scalbn(float64, float64, float64,
+                              int, int, float_status *status);
 float64 float64_sqrt(float64, float_status *status);
 float64 float64_log2(float64, float_status *status);
 FloatRelation float64_compare(float64, float64, float_status *status);
 FloatRelation float64_compare_quiet(float64, float64, float_status *status);
-float64 float64_min(float64, float64, float_status *status);
-float64 float64_max(float64, float64, float_status *status);
-float64 float64_minnum(float64, float64, float_status *status);
-float64 float64_maxnum(float64, float64, float_status *status);
-float64 float64_minnummag(float64, float64, float_status *status);
-float64 float64_maxnummag(float64, float64, float_status *status);
-float64 float64_minimum_number(float64, float64, float_status *status);
-float64 float64_maximum_number(float64, float64, float_status *status);
+float64 float64_minmax(float64, float64, float_status *status, int flags);
 bool float64_is_quiet_nan(float64 a, float_status *status);
 bool float64_is_signaling_nan(float64, float_status *status);
 float64 float64_silence_nan(float64, float_status *status);
@@ -952,7 +965,7 @@ float128 floatx80_to_float128(floatx80, float_status *status);
 /*----------------------------------------------------------------------------
 | The pattern for an extended double-precision inf.
 *----------------------------------------------------------------------------*/
-extern const floatx80 floatx80_infinity;
+floatx80 floatx80_default_inf(bool zSign, float_status *status);
 
 /*----------------------------------------------------------------------------
 | Software IEC/IEEE extended double-precision operations.
@@ -970,8 +983,8 @@ floatx80 floatx80_rem(floatx80, floatx80, float_status *status);
 floatx80 floatx80_sqrt(floatx80, float_status *status);
 FloatRelation floatx80_compare(floatx80, floatx80, float_status *status);
 FloatRelation floatx80_compare_quiet(floatx80, floatx80, float_status *status);
-int floatx80_is_quiet_nan(floatx80, float_status *status);
-int floatx80_is_signaling_nan(floatx80, float_status *status);
+bool floatx80_is_quiet_nan(floatx80, float_status *status);
+bool floatx80_is_signaling_nan(floatx80, float_status *status);
 floatx80 floatx80_silence_nan(floatx80, float_status *status);
 floatx80 floatx80_scalbn(floatx80, int, float_status *status);
 
@@ -987,14 +1000,19 @@ static inline floatx80 floatx80_chs(floatx80 a)
     return a;
 }
 
-static inline bool floatx80_is_infinity(floatx80 a)
+static inline bool floatx80_is_infinity(floatx80 a, float_status *status)
 {
-#if defined(TARGET_M68K)
-    return (a.high & 0x7fff) == floatx80_infinity.high && !(a.low << 1);
-#else
-    return (a.high & 0x7fff) == floatx80_infinity.high &&
-                       a.low == floatx80_infinity.low;
-#endif
+    /*
+     * It's target-specific whether the Integer bit is permitted
+     * to be 0 in a valid Infinity value. (x86 says no, m68k says yes).
+     */
+    bool intbit = a.low >> 63;
+
+    if (!intbit &&
+        !(get_floatx80_behaviour(status) & floatx80_pseudo_inf_valid)) {
+        return false;
+    }
+    return (a.high & 0x7fff) == 0x7fff && !(a.low << 1);
 }
 
 static inline bool floatx80_is_neg(floatx80 a)
@@ -1060,41 +1078,47 @@ static inline bool floatx80_unordered_quiet(floatx80 a, floatx80 b,
 
 /*----------------------------------------------------------------------------
 | Return whether the given value is an invalid floatx80 encoding.
-| Invalid floatx80 encodings arise when the integer bit is not set, but
-| the exponent is not zero. The only times the integer bit is permitted to
-| be zero is in subnormal numbers and the value zero.
-| This includes what the Intel software developer's manual calls pseudo-NaNs,
-| pseudo-infinities and un-normal numbers. It does not include
-| pseudo-denormals, which must still be correctly handled as inputs even
-| if they are never generated as outputs.
+| Invalid floatx80 encodings may arise when the integer bit is not set
+| correctly; this is target-specific. In Intel terminology the
+| categories are:
+|  exp == 0, int = 0, mantissa == 0 : zeroes
+|  exp == 0, int = 0, mantissa != 0 : denormals
+|  exp == 0, int = 1 : pseudo-denormals
+|  0 < exp < 0x7fff, int = 0 : unnormals
+|  0 < exp < 0x7fff, int = 1 : normals
+|  exp == 0x7fff, int = 0, mantissa == 0 : pseudo-infinities
+|  exp == 0x7fff, int = 1, mantissa == 0 : infinities
+|  exp == 0x7fff, int = 0, mantissa != 0 : pseudo-NaNs
+|  exp == 0x7fff, int = 1, mantissa == 0 : NaNs
+|
+| The usual IEEE cases of zero, denormal, normal, inf and NaN are always valid.
+| x87 permits as input also pseudo-denormals.
+| m68k permits all those and also pseudo-infinities, pseudo-NaNs and unnormals.
+|
+| Since we don't have a target that handles floatx80 but prohibits
+| pseudo-denormals in input, we don't currently have a floatx80_behaviour
+| flag for that case, but instead always accept it. Conveniently this
+| means that all cases with either exponent 0 or the integer bit set are
+| valid for all targets.
 *----------------------------------------------------------------------------*/
-static inline bool floatx80_invalid_encoding(floatx80 a)
+static inline bool floatx80_invalid_encoding(floatx80 a, float_status *s)
 {
-#if defined(TARGET_M68K)
-    /*-------------------------------------------------------------------------
-    | With m68k, the explicit integer bit can be zero in the case of:
-    | - zeros                (exp == 0, mantissa == 0)
-    | - denormalized numbers (exp == 0, mantissa != 0)
-    | - unnormalized numbers (exp != 0, exp < 0x7FFF)
-    | - infinities           (exp == 0x7FFF, mantissa == 0)
-    | - not-a-numbers        (exp == 0x7FFF, mantissa != 0)
-    |
-    | For infinities and NaNs, the explicit integer bit can be either one or
-    | zero.
-    |
-    | The IEEE 754 standard does not define a zero integer bit. Such a number
-    | is an unnormalized number. Hardware does not directly support
-    | denormalized and unnormalized numbers, but implicitly supports them by
-    | trapping them as unimplemented data types, allowing efficient conversion
-    | in software.
-    |
-    | See "M68000 FAMILY PROGRAMMER’S REFERENCE MANUAL",
-    |     "1.6 FLOATING-POINT DATA TYPES"
-    *------------------------------------------------------------------------*/
-    return false;
-#else
-    return (a.low & (1ULL << 63)) == 0 && (a.high & 0x7FFF) != 0;
-#endif
+    FloatX80Behaviour rule = get_floatx80_behaviour(s);
+
+    if ((a.low >> 63) || (a.high & 0x7fff) == 0) {
+        /* Anything with the Integer bit set or the exponent 0 is valid */
+        return false;
+    }
+
+    if ((a.high & 0x7fff) == 0x7fff) {
+        if (a.low) {
+            return !(rule & floatx80_pseudo_nan_valid);
+        } else {
+            return !(rule & floatx80_pseudo_inf_valid);
+        }
+    } else {
+        return !(rule & floatx80_unnormal_valid);
+    }
 }
 
 #define floatx80_zero make_floatx80(0x0000, 0x0000000000000000LL)
@@ -1246,14 +1270,7 @@ float128 float128_rem(float128, float128, float_status *status);
 float128 float128_sqrt(float128, float_status *status);
 FloatRelation float128_compare(float128, float128, float_status *status);
 FloatRelation float128_compare_quiet(float128, float128, float_status *status);
-float128 float128_min(float128, float128, float_status *status);
-float128 float128_max(float128, float128, float_status *status);
-float128 float128_minnum(float128, float128, float_status *status);
-float128 float128_maxnum(float128, float128, float_status *status);
-float128 float128_minnummag(float128, float128, float_status *status);
-float128 float128_maxnummag(float128, float128, float_status *status);
-float128 float128_minimum_number(float128, float128, float_status *status);
-float128 float128_maximum_number(float128, float128, float_status *status);
+float128 float128_minmax(float128, float128, float_status *status, int flags);
 bool float128_is_quiet_nan(float128, float_status *status);
 bool float128_is_signaling_nan(float128, float_status *status);
 float128 float128_silence_nan(float128, float_status *status);
@@ -1354,5 +1371,34 @@ static inline bool float128_unordered_quiet(float128 a, float128 b,
 | The pattern for a default generated quadruple-precision NaN.
 *----------------------------------------------------------------------------*/
 float128 float128_default_nan(float_status *status);
+
+/*----------------------------------------------------------------------------
+| Minumum and maximum functions.
+*----------------------------------------------------------------------------*/
+
+#define MINMAX_1(type, name, flags)                                     \
+    static inline type type##_##name(type a, type b, float_status *s)   \
+    { return type##_minmax(a, b, s, flags); }
+
+#define MINMAX_2(type)                                                  \
+    MINMAX_1(type, max, 0)                                              \
+    MINMAX_1(type, maxnum, float_minmax_isnum)                          \
+    MINMAX_1(type, maxnummag, float_minmax_isnum | float_minmax_ismag)  \
+    MINMAX_1(type, maximum_number, float_minmax_isnumber)               \
+    MINMAX_1(type, min, float_minmax_ismin)                             \
+    MINMAX_1(type, minnum, float_minmax_ismin | float_minmax_isnum)     \
+    MINMAX_1(type, minnummag,                                           \
+             float_minmax_ismin | float_minmax_isnum | float_minmax_ismag) \
+    MINMAX_1(type, minimum_number,                                      \
+             float_minmax_ismin | float_minmax_isnumber)
+
+MINMAX_2(float16)
+MINMAX_2(bfloat16)
+MINMAX_2(float32)
+MINMAX_2(float64)
+MINMAX_2(float128)
+
+#undef MINMAX_1
+#undef MINMAX_2
 
 #endif /* SOFTFLOAT_H */

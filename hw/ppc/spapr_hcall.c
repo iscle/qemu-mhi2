@@ -1,14 +1,16 @@
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
 #include "qapi/error.h"
-#include "sysemu/hw_accel.h"
-#include "sysemu/runstate.h"
-#include "sysemu/tcg.h"
+#include "system/hw_accel.h"
+#include "system/physmem.h"
+#include "system/runstate.h"
+#include "system/tcg.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/error-report.h"
-#include "exec/tb-flush.h"
+#include "exec/translation-block.h"
+#include "exec/target_page.h"
 #include "helper_regs.h"
 #include "hw/ppc/ppc.h"
 #include "hw/ppc/spapr.h"
@@ -23,6 +25,7 @@
 #include "hw/ppc/spapr_numa.h"
 #include "mmu-book3s-v3.h"
 #include "hw/mem/memory-device.h"
+#include "exec/cpu-common.h"
 
 bool is_ram_address(SpaprMachineState *spapr, hwaddr addr)
 {
@@ -271,7 +274,7 @@ static target_ulong h_page_init(PowerPCCPU *cpu, SpaprMachineState *spapr,
     if (!is_ram_address(spapr, dst) || (dst & ~TARGET_PAGE_MASK) != 0) {
         return H_PARAMETER;
     }
-    pdst = cpu_physical_memory_map(dst, &len, true);
+    pdst = physical_memory_map(dst, &len, true);
     if (!pdst || len != TARGET_PAGE_SIZE) {
         return H_PARAMETER;
     }
@@ -282,13 +285,13 @@ static target_ulong h_page_init(PowerPCCPU *cpu, SpaprMachineState *spapr,
             ret = H_PARAMETER;
             goto unmap_out;
         }
-        psrc = cpu_physical_memory_map(src, &len, false);
+        psrc = physical_memory_map(src, &len, false);
         if (!psrc || len != TARGET_PAGE_SIZE) {
             ret = H_PARAMETER;
             goto unmap_out;
         }
         memcpy(pdst, psrc, len);
-        cpu_physical_memory_unmap(psrc, len, 0, len);
+        physical_memory_unmap(psrc, len, 0, len);
     } else if (flags & H_ZERO_PAGE) {
         memset(pdst, 0, len);          /* Just clear the destination page */
     }
@@ -299,13 +302,15 @@ static target_ulong h_page_init(PowerPCCPU *cpu, SpaprMachineState *spapr,
     if (flags & (H_ICACHE_SYNCHRONIZE | H_ICACHE_INVALIDATE)) {
         if (kvm_enabled()) {
             kvmppc_icbi_range(cpu, pdst, len);
+        } else if (tcg_enabled()) {
+            tb_invalidate_phys_range(CPU(cpu), dst, dst + len - 1);
         } else {
-            tb_flush(CPU(cpu));
+            g_assert_not_reached();
         }
     }
 
 unmap_out:
-    cpu_physical_memory_unmap(pdst, TARGET_PAGE_SIZE, 1, len);
+    physical_memory_unmap(pdst, TARGET_PAGE_SIZE, 1, len);
     return ret;
 }
 
@@ -506,8 +511,8 @@ static target_ulong h_cede(PowerPCCPU *cpu, SpaprMachineState *spapr,
     if (!cpu_has_work(cs)) {
         cs->halted = 1;
         cs->exception_index = EXCP_HLT;
-        cs->exit_request = 1;
         ppc_maybe_interrupt(env);
+        cpu_exit(cs);
     }
 
     return H_SUCCESS;
@@ -528,8 +533,8 @@ static target_ulong h_confer_self(PowerPCCPU *cpu)
     }
     cs->halted = 1;
     cs->exception_index = EXCP_HALTED;
-    cs->exit_request = 1;
     ppc_maybe_interrupt(&cpu->env);
+    cpu_exit(cs);
 
     return H_SUCCESS;
 }
@@ -578,6 +583,8 @@ static target_ulong h_confer(PowerPCCPU *cpu, SpaprMachineState *spapr,
     CPUState *cs = CPU(cpu);
     SpaprCpuState *spapr_cpu;
 
+    assert(tcg_enabled()); /* KVM will have handled this */
+
     /*
      * -1 means confer to all other CPUs without dispatch counter check,
      *  otherwise it's a targeted confer.
@@ -619,8 +626,7 @@ static target_ulong h_confer(PowerPCCPU *cpu, SpaprMachineState *spapr,
     }
 
     cs->exception_index = EXCP_YIELD;
-    cs->exit_request = 1;
-    cpu_loop_exit(cs);
+    cpu_exit(cs);
 
     return H_SUCCESS;
 }
@@ -818,11 +824,12 @@ static target_ulong h_set_mode_resource_set_ciabr(PowerPCCPU *cpu,
     return H_SUCCESS;
 }
 
-static target_ulong h_set_mode_resource_set_dawr0(PowerPCCPU *cpu,
-                                                  SpaprMachineState *spapr,
-                                                  target_ulong mflags,
-                                                  target_ulong value1,
-                                                  target_ulong value2)
+static target_ulong h_set_mode_resource_set_dawr(PowerPCCPU *cpu,
+                                                 SpaprMachineState *spapr,
+                                                 target_ulong mflags,
+                                                 target_ulong resource,
+                                                 target_ulong value1,
+                                                 target_ulong value2)
 {
     CPUPPCState *env = &cpu->env;
 
@@ -835,8 +842,15 @@ static target_ulong h_set_mode_resource_set_dawr0(PowerPCCPU *cpu,
         return H_P4;
     }
 
-    ppc_store_dawr0(env, value1);
-    ppc_store_dawrx0(env, value2);
+    if (resource == H_SET_MODE_RESOURCE_SET_DAWR0) {
+        ppc_store_dawr0(env, value1);
+        ppc_store_dawrx0(env, value2);
+    } else if (resource == H_SET_MODE_RESOURCE_SET_DAWR1) {
+        ppc_store_dawr1(env, value1);
+        ppc_store_dawrx1(env, value2);
+    } else {
+        g_assert_not_reached();
+    }
 
     return H_SUCCESS;
 }
@@ -915,8 +929,9 @@ static target_ulong h_set_mode(PowerPCCPU *cpu, SpaprMachineState *spapr,
                                             args[3]);
         break;
     case H_SET_MODE_RESOURCE_SET_DAWR0:
-        ret = h_set_mode_resource_set_dawr0(cpu, spapr, args[0], args[2],
-                                            args[3]);
+    case H_SET_MODE_RESOURCE_SET_DAWR1:
+        ret = h_set_mode_resource_set_dawr(cpu, spapr, args[0], args[1],
+                                           args[2], args[3]);
         break;
     case H_SET_MODE_RESOURCE_LE:
         ret = h_set_mode_resource_le(cpu, spapr, args[0], args[2], args[3]);
@@ -968,7 +983,6 @@ static void spapr_check_setup_free_hpt(SpaprMachineState *spapr,
         /* RADIX->HASH || NOTHING->HASH : Allocate HPT */
         spapr_setup_hpt(spapr);
     }
-    return;
 }
 
 #define FLAGS_MASK              0x01FULL
@@ -1092,6 +1106,15 @@ static target_ulong h_signal_sys_reset(PowerPCCPU *cpu,
                     continue;
                 }
             }
+
+            /* Skip quiesced CPUs - they are in RTAS stopped state and
+             * should not be reset. This prevents kdump hangs when CPUs
+             * are hotplugged but not yet started by the guest.
+             */
+            if (c->env.quiesced) {
+                continue;
+            }
+
             run_on_cpu(cs, spapr_do_system_reset_on_cpu, RUN_ON_CPU_NULL);
         }
         return H_SUCCESS;
@@ -1113,6 +1136,7 @@ static uint32_t cas_check_pvr(PowerPCCPU *cpu, uint32_t max_compat,
 {
     bool explicit_match = false; /* Matched the CPU's real PVR */
     uint32_t best_compat = 0;
+    uint32_t compat_host_pvr = 0;
     int i;
 
     /*
@@ -1137,6 +1161,19 @@ static uint32_t cas_check_pvr(PowerPCCPU *cpu, uint32_t max_compat,
             if (ppc_check_compat(cpu, pvr, best_compat, max_compat)) {
                 best_compat = pvr;
             }
+        }
+    }
+
+    if (explicit_match && kvm_enabled()) {
+        compat_host_pvr = kvm_ppc_host_compat_pvr();
+        /*
+         * If the host is booted in a compatibility mode, do not try booting in
+         * the raw mode as it may allow KVM guests to boot with a higher CPU
+         * version compared to what host was booted with; which should not be
+         * allowed.
+         */
+        if (compat_host_pvr) {
+            explicit_match = false;
         }
     }
 
@@ -1360,8 +1397,8 @@ static target_ulong h_client_architecture_support(PowerPCCPU *cpu,
         spapr->fdt_size = fdt_totalsize(spapr->fdt_blob);
         spapr->fdt_initial_size = spapr->fdt_size;
 
-        cpu_physical_memory_write(fdt_buf, &hdr, sizeof(hdr));
-        cpu_physical_memory_write(fdt_buf + sizeof(hdr), spapr->fdt_blob,
+        physical_memory_write(fdt_buf, &hdr, sizeof(hdr));
+        physical_memory_write(fdt_buf + sizeof(hdr), spapr->fdt_blob,
                                   spapr->fdt_size);
         trace_spapr_cas_continue(spapr->fdt_size + sizeof(hdr));
     }
@@ -1463,15 +1500,10 @@ static target_ulong h_update_dt(PowerPCCPU *cpu, SpaprMachineState *spapr,
     target_ulong dt = ppc64_phys_to_real(args[0]);
     struct fdt_header hdr = { 0 };
     unsigned cb;
-    SpaprMachineClass *smc = SPAPR_MACHINE_GET_CLASS(spapr);
     void *fdt;
 
-    cpu_physical_memory_read(dt, &hdr, sizeof(hdr));
+    physical_memory_read(dt, &hdr, sizeof(hdr));
     cb = fdt32_to_cpu(hdr.totalsize);
-
-    if (!smc->update_dt_enabled) {
-        return H_SUCCESS;
-    }
 
     /* Check that the fdt did not grow out of proportion */
     if (cb > spapr->fdt_initial_size * 2) {
@@ -1481,7 +1513,7 @@ static target_ulong h_update_dt(PowerPCCPU *cpu, SpaprMachineState *spapr,
     }
 
     fdt = g_malloc0(cb);
-    cpu_physical_memory_read(dt, fdt, cb);
+    physical_memory_read(dt, fdt, cb);
 
     /* Check the fdt consistency */
     if (fdt_check_full(fdt, cb)) {

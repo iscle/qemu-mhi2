@@ -28,12 +28,11 @@
 
 #include "standard-headers/linux/virtio_net.h"
 
+#define TYPE_TAP_NETDEV "tap-netdev"
+
 int tap_enable(NetClientState *nc);
 int tap_disable(NetClientState *nc);
 
 int tap_get_fd(NetClientState *nc);
-
-struct vhost_net;
-struct vhost_net *tap_get_vhost_net(NetClientState *nc);
 
 #endif /* QEMU_NET_TAP_H */

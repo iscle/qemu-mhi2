@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "qemu/target-info.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-misc.h"
-#include "qapi/qmp/qlist.h"
+#include "qobject/qlist.h"
 #include "qemu/option.h"
 #include "qemu/config-file.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 
 static CommandLineParameterInfoList *query_option_descs(const QemuOptDesc *desc)
 {

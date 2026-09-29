@@ -1,8 +1,8 @@
 /*
  * QEMU curses/ncurses display driver
- * 
+ *
  * Copyright (c) 2005 Andrzej Zaborowski  <balrog@zabor.org>
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
@@ -36,7 +36,7 @@
 #include "qemu/module.h"
 #include "ui/console.h"
 #include "ui/input.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 
 #ifdef __APPLE__
 #define _XOPEN_SOURCE_EXTENDED 1
@@ -57,7 +57,7 @@ enum maybe_keycode {
 };
 
 static DisplayChangeListener *dcl;
-static console_ch_t *screen;
+static uint32_t *screen;
 static WINDOW *screenpad = NULL;
 static int width, height, gwidth, gheight, invalidate;
 static int px, py, sminx, sminy, smaxx, smaxy;
@@ -68,7 +68,7 @@ static cchar_t *vga_to_curses;
 static void curses_update(DisplayChangeListener *dcl,
                           int x, int y, int w, int h)
 {
-    console_ch_t *line;
+    uint32_t *line;
     g_autofree cchar_t *curses_line = g_new(cchar_t, width);
     wchar_t wch[CCHARW_MAX];
     attr_t attrs;
@@ -265,7 +265,8 @@ static int curses2foo(const int _curses2foo[], const int _curseskey2foo[],
 
 static void curses_refresh(DisplayChangeListener *dcl)
 {
-    int chr, keysym, keycode, keycode_alt;
+    wint_t chr = 0;
+    int keysym, keycode, keycode_alt;
     enum maybe_keycode maybe_keycode = CURSES_KEYCODE;
 
     curses_winch_check();
@@ -274,18 +275,19 @@ static void curses_refresh(DisplayChangeListener *dcl)
         clear();
         refresh();
         curses_calc_pad();
-        graphic_hw_invalidate(dcl->con);
+        qemu_console_hw_invalidate(dcl->con);
         invalidate = 0;
     }
 
-    graphic_hw_text_update(dcl->con, screen);
+    qemu_console_hw_text_update(dcl->con, screen);
 
     while (1) {
         /* while there are any pending key strokes to process */
         chr = console_getch(&maybe_keycode);
 
-        if (chr == -1)
+        if (chr == WEOF) {
             break;
+        }
 
 #ifdef KEY_RESIZE
         /* this shouldn't occur when we use a custom SIGWINCH handler */
@@ -304,9 +306,9 @@ static void curses_refresh(DisplayChangeListener *dcl)
         /* alt or esc key */
         if (keycode == 1) {
             enum maybe_keycode next_maybe_keycode = CURSES_KEYCODE;
-            int nextchr = console_getch(&next_maybe_keycode);
+            wint_t nextchr = console_getch(&next_maybe_keycode);
 
-            if (nextchr != -1) {
+            if (nextchr != WEOF) {
                 chr = nextchr;
                 maybe_keycode = next_maybe_keycode;
                 keycode_alt = ALT;
@@ -322,9 +324,8 @@ static void curses_refresh(DisplayChangeListener *dcl)
                         if (con) {
                             erase();
                             wnoutrefresh(stdscr);
-                            unregister_displaychangelistener(dcl);
-                            dcl->con = con;
-                            register_displaychangelistener(dcl);
+                            qemu_console_unregister_listener(dcl);
+                            qemu_console_register_listener(con, dcl, dcl->ops);
 
                             invalidate = 1;
                         }
@@ -410,11 +411,19 @@ static void curses_refresh(DisplayChangeListener *dcl)
     }
 }
 
-static void curses_atexit(void)
+static void curses_cleanup(void)
 {
+    if (!dcl) {
+        return;
+    }
+
     endwin();
-    g_free(vga_to_curses);
-    g_free(screen);
+    qemu_console_unregister_listener(dcl);
+    g_clear_pointer(&dcl, g_free);
+    g_clear_pointer(&screenpad, delwin);
+    g_clear_pointer(&vga_to_curses, g_free);
+    g_clear_pointer(&screen, g_free);
+    g_clear_pointer(&kbd_layout, kbd_layout_free);
 }
 
 /*
@@ -768,8 +777,8 @@ static void curses_keyboard_setup(void)
         keyboard_layout = "en-us";
 #endif
     if(keyboard_layout) {
-        kbd_layout = init_keyboard_layout(name2keysym, keyboard_layout,
-                                          &error_fatal);
+        kbd_layout = kbd_layout_new(name2keysym, keyboard_layout,
+                                    &error_fatal);
     }
 }
 
@@ -794,18 +803,14 @@ static void curses_display_init(DisplayState *ds, DisplayOptions *opts)
     if (opts->u.curses.charset) {
         font_charset = opts->u.curses.charset;
     }
-    screen = g_new0(console_ch_t, 160 * 100);
+    screen = g_new0(uint32_t, 160 * 100);
     vga_to_curses = g_new0(cchar_t, 256);
     curses_setup();
     curses_keyboard_setup();
-    atexit(curses_atexit);
-
     curses_winch_init();
 
     dcl = g_new0(DisplayChangeListener, 1);
-    dcl->con = qemu_console_lookup_default();
-    dcl->ops = &dcl_ops;
-    register_displaychangelistener(dcl);
+    qemu_console_register_listener(qemu_console_lookup_default(), dcl, &dcl_ops);
 
     invalidate = 1;
 }
@@ -813,6 +818,7 @@ static void curses_display_init(DisplayState *ds, DisplayOptions *opts)
 static QemuDisplay qemu_display_curses = {
     .type       = DISPLAY_TYPE_CURSES,
     .init       = curses_display_init,
+    .cleanup    = curses_cleanup,
 };
 
 static void register_curses(void)

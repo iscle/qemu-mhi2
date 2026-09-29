@@ -1,7 +1,7 @@
 /*
  * QEMU USB device emulation stubs
  *
- * Copyright (C) 2021 Philippe Mathieu-Daudé <f4bug@amsat.org>
+ * Copyright (C) 2021 Philippe Mathieu-Daudé
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -10,9 +10,9 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-machine.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "monitor/monitor.h"
-#include "hw/usb.h"
+#include "hw/usb/usb.h"
 
 USBDevice *usbdevice_create(const char *driver)
 {

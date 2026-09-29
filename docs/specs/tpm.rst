@@ -187,8 +187,32 @@ The location of the table is given by the fw_cfg ``tpmppi_address``
 field.  The PPI memory region size is 0x400 (``TPM_PPI_ADDR_SIZE``) to
 leave enough room for future updates.
 
+PPI on ARM64 virt
+-----------------
+
+The ARM virt machine supports PPI for ``tpm-tis-device`` as defined
+in the `PPI specification`_.
+
+Unlike the x86 TIS device where the PPI memory region is mapped at
+the fixed address ``0xFED45000`` (within the TIS MMIO range), the
+ARM64 sysbus device registers PPI memory as a second MMIO region
+on the platform bus. The platform bus assigns the guest physical
+address dynamically at device plug time. The ACPI ``_DSM`` method
+and PPI operation regions reference this dynamically resolved
+address.
+
+PPI is controlled by the ``ppi`` property (default ``on``)::
+
+    -device tpm-tis-device,tpmdev=tpm0,ppi=on
+
+Without PPI, guest operating systems such as Windows 11
+ARM64 will log errors when attempting to query TPM Physical
+Presence capabilities via the ACPI ``_DSM`` method.
+
 QEMU files related to TPM ACPI tables:
  - ``hw/i386/acpi-build.c``
+ - ``hw/arm/virt-acpi-build.c``
+ - ``hw/acpi/tpm.c``
  - ``include/hw/acpi/tpm.h``
 
 TPM backend devices
@@ -205,8 +229,8 @@ to be used with the passthrough backend or the swtpm backend.
 
 QEMU files related to TPM backends:
  - ``backends/tpm.c``
- - ``include/sysemu/tpm.h``
- - ``include/sysemu/tpm_backend.h``
+ - ``include/system/tpm.h``
+ - ``include/system/tpm_backend.h``
 
 The QEMU TPM passthrough device
 -------------------------------
@@ -240,7 +264,7 @@ PCRs.
 QEMU files related to the TPM passthrough device:
  - ``backends/tpm/tpm_passthrough.c``
  - ``backends/tpm/tpm_util.c``
- - ``include/sysemu/tpm_util.h``
+ - ``include/system/tpm_util.h``
 
 
 Command line to start QEMU with the TPM passthrough device using the host's
@@ -301,7 +325,7 @@ command.
 QEMU files related to the TPM emulator device:
  - ``backends/tpm/tpm_emulator.c``
  - ``backends/tpm/tpm_util.c``
- - ``include/sysemu/tpm_util.h``
+ - ``include/system/tpm_util.h``
 
 The following commands start the swtpm with a UnixIO control channel over
 a socket interface. They do not need to be run as root.

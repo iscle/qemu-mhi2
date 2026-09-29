@@ -1,7 +1,7 @@
 /* omap_sx1.c Support for the Siemens SX1 smartphone emulation.
  *
  *   Copyright (C) 2008
- * 	Jean-Christophe PLAGNIOL-VILLARD <plagnioj@jcrosoft.com>
+ *   Jean-Christophe PLAGNIOL-VILLARD <plagnioj@jcrosoft.com>
  *   Copyright (C) 2007 Vladimir Ananiev <vovan888@gmail.com>
  *
  *   based on PalmOne's (TM) PDAs support (palm.c)
@@ -30,11 +30,11 @@
 #include "qapi/error.h"
 #include "ui/console.h"
 #include "hw/arm/omap.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/arm/boot.h"
 #include "hw/block/flash.h"
-#include "sysemu/qtest.h"
-#include "exec/address-spaces.h"
+#include "system/qtest.h"
+#include "system/address-spaces.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 
@@ -76,10 +76,6 @@ static uint64_t static_read(void *opaque, hwaddr offset,
 static void static_write(void *opaque, hwaddr offset,
                          uint64_t value, unsigned size)
 {
-#ifdef SPY
-    printf("%s: value %" PRIx64 " %u bytes written at 0x%x\n",
-                    __func__, value, size, (int)offset);
-#endif
 }
 
 static const MemoryRegionOps static_ops = {
@@ -94,14 +90,16 @@ static const MemoryRegionOps static_ops = {
 #define FLASH1_SIZE     (8 * MiB)
 #define FLASH2_SIZE     (32 * MiB)
 
-static struct arm_boot_info sx1_binfo = {
-    .loader_start = OMAP_EMIFF_BASE,
-    .ram_size = SDRAM_SIZE,
-    .board_id = 0x265,
-};
+typedef struct Sx1MachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
+} Sx1MachineState;
 
 static void sx1_init(MachineState *machine, const int version)
 {
+    /* Both sx1 and sx1-v1 embed the same state as their first member */
+    Sx1MachineState *sms = (Sx1MachineState *)machine;
     struct omap_mpu_state_s *mpu;
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     MemoryRegion *address_space = get_system_memory();
@@ -149,7 +147,7 @@ static void sx1_init(MachineState *machine, const int version)
     memory_region_init_io(&cs[3], NULL, &static_ops, &cs3val,
                           "sx1.cs3", OMAP_CS3_SIZE);
     memory_region_add_subregion(address_space,
-                                OMAP_CS2_BASE, &cs[3]);
+                                OMAP_CS3_BASE, &cs[3]);
 
     fl_idx = 0;
     if ((dinfo = drive_get(IF_PFLASH, 0, fl_idx)) != NULL) {
@@ -190,7 +188,10 @@ static void sx1_init(MachineState *machine, const int version)
     }
 
     /* Load the kernel.  */
-    arm_load_kernel(mpu->cpu, machine, &sx1_binfo);
+    sms->bootinfo.loader_start = OMAP_EMIFF_BASE;
+    sms->bootinfo.ram_size = SDRAM_SIZE;
+    sms->bootinfo.board_id = 0x265;
+    arm_load_kernel(mpu->cpu, machine, &sms->bootinfo);
 
     /* TODO: fix next line */
     //~ qemu_console_resize(ds, 640, 480);
@@ -206,7 +207,7 @@ static void sx1_init_v2(MachineState *machine)
     sx1_init(machine, 2);
 }
 
-static void sx1_machine_v2_class_init(ObjectClass *oc, void *data)
+static void sx1_machine_v2_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -216,15 +217,17 @@ static void sx1_machine_v2_class_init(ObjectClass *oc, void *data)
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("ti925t");
     mc->default_ram_size = SDRAM_SIZE;
     mc->default_ram_id = "omap1.dram";
+    mc->auto_create_sdcard = true;
 }
 
 static const TypeInfo sx1_machine_v2_type = {
     .name = MACHINE_TYPE_NAME("sx1"),
     .parent = TYPE_MACHINE,
     .class_init = sx1_machine_v2_class_init,
+    .instance_size = sizeof(Sx1MachineState),
 };
 
-static void sx1_machine_v1_class_init(ObjectClass *oc, void *data)
+static void sx1_machine_v1_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -234,12 +237,14 @@ static void sx1_machine_v1_class_init(ObjectClass *oc, void *data)
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("ti925t");
     mc->default_ram_size = SDRAM_SIZE;
     mc->default_ram_id = "omap1.dram";
+    mc->auto_create_sdcard = true;
 }
 
 static const TypeInfo sx1_machine_v1_type = {
     .name = MACHINE_TYPE_NAME("sx1-v1"),
     .parent = TYPE_MACHINE,
     .class_init = sx1_machine_v1_class_init,
+    .instance_size = sizeof(Sx1MachineState),
 };
 
 static void sx1_machine_init(void)

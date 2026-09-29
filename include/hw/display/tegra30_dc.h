@@ -2,7 +2,7 @@
 #define HW_DISPLAY_TEGRA30_DC_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "ui/console.h"
 
 /*

@@ -23,6 +23,20 @@ typedef struct SVQDescState {
      * guest's
      */
     unsigned int ndescs;
+
+    union {
+        /*
+         * Total length of the available buffer that is writable by the device.
+         * Only used in packed vq.
+         */
+        uint32_t in_bytes;
+
+        /*
+         * Backup next field for each descriptor so we can recover securely, not
+         * needing to trust the device access.  Only used in split vq.
+         */
+        uint16_t next;
+    };
 } SVQDescState;
 
 typedef struct VhostShadowVirtqueue VhostShadowVirtqueue;
@@ -84,12 +98,6 @@ typedef struct VhostShadowVirtqueue {
     /* Next VirtQueue element that guest made available */
     VirtQueueElement *next_guest_avail_elem;
 
-    /*
-     * Backup next field for each descriptor so we can recover securely, not
-     * needing to trust the device access.
-     */
-    uint16_t *desc_next;
-
     /* Caller callbacks */
     const VhostShadowVirtqueueOps *ops;
 
@@ -99,8 +107,24 @@ typedef struct VhostShadowVirtqueue {
     /* Next head to expose to the device */
     uint16_t shadow_avail_idx;
 
-    /* Next free descriptor */
+    /*
+     * Next free descriptor.
+     *
+     * Without IN_ORDER free_head is used as a linked list head, and
+     * desc_next[id] is the next element.
+     * With IN_ORDER free_head is the next available buffer index.
+     */
     uint16_t free_head;
+
+    /*
+     * Last used element of the processing batch of used descriptors if
+     * IN_ORDER.
+     * If SVQ is not processing a batch of descriptors id is set to UINT_MAX.
+     */
+    vring_used_elem_t batch_last;
+
+    /* Last used id if IN_ORDER and split vq */
+    uint16_t last_used;
 
     /* Last seen used idx */
     uint16_t shadow_used_idx;
@@ -118,8 +142,9 @@ uint16_t vhost_svq_available_slots(const VhostShadowVirtqueue *svq);
 void vhost_svq_push_elem(VhostShadowVirtqueue *svq,
                          const VirtQueueElement *elem, uint32_t len);
 int vhost_svq_add(VhostShadowVirtqueue *svq, const struct iovec *out_sg,
-                  size_t out_num, const struct iovec *in_sg, size_t in_num,
-                  VirtQueueElement *elem);
+                  size_t out_num, const hwaddr *out_addr,
+                  const struct iovec *in_sg, size_t in_num,
+                  const hwaddr *in_addr, VirtQueueElement *elem);
 size_t vhost_svq_poll(VhostShadowVirtqueue *svq, size_t num);
 
 void vhost_svq_set_svq_kick_fd(VhostShadowVirtqueue *svq, int svq_kick_fd);

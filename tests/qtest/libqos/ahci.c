@@ -28,7 +28,7 @@
 #include "ahci.h"
 #include "pci-pc.h"
 
-#include "qemu/host-utils.h"
+#include "qemu/bswap.h"
 
 #include "hw/pci/pci_ids.h"
 #include "hw/pci/pci_regs.h"
@@ -74,6 +74,7 @@ AHCICommandProp ahci_command_properties[] = {
     { .cmd = CMD_READ_MAX,       .lba28 = true },
     { .cmd = CMD_READ_MAX_EXT,   .lba48 = true },
     { .cmd = CMD_FLUSH_CACHE,    .data = false },
+    { .cmd = CMD_INIT_DP,        .data = false },
     { .cmd = CMD_PACKET,         .data = true,  .size = 16,
                                  .atapi = true, .pio = true },
     { .cmd = CMD_PACKET_ID,      .data = true,  .pio = true,
@@ -707,6 +708,11 @@ void ahci_exec(AHCIQState *ahci, uint8_t port,
     if (opts->atapi) {
         uint16_t bcl = opts->set_bcl ? opts->bcl : ATAPI_SECTOR_SIZE;
         cmd = ahci_atapi_command_create(op, bcl, opts->atapi_dma);
+        if (opts->atapi_raw) {
+            /* request full 2352-byte raw sectors; sector_size must match */
+            cmd->atapi_cmd[9] = 0xf8;
+            cmd->sector_size = ATAPI_RAW_SECTOR_SIZE;
+        }
     } else {
         cmd = ahci_command_create(op);
     }
@@ -1173,6 +1179,19 @@ void ahci_command_set_size(AHCICommand *cmd, uint64_t xbytes)
 void ahci_command_set_prd_size(AHCICommand *cmd, unsigned prd_size)
 {
     ahci_command_set_sizes(cmd, cmd->xbytes, prd_size);
+}
+
+/* For a no-data command, whose count carries an argument of its own */
+void ahci_command_set_count(AHCICommand *cmd, uint16_t count)
+{
+    g_assert(!cmd->props->data);
+    cmd->fis.count = count;
+}
+
+void ahci_command_expect_error(AHCICommand *cmd, uint8_t err)
+{
+    cmd->interrupts |= AHCI_PX_IS_TFES;
+    cmd->errors |= err;
 }
 
 void ahci_command_adjust(AHCICommand *cmd, uint64_t offset, uint64_t buffer,

@@ -19,13 +19,12 @@
 #include "qapi/error.h"
 #include "hw/arm/xlnx-zynqmp.h"
 #include "hw/arm/boot.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
-#include "sysemu/device_tree.h"
+#include "system/device_tree.h"
 #include "qom/object.h"
 #include "net/can_emu.h"
-#include "audio/audio.h"
 
 struct XlnxZCU102 {
     MachineState parent_obj;
@@ -267,7 +266,7 @@ static void xlnx_zcu102_machine_instance_init(Object *obj)
                              0);
 }
 
-static void xlnx_zcu102_machine_class_init(ObjectClass *oc, void *data)
+static void xlnx_zcu102_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -280,6 +279,7 @@ static void xlnx_zcu102_machine_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = XLNX_ZYNQMP_NUM_APU_CPUS + XLNX_ZYNQMP_NUM_RPU_CPUS;
     mc->default_cpus = XLNX_ZYNQMP_NUM_APU_CPUS;
     mc->default_ram_id = "ddr-ram";
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
     object_class_property_add_bool(oc, "secure", zcu102_get_secure,

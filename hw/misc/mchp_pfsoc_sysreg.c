@@ -24,10 +24,14 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
-#include "hw/irq.h"
-#include "hw/sysbus.h"
+#include "hw/core/irq.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/mchp_pfsoc_sysreg.h"
+#include "system/runstate.h"
 
+#define CLOCK_CONFIG_CR 0x8
+#define RTC_CLOCK_CR    0xc
+#define MSS_RESET_CR    0x18
 #define ENVM_CR         0xb8
 #define MESSAGE_INT     0x118c
 
@@ -37,6 +41,17 @@ static uint64_t mchp_pfsoc_sysreg_read(void *opaque, hwaddr offset,
     uint32_t val = 0;
 
     switch (offset) {
+    case CLOCK_CONFIG_CR:
+        /* Icicle kit reference design cpu/axi/ahb divider setting */
+        val = 0x24;
+        break;
+    case RTC_CLOCK_CR:
+        /*
+         * Bit 16 enables the RTC clock, 0x7d is the required divider
+         * setting for a 125 MHz reference.
+         */
+        val = BIT(16) | 0x7d;
+        break;
     case ENVM_CR:
         /* Indicate the eNVM is running at the configured divider rate */
         val = BIT(6);
@@ -56,6 +71,11 @@ static void mchp_pfsoc_sysreg_write(void *opaque, hwaddr offset,
 {
     MchpPfSoCSysregState *s = opaque;
     switch (offset) {
+    case MSS_RESET_CR:
+        if (value == 0xdead) {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
+        break;
     case MESSAGE_INT:
         qemu_irq_lower(s->irq);
         break;
@@ -85,7 +105,7 @@ static void mchp_pfsoc_sysreg_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
 }
 
-static void mchp_pfsoc_sysreg_class_init(ObjectClass *klass, void *data)
+static void mchp_pfsoc_sysreg_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

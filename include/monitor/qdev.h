@@ -1,16 +1,20 @@
 #ifndef MONITOR_QDEV_H
 #define MONITOR_QDEV_H
 
+#include "hw/core/qdev.h"
+#include "monitor/hmp.h"
+
 /*** monitor commands ***/
 
-void hmp_info_qtree(Monitor *mon, const QDict *qdict);
-void hmp_info_qdm(Monitor *mon, const QDict *qdict);
+void hmp_info_qtree(MonitorHMP *hmp, const QDict *qdict);
+void hmp_info_qdm(MonitorHMP *hmp, const QDict *qdict);
 void qmp_device_add(QDict *qdict, QObject **ret_data, Error **errp);
 
 int qdev_device_help(QemuOpts *opts);
 DeviceState *qdev_device_add(QemuOpts *opts, Error **errp);
 DeviceState *qdev_device_add_from_qdict(const QDict *opts,
                                         bool from_json, Error **errp);
+BusState *qdev_find_default_bus(DeviceClass *dc, Error **errp);
 
 /**
  * qdev_set_id: parent the device and set its id if provided.

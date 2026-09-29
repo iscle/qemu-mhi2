@@ -9,7 +9,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/misc/aspeed_sli.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
@@ -124,7 +124,7 @@ static void aspeed_sliio_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
-static void aspeed_sli_class_init(ObjectClass *klass, void *data)
+static void aspeed_sli_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -132,22 +132,15 @@ static void aspeed_sli_class_init(ObjectClass *klass, void *data)
     dc->realize = aspeed_sli_realize;
 }
 
-static const TypeInfo aspeed_sli_info = {
-    .name          = TYPE_ASPEED_SLI,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(AspeedSLIState),
-    .class_init    = aspeed_sli_class_init,
-    .abstract      = true,
-};
 
-static void aspeed_2700_sli_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_sli_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "AST2700 SLI Controller";
 }
 
-static void aspeed_2700_sliio_class_init(ObjectClass *klass, void *data)
+static void aspeed_2700_sliio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -155,23 +148,24 @@ static void aspeed_2700_sliio_class_init(ObjectClass *klass, void *data)
     dc->realize = aspeed_sliio_realize;
 }
 
-static const TypeInfo aspeed_2700_sli_info = {
-    .name           = TYPE_ASPEED_2700_SLI,
-    .parent         = TYPE_ASPEED_SLI,
-    .class_init     = aspeed_2700_sli_class_init,
+static const TypeInfo aspeed_sli_types[] = {
+    {
+        .name          = TYPE_ASPEED_SLI,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(AspeedSLIState),
+        .class_init    = aspeed_sli_class_init,
+        .abstract      = true,
+    },
+    {
+        .name           = TYPE_ASPEED_2700_SLI,
+        .parent         = TYPE_ASPEED_SLI,
+        .class_init     = aspeed_2700_sli_class_init,
+    },
+    {
+        .name           = TYPE_ASPEED_2700_SLIIO,
+        .parent         = TYPE_ASPEED_SLI,
+        .class_init     = aspeed_2700_sliio_class_init,
+    }
 };
 
-static const TypeInfo aspeed_2700_sliio_info = {
-    .name           = TYPE_ASPEED_2700_SLIIO,
-    .parent         = TYPE_ASPEED_SLI,
-    .class_init     = aspeed_2700_sliio_class_init,
-};
-
-static void aspeed_sli_register_types(void)
-{
-    type_register_static(&aspeed_sli_info);
-    type_register_static(&aspeed_2700_sli_info);
-    type_register_static(&aspeed_2700_sliio_info);
-}
-
-type_init(aspeed_sli_register_types);
+DEFINE_TYPES(aspeed_sli_types)

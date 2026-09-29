@@ -18,8 +18,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "accel/tcg/cpu-loop.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "tcg/helper-tcg.h"
 
 void x86_cpu_record_sigsegv(CPUState *cs, vaddr addr,
@@ -31,15 +31,16 @@ void x86_cpu_record_sigsegv(CPUState *cs, vaddr addr,
 
     /*
      * The error_code that hw reports as part of the exception frame
-     * is copied to linux sigcontext.err.  The exception_index is
-     * copied to linux sigcontext.trapno.  Short of inventing a new
-     * place to store the trapno, we cannot let our caller raise the
-     * signal and set exception_index to EXCP_INTERRUPT.
+     * is copied to linux sigcontext.err.  The trapno reported in
+     * linux sigcontext.trapno is recorded separately in env->trap_nr
+     * by cpu_loop(), since cpu_exec() clears exception_index before
+     * the signal frame is built.
      */
     env->cr[2] = addr;
-    env->error_code = ((access_type == MMU_DATA_STORE) << PG_ERROR_W_BIT)
-                    | (maperr ? 0 : PG_ERROR_P_MASK)
-                    | PG_ERROR_U_MASK;
+    env->error_code = (maperr ? 0 : PG_ERROR_P_MASK)
+                    | ((access_type == MMU_DATA_STORE) << PG_ERROR_W_BIT)
+                    | PG_ERROR_U_MASK
+                    | ((access_type == MMU_INST_FETCH) ? PG_ERROR_I_D_MASK : 0);
     cs->exception_index = EXCP0E_PAGE;
 
     /* Disable do_interrupt_user. */

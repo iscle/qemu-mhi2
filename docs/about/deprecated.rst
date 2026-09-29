@@ -24,12 +24,6 @@ should exclusively use a non-deprecated machine type, with use of the most
 recent version highly recommended. Non-versioned machine types follow the
 general feature deprecation policy.
 
-Prior to the 2.10.0 release there was no official policy on how
-long features would be deprecated prior to their removal, nor
-any documented list of which features were deprecated. Thus
-any features deprecated prior to 2.10.0 will be treated as if
-they were first deprecated in the 2.10.0 release.
-
 What follows is a list of all features currently marked as
 deprecated.
 
@@ -60,35 +54,31 @@ as short-form boolean values, and passed to plugins as ``arg_name=on``.
 However, short-form booleans are deprecated and full explicit ``arg_name=on``
 form is preferred.
 
-``-smp`` (Unsupported "parameter=1" SMP configurations) (since 9.0)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+``debug-threads`` option for ``-name`` (since 11.0)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Specified CPU topology parameters must be supported by the machine.
+The ``debug-threads`` option of the ``-name`` argument is now
+ignored. Thread naming is unconditionally enabled for all platforms
+where it is supported.
 
-In the SMP configuration, users should provide the CPU topology parameters that
-are supported by the target machine.
+``-mon`` option (since 11.1)
+''''''''''''''''''''''''''''
 
-However, historically it was allowed for users to specify the unsupported
-topology parameter as "1", which is meaningless. So support for this kind of
-configurations (e.g. -smp drawers=1,books=1,clusters=1 for x86 PC machine) is
-marked deprecated since 9.0, users have to ensure that all the topology members
-described with -smp are supported by the target machine.
+The ``-mon`` option was the generic mechanism for creating monitor
+objects if the convenience ``-qmp`` or ``-monitor`` options were not
+flexible enough. The monitor objects have been converted to QOM, so
+``-mon mode=readline`` is replaced by ``-object monitor-hmp`` and
+``-mon mode=control`` is replaced by ``-object monitor-qmp``. The
+short convenience options are not deprecated, only ``-mon``.
 
-``-runas`` (since 9.1)
-''''''''''''''''''''''
+``script=no`` and ``downscript=no`` for ``-netdev tap`` (since 11.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-Use ``-run-with user=..`` instead.
-
-
-User-mode emulator command line arguments
------------------------------------------
-
-``-p`` (since 9.0)
-''''''''''''''''''
-
-The ``-p`` option pretends to control the host page size.  However,
-it is not possible to change the host page size, and using the
-option only causes failures.
+The special value ``"no"`` for the ``script`` and ``downscript``
+parameters of ``-netdev tap`` disables script execution.  This special
+treatment of ``"no"`` is deprecated.  Use an empty string (``script=``
+or ``downscript=``) to disable script execution instead.  In a future
+version, ``"no"`` will be treated as a plain file name.
 
 QEMU Machine Protocol (QMP) commands
 ------------------------------------
@@ -147,66 +137,73 @@ options are removed in favor of using explicit ``blockdev-create`` and
 ``blockdev-add`` calls. See :doc:`/interop/live-block-operations` for
 details.
 
-``query-migrationthreads`` (since 9.2)
-''''''''''''''''''''''''''''''''''''''
+``block-job-pause`` (since 10.1)
+''''''''''''''''''''''''''''''''
 
-To be removed with no replacement, as it reports only a limited set of
-threads (for example, it only reports source side of multifd threads,
-without reporting any destination threads, or non-multifd source threads).
-For debugging purpose, please use ``-name $VM,debug-threads=on`` instead.
+Use ``job-pause`` instead. The only difference is that ``job-pause``
+always reports GenericError on failure when ``block-job-pause`` reports
+DeviceNotActive when block-job is not found.
 
-Incorrectly typed ``device_add`` arguments (since 6.2)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
+``block-job-resume`` (since 10.1)
+'''''''''''''''''''''''''''''''''
 
-Due to shortcomings in the internal implementation of ``device_add``, QEMU
-incorrectly accepts certain invalid arguments: Any object or list arguments are
-silently ignored. Other argument types are not checked, but an implicit
-conversion happens, so that e.g. string values can be assigned to integer
-device properties or vice versa.
+Use ``job-resume`` instead. The only difference is that ``job-resume``
+always reports GenericError on failure when ``block-job-resume`` reports
+DeviceNotActive when block-job is not found.
 
-This is a bug in QEMU that will be fixed in the future so that previously
-accepted incorrect commands will return an error. Users should make sure that
-all arguments passed to ``device_add`` are consistent with the documented
-property types.
+``block-job-complete`` (since 10.1)
+'''''''''''''''''''''''''''''''''''
+
+Use ``job-complete`` instead. The only difference is that ``job-complete``
+always reports GenericError on failure when ``block-job-complete`` reports
+DeviceNotActive when block-job is not found.
+
+``block-job-dismiss`` (since 10.1)
+''''''''''''''''''''''''''''''''''
+
+Use ``job-dismiss`` instead.
+
+``block-job-finalize`` (since 10.1)
+'''''''''''''''''''''''''''''''''''
+
+Use ``job-finalize`` instead.
+
+``query-kvm`` (since 11.0)
+''''''''''''''''''''''''''
+
+Use ``query-accelerators`` instead.
+
+``"no"`` as value of ``script``/``downscript`` for tap in ``netdev_add`` (since 11.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The special value ``"no"`` for the ``script`` and ``downscript``
+parameters of ``netdev_add`` with ``type=tap`` disables script
+execution.  This special treatment of ``"no"`` is deprecated.  Use an
+empty string instead.  In a future version, ``"no"`` will be treated as
+a plain file name.
+
+Human Machine Protocol (HMP) commands
+-------------------------------------
+
+``wavcapture`` (since 10.2)
+''''''''''''''''''''''''''''
+
+The ``wavcapture`` command is deprecated and will be removed in a future release.
+
+Use ``-audiodev wav`` or your host audio system to capture audio.
+
+``stopcapture`` (since 10.2)
+''''''''''''''''''''''''''''
+
+The ``stopcapture`` command is deprecated and will be removed in a future release.
+
+``info`` argument ``capture`` (since 10.2)
+''''''''''''''''''''''''''''''''''''''''''
+
+The ``info capture`` command is deprecated and will be removed in a future release.
 
 Host Architectures
 ------------------
-
-Big endian MIPS since 7.2; 32-bit little endian MIPS since 9.2
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-As Debian 10 ("Buster") moved into LTS the big endian 32 bit version of
-MIPS moved out of support making it hard to maintain our
-cross-compilation CI tests of the architecture. As we no longer have
-CI coverage support may bitrot away before the deprecation process
-completes.
-
-Likewise, the little endian variant of 32 bit MIPS is not supported by
-Debian 13 ("Trixie") and newer.
-
-64 bit little endian MIPS is still a supported host architecture.
-
-System emulation on 32-bit x86 hosts (since 8.0)
-''''''''''''''''''''''''''''''''''''''''''''''''
-
-Support for 32-bit x86 host deployments is increasingly uncommon in mainstream
-OS distributions given the widespread availability of 64-bit x86 hardware.
-The QEMU project no longer considers 32-bit x86 support for system emulation to
-be an effective use of its limited resources, and thus intends to discontinue
-it. Since all recent x86 hardware from the past >10 years is capable of the
-64-bit x86 extensions, a corresponding 64-bit OS should be used instead.
-
-TCG Plugin support not enabled by default on 32-bit hosts (since 9.2)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-While it is still possible to enable TCG plugin support for 32-bit
-hosts there are a number of potential pitfalls when instrumenting
-64-bit guests. The plugin APIs typically pass most addresses as
-uint64_t but practices like encoding that address in a host pointer
-for passing as user-data will lose data. As most software analysis
-benefits from having plenty of host memory it seems reasonable to
-encourage users to use 64 bit builds of QEMU for analysis work
-whatever targets they are instrumenting.
 
 TCG Plugin support not enabled by default with TCI (since 9.2)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
@@ -240,6 +237,13 @@ Use ``Sun-UltraSparc-IIIi-plus`` and ``Sun-UltraSparc-IV-plus`` instead.
 System emulator machines
 ------------------------
 
+Versioned machine types (aarch64, arm, i386, m68k, ppc64, s390x, x86_64)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+In accordance with our versioned machine type deprecation policy, all machine
+types with version |VER_MACHINE_DEPRECATION_VERSION|, or older, have been
+deprecated.
+
 Arm ``virt`` machine ``dtb-kaslr-seed`` property (since 7.1)
 ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
 
@@ -248,34 +252,28 @@ deprecated; use the new name ``dtb-randomness`` instead. The new name
 better reflects the way this property affects all random data within
 the device tree blob, not just the ``kaslr-seed`` node.
 
-``pc-i440fx-2.4`` up to ``pc-i440fx-2.12`` (since 9.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''
+RISC-V Shakti machine (since 11.1)
+''''''''''''''''''''''''''''''''''
 
-These old machine types are quite neglected nowadays and thus might have
-various pitfalls with regards to live migration. Use a newer machine type
-instead.
+The RISC-V ``shakti_c`` machine hasn't had meaningful contributions since 2021
+and is currently unmaintained. The machine is scheduled to be removed as it
+appears to have no users.
 
-PPC 405 ``ref405ep`` machine (since 9.1)
-''''''''''''''''''''''''''''''''''''''''
+``memory-encryption`` machine property (since 11.1)
+'''''''''''''''''''''''''''''''''''''''''''''''''''
 
-The ``ref405ep`` machine and PPC 405 CPU have no known users, firmware
-images are not available, OpenWRT dropped support in 2019, U-Boot in
-2017, Linux also is dropping support in 2024. It is time to let go of
-this ancient hardware and focus on newer CPUs and platforms.
+Use ``confidential-guest-support`` instead. The ``memory-encryption`` object
+was an early implementation of memory encryption support in QEMU, but it has
+been superseded by the more comprehensive ``confidential-guest-support``
+object.
 
-Arm ``tacoma-bmc`` machine (since 9.1)
-''''''''''''''''''''''''''''''''''''''''
+``next-cube`` m68k machine (since 11.2)
+'''''''''''''''''''''''''''''''''''''''
 
-The ``tacoma-bmc`` machine was a board including an AST2600 SoC based
-BMC and a witherspoon like OpenPOWER system. It was used for bring up
-of the AST2600 SoC in labs.  It can be easily replaced by the
-``rainier-bmc`` machine which is a real product.
+The machine never got fully implemented and can only show the firmware prompt.
+Given the incomplete state and slow progress on improvements, it might get
+removed again without replacement.
 
-Big-Endian variants of MicroBlaze ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` machines (since 9.2)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-Both ``petalogix-ml605`` and ``xlnx-zynqmp-pmu`` were added for little endian
-CPUs. Big endian support is not tested.
 
 Backend options
 ---------------
@@ -294,6 +292,33 @@ Options are:
       (without persistence guaranties) with backing file on non DAX storage
     - move backing file to NVDIMM storage and keep ``pmem=on``
       (to have NVDIMM with persistence guaranties).
+
+Using an external DH (Diffie-Hellman) parameters file (since 10.2)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Loading of external Diffie-Hellman parameters from a 'dh-params.pem'
+file is deprecated and will be removed with no replacement in a
+future release. Where no 'dh-params.pem' file is provided, the DH
+parameters will be automatically negotiated in accordance with
+RFC7919.
+
+Devices
+-------
+
+``virtio-crypto`` and cryptodev backends (since 11.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``virtio-crypto`` device emulation is quite complex code with a
+number of known flaws. It has never been migratable, so it is
+unlikely to be used in any serious virtualization setting. Modern
+ISAs provide on-CPU cryptography instructions (e.g. AES-NI/VAES,
+armv8 crypto extensions), and the Linux kernel deprecated AF_ALG
+and dropped its off-CPU accelerator support in Linux 7.2, removing
+the primary userspace path for off-CPU crypto acceleration. The
+time for this sort of off-load has passed.
+
+As this is the only device that uses the cryptodev backends these will
+be removed at the same time the ``virtio-crypto`` device is.
 
 Device options
 --------------
@@ -348,12 +373,6 @@ recommending to switch to their stable counterparts:
 - "Zve64f" should be replaced with "zve64f"
 - "Zve64d" should be replaced with "zve64d"
 
-``-device sd-card,spec_version=1`` (since 9.1)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-SD physical layer specification v2.00 supersedes the v1.10 one.
-v2.00 is the default since QEMU 3.0.0.
-
 Block device options
 ''''''''''''''''''''
 
@@ -387,14 +406,6 @@ Specifying the iSCSI password in plain text on the command line using the
 used instead, to refer to a ``--object secret...`` instance that provides
 a password via a file, or encrypted.
 
-``gluster`` backend (since 9.2)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-According to https://marc.info/?l=fedora-devel-list&m=171934833215726
-the GlusterFS development effectively ended. Unless the development
-gains momentum again, the QEMU project will remove the gluster backend
-in a future release.
-
 
 Character device options
 ''''''''''''''''''''''''
@@ -404,32 +415,9 @@ Backend ``memory`` (since 9.0)
 
 ``memory`` is a deprecated synonym for ``ringbuf``.
 
-``reconnect`` (since 9.2)
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The ``reconnect`` option only allows specifiying second granularity timeouts,
-which is not enough for all types of use cases, use ``reconnect-ms`` instead.
-
-
-Net device options
-''''''''''''''''''
-
-Stream ``reconnect`` (since 9.2)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The ``reconnect`` option only allows specifiying second granularity timeouts,
-which is not enough for all types of use cases, use ``reconnect-ms`` instead.
 
 CPU device properties
 '''''''''''''''''''''
-
-``pcommit`` on x86 (since 9.1)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The PCOMMIT instruction was never included in any physical processor.
-It was implemented as a no-op instruction in TCG up to QEMU 9.0, but
-only with ``-cpu max`` (which does not guarantee migration compatibility
-across versions).
 
 ``pmu-num=n`` on RISC-V CPUs (since 8.2)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -439,6 +427,60 @@ by a ``pmu-mask`` property. If set of counters is continuous then the mask can
 be calculated with ``((2 ^ n) - 1) << 3``. The least significant three bits
 must be left clear.
 
+
+``pcommit`` on x86 (since 9.1)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The PCOMMIT instruction was never included in any physical processor.
+It was implemented as a no-op instruction in TCG up to QEMU 9.0, but
+only with ``-cpu max`` (which does not guarantee migration compatibility
+across versions).
+
+linux-user mode CPUs
+--------------------
+
+OABI and NWFPE support for Arm CPUs
+'''''''''''''''''''''''''''''''''''
+
+Linux for 32-bit Arm has had two major ABIs: the original OABI and the
+more modern EABI. OABI support was marked as obsolete in GCC 4.7 and
+dropped in GCC 4.8 (released in 2013). In the Linux kernel,
+compatibility handling for OABI (OABI_COMPAT) is not generally enabled
+by default and is not compatible with building a Thumb2
+kernel. Distros dropped OABI support fifteen years or more ago.
+
+The original floating-point coprocessor for 32-bit Arm was the
+FPA11. This was not present in many CPUs but did get baked into the
+OABI for how to pass floating point arguments, and so the Linux kernel
+has support for emulating it via the config option FPE_NWFPE; QEMU
+follows that. FPA11 support was also removed from GCC in GCC 4.8.
+
+QEMU's NWFPE code is old and untested and not thread-safe; the OABI
+ABI is long-obsolete. We are therefore deprecating both OABI support
+and NWFPE emulation, and they will be removed in a future QEMU
+release.
+
+Build features
+--------------
+
+Crypto AF_ALG backend (since 11.2)
+----------------------------------
+
+The use of the AF_ALG backend for cryptography has been deprecated
+with no replacement.
+
+The AF_ALG interface is deprecated by Linux 7.2 and all support
+for hardware accelerators has been removed. It will thus always be
+slower than userspace crypto due to the overhead of copying data
+to kernel space. The GNUTLS, Nettle and GCrypt libraries supported
+by QEMU all include a variety of hardware optimized crypto
+implementations which should suffice for typical needs.
+
+For the virtio-crypto device, the 'cryptodev-backend-lkcf' backend
+can offload some operations to the kernel via the keyctl syscall,
+and the 'cryptodev-vhost-user' backend can offload the device
+backend to an external process which can integrate with crypto
+accelerators.
 
 Backwards compatibility
 -----------------------
@@ -469,33 +511,16 @@ versions, aliases will point to newer CPU model versions
 depending on the machine type, so management software must
 resolve CPU model aliases before starting a virtual machine.
 
-RISC-V "virt" board "riscv,delegate" DT property (since 9.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+x86 "isapc" board use of modern x86 CPUs (since 10.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''
 
-The "riscv,delegate" DT property was added in QEMU 7.0 as part of
-the AIA APLIC support.  The property changed name during the review
-process in Linux and the correct name ended up being
-"riscv,delegation".  Changing the DT property name will break all
-available firmwares that are using the current (wrong) name.  The
-property is kept as is in 9.1, together with "riscv,delegation", to
-give more time for firmware developers to change their code.
+The "isapc" board represents a historical x86 ISA PC and is intended for
+older 32-bit x86 CPU models, defaulting to a 486 CPU model.  Previously it
+was possible (but non-sensical) to specify a more modern x86 CPU, including
+``-cpu host`` or ``-cpu max`` even if the features were incompatible with many
+of the intended guest OSs.
 
-Migration
----------
-
-``fd:`` URI when used for file migration (since 9.1)
-''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The ``fd:`` URI can currently provide a file descriptor that
-references either a socket or a plain file. These are two different
-types of migration. In order to reduce ambiguity, the ``fd:`` URI
-usage of providing a file descriptor to a plain file has been
-deprecated in favor of explicitly using the ``file:`` URI with the
-file descriptor being passed as an ``fdset``. Refer to the ``add-fd``
-command documentation for details on the ``fdset`` usage.
-
-``zero-blocks`` capability (since 9.2)
-''''''''''''''''''''''''''''''''''''''
-
-The ``zero-blocks`` capability was part of the block migration which
-doesn't exist anymore since it was removed in QEMU v9.1.
+If the user requests a modern x86 CPU model (i.e. not one of ``486``,
+``athlon``, ``kvm32``, ``pentium``, ``pentium2``, ``pentium3``or ``qemu32``)
+a warning will be displayed until a future QEMU version when such CPUs will
+be rejected.

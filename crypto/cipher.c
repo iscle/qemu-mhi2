@@ -66,6 +66,7 @@ static const bool mode_need_iv[QCRYPTO_CIPHER_MODE__MAX] = {
     [QCRYPTO_CIPHER_MODE_CBC] = true,
     [QCRYPTO_CIPHER_MODE_XTS] = true,
     [QCRYPTO_CIPHER_MODE_CTR] = true,
+    [QCRYPTO_CIPHER_MODE_GCM] = true,
 };
 
 
@@ -145,7 +146,7 @@ qcrypto_cipher_validate_key_length(QCryptoCipherAlgo alg,
 #elif defined CONFIG_GNUTLS_CRYPTO
 #include "cipher-gnutls.c.inc"
 #else
-#include "cipher-builtin.c.inc"
+#include "cipher-stub.c.inc"
 #endif
 
 QCryptoCipher *qcrypto_cipher_new(QCryptoCipherAlgo alg,
@@ -201,6 +202,37 @@ int qcrypto_cipher_setiv(QCryptoCipher *cipher,
 {
     const QCryptoCipherDriver *drv = cipher->driver;
     return drv->cipher_setiv(cipher, iv, niv, errp);
+}
+
+
+int qcrypto_cipher_setaad(QCryptoCipher *cipher,
+                          const uint8_t *aad, size_t len,
+                          Error **errp)
+{
+    const QCryptoCipherDriver *drv = cipher->driver;
+
+    if (!drv->cipher_setaad) {
+        error_setg(errp, "The cipher mode does not support associated data");
+        return -1;
+    }
+
+    return drv->cipher_setaad(cipher, aad, len, errp);
+}
+
+
+int qcrypto_cipher_gettag(QCryptoCipher *cipher,
+                          uint8_t *tag, size_t len,
+                          Error **errp)
+{
+    const QCryptoCipherDriver *drv = cipher->driver;
+
+    if (!drv->cipher_gettag) {
+        error_setg(errp,
+                   "The cipher mode does not produce an authentication tag");
+        return -1;
+    }
+
+    return drv->cipher_gettag(cipher, tag, len, errp);
 }
 
 

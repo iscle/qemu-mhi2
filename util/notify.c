@@ -28,7 +28,7 @@ void notifier_list_add(NotifierList *list, Notifier *notifier)
 
 void notifier_remove(Notifier *notifier)
 {
-    QLIST_REMOVE(notifier, node);
+    QLIST_SAFE_REMOVE(notifier, node);
 }
 
 void notifier_list_notify(NotifierList *list, void *data)
@@ -74,4 +74,9 @@ int notifier_with_return_list_notify(NotifierWithReturnList *list, void *data,
         }
     }
     return ret;
+}
+
+bool notifier_with_return_list_empty(NotifierWithReturnList *list)
+{
+    return QLIST_EMPTY(&list->notifiers);
 }

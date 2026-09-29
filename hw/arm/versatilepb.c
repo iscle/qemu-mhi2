@@ -9,24 +9,24 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "hw/arm/boot.h"
 #include "hw/net/smc91c111.h"
 #include "net/net.h"
-#include "sysemu/sysemu.h"
+#include "system/system.h"
 #include "hw/pci/pci.h"
 #include "hw/i2c/i2c.h"
 #include "hw/i2c/arm_sbcon_i2c.h"
-#include "hw/irq.h"
-#include "hw/boards.h"
+#include "hw/core/irq.h"
+#include "hw/core/boards.h"
 #include "hw/block/flash.h"
 #include "qemu/error-report.h"
 #include "hw/char/pl011.h"
 #include "hw/sd/sd.h"
 #include "qom/object.h"
-#include "audio/audio.h"
 #include "target/arm/cpu-qom.h"
+#include "qemu/log.h"
 
 #define VERSATILE_FLASH_ADDR 0x34000000
 #define VERSATILE_FLASH_SIZE (64 * 1024 * 1024)
@@ -110,7 +110,8 @@ static uint64_t vpb_sic_read(void *opaque, hwaddr offset,
     case 8: /* PICENABLE */
         return s->pic_enable;
     default:
-        printf ("vpb_sic_read: Bad register offset 0x%x\n", (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "vpb_sic_read: Bad register offset 0x%x\n", (int)offset);
         return 0;
     }
 }
@@ -144,7 +145,8 @@ static void vpb_sic_write(void *opaque, hwaddr offset,
         vpb_sic_update_pic(s);
         break;
     default:
-        printf ("vpb_sic_write: Bad register offset 0x%x\n", (int)offset);
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "vpb_sic_write: Bad register offset 0x%x\n", (int)offset);
         return;
     }
     vpb_sic_update(s);
@@ -179,10 +181,16 @@ static void vpb_sic_init(Object *obj)
    peripherals and expansion busses.  For now we emulate a subset of the
    PB peripherals and just change the board ID.  */
 
-static struct arm_boot_info versatile_binfo;
+typedef struct VersatileMachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
+} VersatileMachineState;
 
 static void versatile_init(MachineState *machine, int board_id)
 {
+    /* versatilepb and versatileab embed the same state as first member */
+    VersatileMachineState *vms = (VersatileMachineState *)machine;
     Object *cpuobj;
     ARMCPU *cpu;
     MemoryRegion *sysmem = get_system_memory();
@@ -394,9 +402,9 @@ static void versatile_init(MachineState *machine, int board_id)
                           VERSATILE_FLASH_SECT_SIZE,
                           4, 0x0089, 0x0018, 0x0000, 0x0, 0);
 
-    versatile_binfo.ram_size = machine->ram_size;
-    versatile_binfo.board_id = board_id;
-    arm_load_kernel(cpu, machine, &versatile_binfo);
+    vms->bootinfo.ram_size = machine->ram_size;
+    vms->bootinfo.board_id = board_id;
+    arm_load_kernel(cpu, machine, &vms->bootinfo);
 }
 
 static void vpb_init(MachineState *machine)
@@ -409,7 +417,7 @@ static void vab_init(MachineState *machine)
     versatile_init(machine, 0x25e);
 }
 
-static void versatilepb_class_init(ObjectClass *oc, void *data)
+static void versatilepb_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -419,6 +427,7 @@ static void versatilepb_class_init(ObjectClass *oc, void *data)
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm926");
     mc->default_ram_id = "versatile.ram";
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -427,9 +436,10 @@ static const TypeInfo versatilepb_type = {
     .name = MACHINE_TYPE_NAME("versatilepb"),
     .parent = TYPE_MACHINE,
     .class_init = versatilepb_class_init,
+    .instance_size = sizeof(VersatileMachineState),
 };
 
-static void versatileab_class_init(ObjectClass *oc, void *data)
+static void versatileab_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
@@ -439,6 +449,7 @@ static void versatileab_class_init(ObjectClass *oc, void *data)
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm926");
     mc->default_ram_id = "versatile.ram";
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
@@ -447,6 +458,7 @@ static const TypeInfo versatileab_type = {
     .name = MACHINE_TYPE_NAME("versatileab"),
     .parent = TYPE_MACHINE,
     .class_init = versatileab_class_init,
+    .instance_size = sizeof(VersatileMachineState),
 };
 
 static void versatile_machine_init(void)
@@ -457,7 +469,7 @@ static void versatile_machine_init(void)
 
 type_init(versatile_machine_init)
 
-static void vpb_sic_class_init(ObjectClass *klass, void *data)
+static void vpb_sic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

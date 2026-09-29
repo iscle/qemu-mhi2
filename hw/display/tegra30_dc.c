@@ -19,7 +19,8 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
+#include "system/address-spaces.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -82,7 +83,7 @@ static void tegra30_dc_unmap_surface(pixman_image_t *image, void *unused)
     hwaddr len = (hwaddr)pixman_image_get_stride(image) *
                  pixman_image_get_height(image);
 
-    cpu_physical_memory_unmap(data, len, false, len);
+    address_space_unmap(&address_space_memory, data, len, false, len);
 }
 
 /*
@@ -198,13 +199,13 @@ static void tegra30_dc_blank(Tegra30DCState *s, uint32_t width, uint32_t height)
         memset(surface_data(surface), 0,
                (size_t)surface_stride(surface) * surface_height(surface));
     }
-    dpy_gfx_update_full(s->con);
+    qemu_console_update_full(s->con);
 
     s->surface_valid = false;
     s->last_format = 0;
 }
 
-static void tegra30_dc_update_display(void *opaque)
+static bool tegra30_dc_update_display(void *opaque)
 {
     Tegra30DCState *s = opaque;
     pixman_format_code_t format;
@@ -217,7 +218,7 @@ static void tegra30_dc_update_display(void *opaque)
     if (format == 0) {
         /* No usable framebuffer yet; show a blank panel. */
         tegra30_dc_blank(s, width, height);
-        return;
+        return true;
     }
 
     /*
@@ -228,35 +229,35 @@ static void tegra30_dc_update_display(void *opaque)
         addr == s->last_addr && width == s->last_width &&
         height == s->last_height && stride == s->last_stride &&
         format == s->last_format) {
-        dpy_gfx_update_full(s->con);
-        return;
+        qemu_console_update_full(s->con);
+        return true;
     }
 
     /* Map the guest framebuffer and wrap it in a surface (read directly). */
     linesize = (hwaddr)width * (PIXMAN_FORMAT_BPP(format) / 8);
     size = (hwaddr)stride * (height - 1) + linesize;
     mapsize = size;
-    data = cpu_physical_memory_map(addr, &mapsize, false);
+    data = address_space_map(&address_space_memory, addr, &mapsize, false, MEMTXATTRS_UNSPECIFIED);
     if (!data || mapsize != size) {
         if (data) {
-            cpu_physical_memory_unmap(data, mapsize, 0, 0);
+            address_space_unmap(&address_space_memory, data, mapsize, 0, 0);
         }
         tegra30_dc_blank(s, width, height);
-        return;
+        return true;
     }
 
     surface = qemu_create_displaysurface_from(width, height, format,
                                               stride, data);
     if (!surface) {
-        cpu_physical_memory_unmap(data, mapsize, 0, 0);
+        address_space_unmap(&address_space_memory, data, mapsize, 0, 0);
         tegra30_dc_blank(s, width, height);
-        return;
+        return true;
     }
     /* Release the guest mapping when the surface is torn down/replaced. */
     pixman_image_set_destroy_function(surface->image,
                                       tegra30_dc_unmap_surface, NULL);
 
-    dpy_gfx_replace_surface(s->con, surface);
+    qemu_console_set_surface(s->con, surface);
 
     s->surface_valid = true;
     s->invalidate = false;
@@ -266,7 +267,8 @@ static void tegra30_dc_update_display(void *opaque)
     s->last_stride = stride;
     s->last_format = format;
 
-    dpy_gfx_update_full(s->con);
+    qemu_console_update_full(s->con);
+    return true;
 }
 
 static void tegra30_dc_invalidate_display(void *opaque)
@@ -393,7 +395,7 @@ static void tegra30_dc_realize(DeviceState *dev, Error **errp)
                           TYPE_TEGRA30_DC, TEGRA30_DC_IOSIZE);
     sysbus_init_mmio(sbd, &s->iomem);
 
-    s->con = graphic_console_init(dev, 0, &tegra30_dc_gfx_ops, s);
+    s->con = qemu_graphic_console_create(dev, 0, &tegra30_dc_gfx_ops, s);
     qemu_console_resize(s->con, TEGRA30_DC_DEFAULT_WIDTH,
                         TEGRA30_DC_DEFAULT_HEIGHT);
 }
@@ -410,7 +412,7 @@ static const VMStateDescription tegra30_dc_vmstate = {
     }
 };
 
-static void tegra30_dc_class_init(ObjectClass *klass, void *data)
+static void tegra30_dc_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

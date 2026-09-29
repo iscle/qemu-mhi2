@@ -14,7 +14,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <inttypes.h>
 #include <minilib.h>
 
 #ifndef CHECK_UNALIGNED
@@ -95,7 +94,7 @@ static inline uint8_t get_byte(int index, bool neg)
 
 static void init_test_data_s8(bool neg_first)
 {
-    uint8_t top, bottom, *ptr = &test_data[0];
+    uint8_t *ptr = &test_data[0];
     int i;
 
     ml_printf("Filling test area with s8 pairs (%s):",
@@ -382,7 +381,6 @@ static bool read_test_data_s8(int offset, bool neg_first)
 
     for (i = 0; i < max; i++) {
         int16_t first, second;
-        bool ok;
         first = *ptr++;
         second = *ptr++;
 
@@ -511,8 +509,8 @@ int main(void)
     int i;
     bool ok = true;
 
-    ml_printf("Test data start: 0x%"PRIxPTR"\n", &test_data[0]);
-    ml_printf("Test data end: 0x%"PRIxPTR"\n", &test_data[TEST_SIZE]);
+    ml_printf("Test data start: 0x%lx\n", (unsigned long)&test_data[0]);
+    ml_printf("Test data end: 0x%lx\n", (unsigned long)&test_data[TEST_SIZE]);
 
     /* Run through the unsigned tests first */
     for (i = 0; i < ARRAY_SIZE(init_ufns) && ok; i++) {
@@ -529,8 +527,8 @@ int main(void)
         ok = do_signed_reads(true);
     }
 
-    ml_printf("Test data read: %"PRId32"\n", test_read_count);
-    ml_printf("Test data write: %"PRId32"\n", test_write_count);
+    ml_printf("Test data read: %lu\n", (unsigned long)test_read_count);
+    ml_printf("Test data write: %lu\n", (unsigned long)test_write_count);
     ml_printf("Test complete: %s\n", ok ? "PASSED" : "FAILED");
     return ok ? 0 : -1;
 }

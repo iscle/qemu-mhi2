@@ -11,13 +11,13 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "sysemu/replay.h"
-#include "sysemu/runstate.h"
+#include "system/replay.h"
+#include "system/runstate.h"
 #include "replay-internal.h"
 #include "monitor/hmp.h"
 #include "monitor/monitor.h"
 #include "qapi/qapi-commands-replay.h"
-#include "qapi/qmp/qdict.h"
+#include "qobject/qdict.h"
 #include "qemu/timer.h"
 #include "block/snapshot.h"
 #include "migration/snapshot.h"
@@ -31,17 +31,19 @@ bool replay_running_debug(void)
     return replay_is_debugging;
 }
 
-void hmp_info_replay(Monitor *mon, const QDict *qdict)
+#ifdef CONFIG_HMP
+void hmp_info_replay(MonitorHMP *hmp, const QDict *qdict)
 {
     if (replay_mode == REPLAY_MODE_NONE) {
-        monitor_printf(mon, "Record/replay is not active\n");
+        monitor_hmp_printf(hmp, "Record/replay is not active\n");
     } else {
-        monitor_printf(mon,
+        monitor_hmp_printf(hmp,
             "%s execution '%s': instruction count = %"PRId64"\n",
             replay_mode == REPLAY_MODE_RECORD ? "Recording" : "Replaying",
             replay_get_filename(), replay_get_current_icount());
     }
 }
+#endif
 
 ReplayInfo *qmp_query_replay(Error **errp)
 {
@@ -103,7 +105,8 @@ void qmp_replay_break(int64_t icount, Error **errp)
     }
 }
 
-void hmp_replay_break(Monitor *mon, const QDict *qdict)
+#ifdef CONFIG_HMP
+void hmp_replay_break(MonitorHMP *hmp, const QDict *qdict)
 {
     int64_t icount = qdict_get_try_int(qdict, "icount", -1LL);
     Error *err = NULL;
@@ -114,6 +117,7 @@ void hmp_replay_break(Monitor *mon, const QDict *qdict)
         return;
     }
 }
+#endif
 
 void qmp_replay_delete_break(Error **errp)
 {
@@ -124,7 +128,8 @@ void qmp_replay_delete_break(Error **errp)
     }
 }
 
-void hmp_replay_delete_break(Monitor *mon, const QDict *qdict)
+#ifdef CONFIG_HMP
+void hmp_replay_delete_break(MonitorHMP *hmp, const QDict *qdict)
 {
     Error *err = NULL;
 
@@ -134,14 +139,14 @@ void hmp_replay_delete_break(Monitor *mon, const QDict *qdict)
         return;
     }
 }
+#endif
 
 static char *replay_find_nearest_snapshot(int64_t icount,
                                           int64_t *snapshot_icount)
 {
     BlockDriverState *bs;
-    QEMUSnapshotInfo *sn_tab;
+    g_autofree QEMUSnapshotInfo *sn_tab = NULL;
     QEMUSnapshotInfo *nearest = NULL;
-    char *ret = NULL;
     int rv;
     int nb_sns, i;
 
@@ -149,15 +154,19 @@ static char *replay_find_nearest_snapshot(int64_t icount,
 
     bs = bdrv_all_find_vmstate_bs(NULL, false, NULL, NULL);
     if (!bs) {
-        goto fail;
+        return NULL;
     }
 
     nb_sns = bdrv_snapshot_list(bs, &sn_tab);
+    if (nb_sns < 0) {
+        return NULL;
+    }
 
     for (i = 0; i < nb_sns; i++) {
         rv = bdrv_all_has_snapshot(sn_tab[i].name, false, NULL, NULL);
-        if (rv < 0)
-            goto fail;
+        if (rv < 0) {
+            return NULL;
+        }
         if (rv == 1) {
             if (sn_tab[i].icount != -1ULL
                 && sn_tab[i].icount <= icount
@@ -166,14 +175,12 @@ static char *replay_find_nearest_snapshot(int64_t icount,
             }
         }
     }
-    if (nearest) {
-        ret = g_strdup(nearest->name);
-        *snapshot_icount = nearest->icount;
+    if (!nearest) {
+        return NULL;
     }
-    g_free(sn_tab);
 
-fail:
-    return ret;
+    *snapshot_icount = nearest->icount;
+    return g_strdup(nearest->name);
 }
 
 static void replay_seek(int64_t icount, QEMUTimerCB callback, Error **errp)
@@ -208,7 +215,8 @@ void qmp_replay_seek(int64_t icount, Error **errp)
     replay_seek(icount, replay_stop_vm, errp);
 }
 
-void hmp_replay_seek(Monitor *mon, const QDict *qdict)
+#ifdef CONFIG_HMP
+void hmp_replay_seek(MonitorHMP *hmp, const QDict *qdict)
 {
     int64_t icount = qdict_get_try_int(qdict, "icount", -1LL);
     Error *err = NULL;
@@ -219,6 +227,7 @@ void hmp_replay_seek(Monitor *mon, const QDict *qdict)
         return;
     }
 }
+#endif
 
 static void replay_stop_vm_debug(void *opaque)
 {

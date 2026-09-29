@@ -2,7 +2,7 @@
 #define HW_MISC_MMX_IOC_H
 
 #include "qom/object.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/tegra30_i2c.h"
 
 #define TYPE_MMX_IOC "mmx-ioc"

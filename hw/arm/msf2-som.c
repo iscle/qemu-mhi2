@@ -29,11 +29,11 @@
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "hw/boards.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/boot.h"
-#include "hw/qdev-clock.h"
-#include "exec/address-spaces.h"
+#include "hw/core/qdev-clock.h"
+#include "system/address-spaces.h"
 #include "hw/arm/msf2-soc.h"
 
 #define DDR_BASE_ADDRESS      0xA0000000
@@ -83,7 +83,7 @@ static void emcraft_sf2_s2s010_init(MachineState *machine)
     /* Attach SPI flash to SPI0 controller */
     spi_bus = qdev_get_child_bus(dev, "spi0");
     spi_flash = qdev_new("s25sl12801"); /* Spansion S25FL128SDPBHICO */
-    qdev_prop_set_uint8(spi_flash, "spansion-cr2nv", 1);
+    qdev_prop_set_uint8(spi_flash, "spansion-cr2nv", 0x8);
     if (dinfo) {
         qdev_prop_set_drive_err(spi_flash, "drive",
                                 blk_by_legacy_dinfo(dinfo), &error_fatal);
@@ -92,7 +92,7 @@ static void emcraft_sf2_s2s010_init(MachineState *machine)
     cs_line = qdev_get_gpio_in_named(spi_flash, SSI_GPIO_CS, 0);
     sysbus_connect_irq(SYS_BUS_DEVICE(&soc->spi[0]), 1, cs_line);
 
-    armv7m_load_kernel(ARM_CPU(first_cpu), machine->kernel_filename,
+    armv7m_load_kernel(soc->armv7m.cpu, machine->kernel_filename,
                        0, soc->envm_size);
 }
 

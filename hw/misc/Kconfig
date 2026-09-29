@@ -25,18 +25,15 @@ config PCI_TESTDEV
     default y if TEST_DEVICES
     depends on PCI
 
+config IOMMU_TESTDEV
+    bool
+    default y if TEST_DEVICES
+    depends on PCI
+
 config EDU
     bool
     default y if TEST_DEVICES
     depends on PCI && MSI_NONBROKEN
-
-config PCA9552
-    bool
-    depends on I2C
-
-config PCA9554
-    bool
-    depends on I2C
 
 config I2C_ECHO
     bool
@@ -53,6 +50,18 @@ config A9SCU
     bool
 
 config ARM11SCU
+    bool
+
+config MAX78000_AES
+    bool
+
+config MAX78000_GCR
+    bool
+
+config MAX78000_ICC
+    bool
+
+config MAX78000_TRNG
     bool
 
 config MOS6522
@@ -72,6 +81,11 @@ config IVSHMEM_DEVICE
     default y if PCI_DEVICES
     depends on PCI && LINUX && IVSHMEM && MSI_NONBROKEN
 
+config IVSHMEM_FLAT_DEVICE
+    bool
+    default y
+    depends on LINUX && IVSHMEM
+
 config ECCMEMCTL
     bool
 
@@ -80,6 +94,12 @@ config IMX
     select PTIMER
     select SSI
     select USB_EHCI_SYSBUS
+
+config FSL_IMX8MP_ANALOG
+    bool
+
+config FSL_IMX8MP_CCM
+    bool
 
 config STM32_RCC
     bool
@@ -103,6 +123,16 @@ config STM32L4X5_RCC
     bool
 
 config MIPS_ITU
+    bool
+    depends on TCG
+
+config RISCV_MIPS_CMGCR
+    bool
+
+config RISCV_MIPS_CPC
+    bool
+
+config RISCV_MIPS_CPS
     bool
 
 config MPS2_FPGAIO
@@ -143,6 +173,10 @@ config PVPANIC_PCI
 config PVPANIC_ISA
     bool
     depends on ISA_BUS
+    select PVPANIC_COMMON
+
+config PVPANIC_MMIO
+    bool
     select PVPANIC_COMMON
 
 config AUX
@@ -192,6 +226,11 @@ config VIRT_CTRL
 
 config LASI
     bool
+    select LASI_82596
+    select LASIPS2
+    select NCR710_SCSI
+    select PARALLEL
+    select SERIAL_MM
 
 config ALLWINNER_SRAMC
     bool
@@ -234,6 +273,14 @@ config TEGRA30_SNOR
     bool
 
 config MMX_IOC
+
+config XLNX_ZYNQ_DDRC
+    bool
+
+config AXIADO_CLK
+    bool
+
+config K230_DECOMP_GZIP
     bool
 
 source macio/Kconfig

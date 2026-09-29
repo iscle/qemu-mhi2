@@ -1,9 +1,10 @@
 #ifndef VHOST_H
 #define VHOST_H
 
+#include "net/vhost_net.h"
 #include "hw/virtio/vhost-backend.h"
 #include "hw/virtio/virtio.h"
-#include "exec/memory.h"
+#include "system/memory.h"
 
 #define VHOST_F_DEVICE_IOTLB 63
 #define VHOST_USER_F_PROTOCOL_FEATURES 30
@@ -23,9 +24,9 @@ struct vhost_inflight {
 struct vhost_virtqueue {
     int kick;
     int call;
-    void *desc;
-    void *avail;
-    void *used;
+    void *desc_user;
+    void *avail_user;
+    void *used_user;
     int num;
     unsigned long long desc_phys;
     unsigned desc_size;
@@ -97,26 +98,12 @@ struct vhost_dev {
      * offered by a backend which may be a subset of the total
      * features eventually offered to the guest.
      *
-     * @features: available features provided by the backend
+     * @_features: available features provided by the backend, private,
+     *             direct access only in vhost.h/vhost.c
      * @acked_features: final negotiated features with front-end driver
-     *
-     * @backend_features: this is used in a couple of places to either
-     * store VHOST_USER_F_PROTOCOL_FEATURES to apply to
-     * VHOST_USER_SET_FEATURES or VHOST_NET_F_VIRTIO_NET_HDR. Its
-     * future use should be discouraged and the variable retired as
-     * its easy to confuse with the VirtIO backend_features.
      */
-    uint64_t features;
-    uint64_t acked_features;
-    uint64_t backend_features;
-
-    /**
-     * @protocol_features: is the vhost-user only feature set by
-     * VHOST_USER_SET_PROTOCOL_FEATURES. Protocol features are only
-     * negotiated if VHOST_USER_F_PROTOCOL_FEATURES has been offered
-     * by the backend (see @features).
-     */
-    uint64_t protocol_features;
+    VIRTIO_DECLARE_FEATURES(_features);
+    VIRTIO_DECLARE_FEATURES(acked_features);
 
     uint64_t max_queues;
     uint64_t backend_cap;
@@ -143,6 +130,10 @@ struct vhost_net {
     struct vhost_dev dev;
     struct vhost_virtqueue vqs[2];
     int backend;
+    const int *feature_bits;
+    int max_tx_queue_size;
+    SaveAcketFeatures *save_acked_features;
+    bool is_vhost_user;
     NetClientState *nc;
 };
 
@@ -210,6 +201,15 @@ static inline bool vhost_dev_is_started(struct vhost_dev *hdev)
     return hdev->started;
 }
 
+static inline int vhost_dev_set_vring_enable(struct vhost_dev *hdev, int enable)
+{
+    if (!hdev->vhost_ops->vhost_set_vring_enable) {
+        return 0;
+    }
+
+    return hdev->vhost_ops->vhost_set_vring_enable(hdev, enable);
+}
+
 /**
  * vhost_dev_start() - start the vhost device
  * @hdev: common vhost_dev structure
@@ -228,12 +228,31 @@ int vhost_dev_start(struct vhost_dev *hdev, VirtIODevice *vdev, bool vrings);
  * @hdev: common vhost_dev structure
  * @vdev: the VirtIODevice structure
  * @vrings: true to have vrings disabled in this call
+ * @skip_drain: true to notice back-end to skip draining all in-flight requests
  *
  * Stop the vhost device. After the device is stopped the notifiers
  * can be disabled (@vhost_dev_disable_notifiers) and the device can
  * be torn down (@vhost_dev_cleanup).
+ *
+ * Return: 0 on success, != 0 on error when stopping dev.
  */
-void vhost_dev_stop(struct vhost_dev *hdev, VirtIODevice *vdev, bool vrings);
+int vhost_dev_stop(struct vhost_dev *hdev, VirtIODevice *vdev, bool vrings,
+                   bool skip_drain);
+
+/**
+ * vhost_dev_force_stop() - force stop the vhost device
+ * @hdev: common vhost_dev structure
+ * @vdev: the VirtIODevice structure
+ * @vrings: true to have vrings disabled in this call
+ *
+ * Force stop the vhost device. After the device is stopped the notifiers
+ * can be disabled (@vhost_dev_disable_notifiers) and the device can
+ * be torn down (@vhost_dev_cleanup). Unlike @vhost_dev_stop, this doesn't
+ * attempt to flush in-flight backend requests by skipping GET_VRING_BASE
+ * entirely.
+ */
+int vhost_dev_force_stop(struct vhost_dev *hdev, VirtIODevice *vdev,
+                         bool vrings);
 
 /**
  * DOC: vhost device configuration handling
@@ -293,11 +312,28 @@ void vhost_dev_set_config_notifier(struct vhost_dev *dev,
  */
 bool vhost_virtqueue_pending(struct vhost_dev *hdev, int n);
 
-/* Mask/unmask events from this vq.
+/**
+ * vhost_virtqueue_mask(): mask/unmask events from this vq.
+ *
+ * Returns: 0 on success, a negative errno on failure.
  */
-void vhost_virtqueue_mask(struct vhost_dev *hdev, VirtIODevice *vdev, int n,
-                          bool mask);
+int vhost_virtqueue_mask(struct vhost_dev *hdev, VirtIODevice *vdev, int n,
+                         bool mask);
 
+/**
+ * vhost_get_features_ex() - sanitize the extended features set
+ * @hdev: common vhost_dev structure
+ * @feature_bits: pointer to terminated table of feature bits
+ * @features: original features set, filtered out on return
+ *
+ * This is the extended variant of vhost_get_features(), supporting the
+ * the extended features set. Filter it with the intersection of what is
+ * supported by the vhost backend (hdev->features) and the supported
+ * feature_bits.
+ */
+void vhost_get_features_ex(struct vhost_dev *hdev,
+                           const int *feature_bits,
+                           uint64_t *features);
 /**
  * vhost_get_features() - return a sanitised set of feature bits
  * @hdev: common vhost_dev structure
@@ -308,8 +344,28 @@ void vhost_virtqueue_mask(struct vhost_dev *hdev, VirtIODevice *vdev, int n,
  * is supported by the vhost backend (hdev->features), the supported
  * feature_bits and the requested feature set.
  */
-uint64_t vhost_get_features(struct vhost_dev *hdev, const int *feature_bits,
-                            uint64_t features);
+static inline uint64_t vhost_get_features(struct vhost_dev *hdev,
+                                          const int *feature_bits,
+                                          uint64_t features)
+{
+    uint64_t features_ex[VIRTIO_FEATURES_NU64S];
+
+    virtio_features_from_u64(features_ex, features);
+    vhost_get_features_ex(hdev, feature_bits, features_ex);
+    return features_ex[0];
+}
+
+/**
+ * vhost_ack_features_ex() - set vhost full set of acked_features
+ * @hdev: common vhost_dev structure
+ * @feature_bits: pointer to terminated table of feature bits
+ * @features: requested feature set
+ *
+ * This sets the internal hdev->acked_features to the intersection of
+ * the backends advertised features and the supported feature_bits.
+ */
+void vhost_ack_features_ex(struct vhost_dev *hdev, const int *feature_bits,
+                           const uint64_t *features);
 
 /**
  * vhost_ack_features() - set vhost acked_features
@@ -320,8 +376,16 @@ uint64_t vhost_get_features(struct vhost_dev *hdev, const int *feature_bits,
  * This sets the internal hdev->acked_features to the intersection of
  * the backends advertised features and the supported feature_bits.
  */
-void vhost_ack_features(struct vhost_dev *hdev, const int *feature_bits,
-                        uint64_t features);
+static inline void vhost_ack_features(struct vhost_dev *hdev,
+                                      const int *feature_bits,
+                                      uint64_t features)
+{
+    uint64_t features_ex[VIRTIO_FEATURES_NU64S];
+
+    virtio_features_from_u64(features_ex, features);
+    vhost_ack_features_ex(hdev, feature_bits, features_ex);
+}
+
 unsigned int vhost_get_max_memslots(void);
 unsigned int vhost_get_free_memslots(void);
 
@@ -333,8 +397,9 @@ int vhost_device_iotlb_miss(struct vhost_dev *dev, uint64_t iova, int write);
 
 int vhost_virtqueue_start(struct vhost_dev *dev, struct VirtIODevice *vdev,
                           struct vhost_virtqueue *vq, unsigned idx);
-void vhost_virtqueue_stop(struct vhost_dev *dev, struct VirtIODevice *vdev,
-                          struct vhost_virtqueue *vq, unsigned idx);
+int vhost_virtqueue_stop(struct vhost_dev *dev, struct VirtIODevice *vdev,
+                         struct vhost_virtqueue *vq, unsigned idx,
+                         bool skip_drain);
 
 void vhost_dev_reset_inflight(struct vhost_inflight *inflight);
 void vhost_dev_free_inflight(struct vhost_inflight *inflight);
@@ -344,6 +409,42 @@ int vhost_dev_set_inflight(struct vhost_dev *dev,
 int vhost_dev_get_inflight(struct vhost_dev *dev, uint16_t queue_size,
                            struct vhost_inflight *inflight);
 bool vhost_dev_has_iommu(struct vhost_dev *dev);
+int vhost_handle_iotlb_msg(struct vhost_dev *dev, struct vhost_iotlb_msg *imsg);
+
+
+static inline bool vhost_dev_has_feature(struct vhost_dev *dev,
+                                         uint64_t feature)
+{
+    return virtio_has_feature(dev->_features, feature);
+}
+
+static inline bool vhost_dev_has_feature_ex(struct vhost_dev *dev,
+                                            uint64_t feature)
+{
+    return virtio_has_feature_ex(dev->_features_ex, feature);
+}
+
+static inline uint64_t vhost_dev_features(struct vhost_dev *dev)
+{
+    return dev->_features;
+}
+
+static inline const uint64_t *vhost_dev_features_ex(struct vhost_dev *dev)
+{
+    return dev->_features_ex;
+}
+
+static inline void vhost_dev_clear_feature(struct vhost_dev *dev,
+                                           uint64_t feature)
+{
+    virtio_clear_feature(&dev->_features, feature);
+}
+
+static inline void vhost_dev_clear_feature_ex(struct vhost_dev *dev,
+                                              uint64_t feature)
+{
+    virtio_clear_feature_ex(dev->_features_ex, feature);
+}
 
 #ifdef CONFIG_VHOST
 int vhost_reset_device(struct vhost_dev *hdev);
@@ -365,7 +466,14 @@ static inline int vhost_reset_device(struct vhost_dev *hdev)
  * Returns true if the device supports these commands, and false if it
  * does not.
  */
+#ifdef CONFIG_VHOST
 bool vhost_supports_device_state(struct vhost_dev *dev);
+#else
+static inline bool vhost_supports_device_state(struct vhost_dev *dev)
+{
+    return false;
+}
+#endif
 
 /**
  * vhost_set_device_state_fd(): Begin transfer of internal state from/to
@@ -448,7 +556,15 @@ int vhost_check_device_state(struct vhost_dev *dev, Error **errp);
  *
  * Returns 0 on success, and -errno otherwise.
  */
+#ifdef CONFIG_VHOST
 int vhost_save_backend_state(struct vhost_dev *dev, QEMUFile *f, Error **errp);
+#else
+static inline int vhost_save_backend_state(struct vhost_dev *dev, QEMUFile *f,
+                                           Error **errp)
+{
+    return -ENOSYS;
+}
+#endif
 
 /**
  * vhost_load_backend_state(): High-level function to load a vhost
@@ -465,6 +581,20 @@ int vhost_save_backend_state(struct vhost_dev *dev, QEMUFile *f, Error **errp);
  *
  * Returns 0 on success, and -errno otherwise.
  */
+#ifdef CONFIG_VHOST
 int vhost_load_backend_state(struct vhost_dev *dev, QEMUFile *f, Error **errp);
+#else
+static inline int vhost_load_backend_state(struct vhost_dev *dev, QEMUFile *f,
+                                           Error **errp)
+{
+    return -ENOSYS;
+}
+#endif
+
+extern const VMStateDescription vmstate_vhost_inflight_region;
+#define VMSTATE_VHOST_INFLIGHT_REGION(_field, _state) \
+    VMSTATE_STRUCT_POINTER(_field, _state, \
+                           vmstate_vhost_inflight_region, \
+                           struct vhost_inflight)
 
 #endif

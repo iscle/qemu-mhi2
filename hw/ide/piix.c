@@ -111,7 +111,7 @@ static void piix_ide_reset(DeviceState *dev)
     int i;
 
     for (i = 0; i < 2; i++) {
-        ide_bus_reset(&d->bus[i]);
+        ide_bus_reset(&d->bus[i], IDE_RESET_HARDWARE);
     }
 
     /* PCI command register default value (0000h) per [1, p.48].  */
@@ -178,7 +178,7 @@ static void pci_piix_ide_exitfn(PCIDevice *dev)
 }
 
 /* NOTE: for the PIIX3, the IRQs and IOports are hardcoded */
-static void piix3_ide_class_init(ObjectClass *klass, void *data)
+static void piix3_ide_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -201,7 +201,7 @@ static const TypeInfo piix3_ide_info = {
 };
 
 /* NOTE: for the PIIX4, the IRQs and IOports are hardcoded */
-static void piix4_ide_class_init(ObjectClass *klass, void *data)
+static void piix4_ide_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);

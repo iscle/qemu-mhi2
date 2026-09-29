@@ -19,7 +19,6 @@
 
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "exec/helper-proto.h"
 #include "fpu/softfloat.h"
 
@@ -41,7 +40,7 @@ void helper_setflushzero(CPUAlphaState *env, uint32_t val)
 
 static uint32_t soft_to_fpcr_exc(CPUAlphaState *env)
 {
-    uint8_t exc = get_float_exception_flags(&FP_STATUS);
+    FloatExceptionFlags exc = get_float_exception_flags(&FP_STATUS);
     uint32_t ret = 0;
 
     if (unlikely(exc)) {
@@ -152,7 +151,7 @@ void helper_ieee_input_cmp(CPUAlphaState *env, uint64_t val)
 void helper_ieee_input_s(CPUAlphaState *env, uint64_t val)
 {
     if (unlikely(2 * val - 1 < 0x1fffffffffffffull)
-        && !env->fp_status.flush_inputs_to_zero) {
+        && !get_flush_inputs_to_zero(&env->fp_status)) {
         arith_excp(env, GETPC(), EXC_M_INV | EXC_M_SWC, 0);
     }
 }
@@ -455,26 +454,27 @@ static uint64_t do_cvttq(CPUAlphaState *env, uint64_t a, int roundmode)
 {
     float64 fa;
     int64_t ret;
-    uint32_t exc;
+    uint32_t exc = 0;
+    FloatExceptionFlags flags;
 
     fa = t_to_float64(a);
     ret = float64_to_int64_modulo(fa, roundmode, &FP_STATUS);
 
-    exc = get_float_exception_flags(&FP_STATUS);
-    if (unlikely(exc)) {
+    flags = get_float_exception_flags(&FP_STATUS);
+    if (unlikely(flags)) {
         set_float_exception_flags(0, &FP_STATUS);
 
         /* We need to massage the resulting exceptions. */
-        if (exc & float_flag_invalid_cvti) {
+        if (flags & float_flag_invalid_cvti) {
             /* Overflow, either normal or infinity. */
             if (float64_is_infinity(fa)) {
                 exc = FPCR_INV;
             } else {
                 exc = FPCR_IOV | FPCR_INE;
             }
-        } else if (exc & float_flag_invalid) {
+        } else if (flags & float_flag_invalid) {
             exc = FPCR_INV;
-        } else if (exc & float_flag_inexact) {
+        } else if (flags & float_flag_inexact) {
             exc = FPCR_INE;
         }
     }
@@ -485,7 +485,7 @@ static uint64_t do_cvttq(CPUAlphaState *env, uint64_t a, int roundmode)
 
 uint64_t helper_cvttq(CPUAlphaState *env, uint64_t a)
 {
-    return do_cvttq(env, a, FP_STATUS.float_rounding_mode);
+    return do_cvttq(env, a, get_float_rounding_mode(&FP_STATUS));
 }
 
 uint64_t helper_cvttq_c(CPUAlphaState *env, uint64_t a)

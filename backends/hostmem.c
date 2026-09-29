@@ -11,17 +11,19 @@
  */
 
 #include "qemu/osdep.h"
-#include "sysemu/hostmem.h"
-#include "hw/boards.h"
+#include "system/hostmem.h"
+#include "system/ramblock.h"
+#include "hw/core/boards.h"
 #include "qapi/error.h"
 #include "qapi/qapi-builtin-visit.h"
 #include "qapi/visitor.h"
 #include "qemu/config-file.h"
+#include "qom/compat-properties.h"
 #include "qom/object_interfaces.h"
 #include "qemu/mmap-alloc.h"
 #include "qemu/madvise.h"
 #include "qemu/cutils.h"
-#include "hw/qdev-core.h"
+#include "hw/core/qdev.h"
 
 #ifdef CONFIG_NUMA
 #include <numaif.h>
@@ -432,9 +434,12 @@ host_memory_backend_memory_complete(UserCreatable *uc, Error **errp)
 }
 
 static bool
-host_memory_backend_can_be_deleted(UserCreatable *uc)
+host_memory_backend_prepare_delete(UserCreatable *uc, Error **errp)
 {
     if (host_memory_backend_is_mapped(MEMORY_BACKEND(uc))) {
+        error_setg(errp,
+                   "Cannot delete host memory backend '%s' which is mapped",
+                   object_get_canonical_path_component(OBJECT(uc)));
         return false;
     } else {
         return true;
@@ -501,12 +506,12 @@ host_memory_backend_set_use_canonical_path(Object *obj, bool value,
 }
 
 static void
-host_memory_backend_class_init(ObjectClass *oc, void *data)
+host_memory_backend_class_init(ObjectClass *oc, const void *data)
 {
     UserCreatableClass *ucc = USER_CREATABLE_CLASS(oc);
 
     ucc->complete = host_memory_backend_memory_complete;
-    ucc->can_be_deleted = host_memory_backend_can_be_deleted;
+    ucc->prepare_delete = host_memory_backend_prepare_delete;
 
     object_class_property_add_bool(oc, "merge",
         host_memory_backend_get_merge,
@@ -534,13 +539,13 @@ host_memory_backend_class_init(ObjectClass *oc, void *data)
         object_property_allow_set_link, OBJ_PROP_LINK_STRONG);
     object_class_property_set_description(oc, "prealloc-context",
         "Context to use for creating CPU threads for preallocation");
-    object_class_property_add(oc, "size", "int",
+    object_class_property_add(oc, "size", "size",
         host_memory_backend_get_size,
         host_memory_backend_set_size,
         NULL, NULL);
     object_class_property_set_description(oc, "size",
         "Size of the memory region (ex: 500M)");
-    object_class_property_add(oc, "host-nodes", "int",
+    object_class_property_add(oc, "host-nodes", "[uint16]",
         host_memory_backend_get_host_nodes,
         host_memory_backend_set_host_nodes,
         NULL, NULL);
@@ -586,7 +591,7 @@ static const TypeInfo host_memory_backend_info = {
     .instance_size = sizeof(HostMemoryBackend),
     .instance_init = host_memory_backend_init,
     .instance_post_init = host_memory_backend_post_init,
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_USER_CREATABLE },
         { }
     }

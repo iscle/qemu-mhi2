@@ -21,6 +21,7 @@
 #include "clients.h"
 #include "monitor/monitor.h"
 #include "net/net.h"
+#include "net/util.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
@@ -49,9 +50,12 @@ typedef struct AFXDPState {
     char                 *buffer;
     struct xsk_umem      *umem;
 
-    uint32_t             n_queues;
     uint32_t             xdp_flags;
     bool                 inhibit;
+
+    char                 *map_path;
+    int                  map_fd;
+    uint32_t             map_start_index;
 } AFXDPState;
 
 #define AF_XDP_BATCH_SIZE 64
@@ -261,6 +265,7 @@ static void af_xdp_send(void *opaque)
 static void af_xdp_cleanup(NetClientState *nc)
 {
     AFXDPState *s = DO_UPCAST(AFXDPState, nc, nc);
+    int idx;
 
     qemu_purge_queued_packets(nc);
 
@@ -275,13 +280,17 @@ static void af_xdp_cleanup(NetClientState *nc)
     qemu_vfree(s->buffer);
     s->buffer = NULL;
 
-    /* Remove the program if it's the last open queue. */
-    if (!s->inhibit && nc->queue_index == s->n_queues - 1 && s->xdp_flags
-        && bpf_xdp_detach(s->ifindex, s->xdp_flags, NULL) != 0) {
-        fprintf(stderr,
-                "af-xdp: unable to remove XDP program from '%s', ifindex: %d\n",
-                s->ifname, s->ifindex);
+    if (s->map_fd >= 0) {
+        idx = nc->queue_index + s->map_start_index;
+        if (bpf_map_delete_elem(s->map_fd, &idx)) {
+            fprintf(stderr, "af-xdp: unable to remove AF_XDP socket from map"
+                    " %s\n", s->map_path);
+        }
+        close(s->map_fd);
+        s->map_fd = -1;
     }
+    g_free(s->map_path);
+    s->map_path = NULL;
 }
 
 static int af_xdp_umem_create(AFXDPState *s, int sock_fd, Error **errp)
@@ -323,7 +332,7 @@ static int af_xdp_umem_create(AFXDPState *s, int sock_fd, Error **errp)
 
     s->pool = g_new(uint64_t, n_descs);
     /* Fill the pool in the opposite order, because it's a LIFO queue. */
-    for (i = n_descs; i >= 0; i--) {
+    for (i = n_descs - 1; i >= 0; i--) {
         s->pool[i] = i * XSK_UMEM__DEFAULT_FRAME_SIZE;
     }
     s->n_pool = n_descs;
@@ -345,7 +354,6 @@ static int af_xdp_socket_create(AFXDPState *s,
     };
     int queue_id, error = 0;
 
-    s->inhibit = opts->has_inhibit && opts->inhibit;
     if (s->inhibit) {
         cfg.libxdp_flags |= XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
     }
@@ -396,6 +404,35 @@ static int af_xdp_socket_create(AFXDPState *s,
     return 0;
 }
 
+static int af_xdp_update_xsk_map(AFXDPState *s, Error **errp)
+{
+    int xsk_fd, idx, error = 0;
+
+    if (!s->map_path) {
+        return 0;
+    }
+
+    s->map_fd = bpf_obj_get(s->map_path);
+    if (s->map_fd < 0) {
+        error = errno;
+    } else {
+        xsk_fd = xsk_socket__fd(s->xsk);
+        idx = s->nc.queue_index + s->map_start_index;
+        if (bpf_map_update_elem(s->map_fd, &idx, &xsk_fd, 0)) {
+            error = errno;
+        }
+    }
+
+    if (error) {
+        error_setg_errno(errp, error,
+                         "failed to insert AF_XDP socket into map %s",
+                         s->map_path);
+        return -1;
+    }
+
+    return 0;
+}
+
 /* NetClientInfo methods. */
 static NetClientInfo net_af_xdp_info = {
     .type = NET_CLIENT_DRIVER_AF_XDP,
@@ -404,35 +441,6 @@ static NetClientInfo net_af_xdp_info = {
     .poll = af_xdp_poll,
     .cleanup = af_xdp_cleanup,
 };
-
-static int *parse_socket_fds(const char *sock_fds_str,
-                             int64_t n_expected, Error **errp)
-{
-    gchar **substrings = g_strsplit(sock_fds_str, ":", -1);
-    int64_t i, n_sock_fds = g_strv_length(substrings);
-    int *sock_fds = NULL;
-
-    if (n_sock_fds != n_expected) {
-        error_setg(errp, "expected %"PRIi64" socket fds, got %"PRIi64,
-                   n_expected, n_sock_fds);
-        goto exit;
-    }
-
-    sock_fds = g_new(int, n_sock_fds);
-
-    for (i = 0; i < n_sock_fds; i++) {
-        sock_fds[i] = monitor_fd_param(monitor_cur(), substrings[i], errp);
-        if (sock_fds[i] < 0) {
-            g_free(sock_fds);
-            sock_fds = NULL;
-            goto exit;
-        }
-    }
-
-exit:
-    g_strfreev(substrings);
-    return sock_fds;
-}
 
 /*
  * The exported init function.
@@ -444,12 +452,14 @@ int net_init_af_xdp(const Netdev *netdev,
 {
     const NetdevAFXDPOptions *opts = &netdev->u.af_xdp;
     NetClientState *nc, *nc0 = NULL;
+    int32_t map_start_index;
     unsigned int ifindex;
     uint32_t prog_id = 0;
     g_autofree int *sock_fds = NULL;
-    int64_t i, queues;
+    int i, queues;
     Error *err = NULL;
-    AFXDPState *s;
+    AFXDPState *s = NULL;
+    bool inhibit;
 
     ifindex = if_nametoindex(opts->ifname);
     if (!ifindex) {
@@ -458,28 +468,48 @@ int net_init_af_xdp(const Netdev *netdev,
         return -1;
     }
 
-    queues = opts->has_queues ? opts->queues : 1;
-    if (queues < 1) {
+    if (opts->has_queues && (opts->queues < 1 || opts->queues > INT_MAX)) {
         error_setg(errp, "invalid number of queues (%" PRIi64 ") for '%s'",
-                   queues, opts->ifname);
+                   opts->queues, opts->ifname);
         return -1;
     }
 
-    if ((opts->has_inhibit && opts->inhibit) != !!opts->sock_fds) {
-        error_setg(errp, "'inhibit=on' requires 'sock-fds' and vice versa");
+    queues = opts->has_queues ? opts->queues : 1;
+
+    inhibit = opts->has_inhibit && opts->inhibit;
+    if (inhibit && !opts->sock_fds && !opts->map_path) {
+        error_setg(errp, "'inhibit=on' requires 'sock-fds' or 'map-path'");
+        return -1;
+    }
+    if (!inhibit && (opts->sock_fds || opts->map_path)) {
+        error_setg(errp, "'sock-fds' and 'map-path' require 'inhibit=on'");
+        return -1;
+    }
+    if (opts->sock_fds && opts->map_path) {
+        error_setg(errp, "'sock-fds' and 'map-path' are mutually exclusive");
+        return -1;
+    }
+    if (!opts->map_path && opts->has_map_start_index) {
+        error_setg(errp, "'map-start-index' requires 'map-path'");
+        return -1;
+    }
+
+    map_start_index = opts->has_map_start_index ? opts->map_start_index : 0;
+    if (map_start_index < 0) {
+        error_setg(errp, "'map-start-index' cannot be negative (%d)",
+                   map_start_index);
         return -1;
     }
 
     if (opts->sock_fds) {
-        sock_fds = parse_socket_fds(opts->sock_fds, queues, errp);
-        if (!sock_fds) {
+        if (net_parse_fds(opts->sock_fds, &sock_fds, queues, errp) < 0) {
             return -1;
         }
     }
 
     for (i = 0; i < queues; i++) {
         nc = qemu_new_net_client(&net_af_xdp_info, peer, "af-xdp", name);
-        qemu_set_info_str(nc, "af-xdp%"PRIi64" to %s", i, opts->ifname);
+        qemu_set_info_str(nc, "af-xdp%d to %s", i, opts->ifname);
         nc->queue_index = i;
 
         if (!nc0) {
@@ -490,21 +520,23 @@ int net_init_af_xdp(const Netdev *netdev,
 
         pstrcpy(s->ifname, sizeof(s->ifname), opts->ifname);
         s->ifindex = ifindex;
-        s->n_queues = queues;
+        s->inhibit = inhibit;
 
-        if (af_xdp_umem_create(s, sock_fds ? sock_fds[i] : -1, errp)
-            || af_xdp_socket_create(s, opts, errp)) {
-            /* Make sure the XDP program will be removed. */
-            s->n_queues = i;
-            error_propagate(errp, err);
+        s->map_path = g_strdup(opts->map_path);
+        s->map_start_index = map_start_index;
+        s->map_fd = -1;
+
+        if (af_xdp_umem_create(s, sock_fds ? sock_fds[i] : -1, &err) ||
+            af_xdp_socket_create(s, opts, &err) ||
+            af_xdp_update_xsk_map(s, &err)) {
             goto err;
         }
     }
 
-    if (nc0) {
+    if (nc0 && !inhibit) {
         s = DO_UPCAST(AFXDPState, nc, nc0);
         if (bpf_xdp_query_id(s->ifindex, s->xdp_flags, &prog_id) || !prog_id) {
-            error_setg_errno(errp, errno,
+            error_setg_errno(&err, errno,
                              "no XDP program loaded on '%s', ifindex: %d",
                              s->ifname, s->ifindex);
             goto err;
@@ -518,6 +550,7 @@ int net_init_af_xdp(const Netdev *netdev,
 err:
     if (nc0) {
         qemu_del_net_client(nc0);
+        error_propagate(errp, err);
     }
 
     return -1;

@@ -32,8 +32,12 @@
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "qemu/host-utils.h"
-#include "exec/exec-all.h"
+#include "exec/cputlb.h"
+#include "accel/tcg/cpu-mmu-index.h"
+#include "accel/tcg/probe.h"
 #include "exec/page-protection.h"
+#include "exec/target_page.h"
+#include "system/memory.h"
 
 #define XTENSA_MPU_SEGMENT_MASK 0x0000001f
 #define XTENSA_MPU_ACC_RIGHTS_MASK 0x00000f00
@@ -312,7 +316,7 @@ static void xtensa_tlb_set_entry(CPUXtensaState *env, bool dtlb,
     }
 }
 
-hwaddr xtensa_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
+hwaddr xtensa_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
 {
     XtensaCPU *cpu = XTENSA_CPU(cs);
     uint32_t paddr;

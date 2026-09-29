@@ -21,7 +21,7 @@
 #ifndef HW_RISCV_ACLINT_H
 #define HW_RISCV_ACLINT_H
 
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 
 #define TYPE_RISCV_ACLINT_MTIMER "riscv.aclint.mtimer"
 
@@ -46,7 +46,8 @@ typedef struct RISCVAclintMTimerState {
     qemu_irq *timer_irqs;
 } RISCVAclintMTimerState;
 
-DeviceState *riscv_aclint_mtimer_create(hwaddr addr, hwaddr size,
+DeviceState *riscv_aclint_mtimer_create(MemoryRegion *container,
+    hwaddr addr, hwaddr size,
     uint32_t hartid_base, uint32_t num_harts,
     uint32_t timecmp_base, uint32_t time_base, uint32_t timebase_freq,
     bool provide_rdtime);
@@ -68,8 +69,8 @@ typedef struct RISCVAclintSwiState {
     qemu_irq *soft_irqs;
 } RISCVAclintSwiState;
 
-DeviceState *riscv_aclint_swi_create(hwaddr addr, uint32_t hartid_base,
-    uint32_t num_harts, bool sswi);
+DeviceState *riscv_aclint_swi_create(MemoryRegion *container,
+    hwaddr addr, uint32_t hartid_base, uint32_t num_harts, bool sswi);
 
 enum {
     RISCV_ACLINT_DEFAULT_MTIMECMP      = 0x0,
@@ -79,5 +80,9 @@ enum {
     RISCV_ACLINT_MAX_HARTS             = 4095,
     RISCV_ACLINT_SWI_SIZE              = 0x4000
 };
+
+#define VMSTATE_TIMER_PTR_VARRAY(_f, _s, _f_n)                          \
+    VMSTATE_VARRAY_OF_POINTER_UINT32(_f, _s, _f_n, 0, vmstate_info_timer, \
+                                     QEMUTimer)
 
 #endif

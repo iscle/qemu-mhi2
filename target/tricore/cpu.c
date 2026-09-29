@@ -20,9 +20,11 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
+#include "exec/translation-block.h"
 #include "qemu/error-report.h"
 #include "tcg/debug-assert.h"
+#include "accel/tcg/cpu-ops.h"
+#include "disas/capstone.h"
 
 static inline void set_feature(CPUTriCoreState *env, int feature)
 {
@@ -34,14 +36,53 @@ static const gchar *tricore_gdb_arch_name(CPUState *cs)
     return "tricore";
 }
 
+static void tricore_disas_set_info(const CPUState *cpu, disassemble_info *info)
+{
+    CPUTriCoreState *env = cpu_env((CPUState *)cpu);
+
+    info->endian = BFD_ENDIAN_LITTLE;
+    info->cap_arch = CS_ARCH_TRICORE;
+    info->cap_insn_unit = 4;
+    info->cap_insn_split = 4;
+
+    /*
+     * Possible capstone bug: the isa levels are not additive.
+     * Work around by settiing only one.
+     * Note that TriCore 1.3.0 is the earliest we support.
+     */
+    if (tricore_has_feature(env, TRICORE_FEATURE_162)) {
+        info->cap_mode = CS_MODE_TRICORE_162;
+    } else if (tricore_has_feature(env, TRICORE_FEATURE_161)) {
+        info->cap_mode = CS_MODE_TRICORE_161;
+    } else if (tricore_has_feature(env, TRICORE_FEATURE_16)) {
+        info->cap_mode = CS_MODE_TRICORE_160;
+    } else if (tricore_has_feature(env, TRICORE_FEATURE_131)) {
+        info->cap_mode = CS_MODE_TRICORE_131;
+    } else if (tricore_has_feature(env, TRICORE_FEATURE_13)) {
+        info->cap_mode = CS_MODE_TRICORE_130;
+    } else {
+        g_assert_not_reached();
+    }
+}
+
 static void tricore_cpu_set_pc(CPUState *cs, vaddr value)
 {
-    cpu_env(cs)->PC = value & ~(target_ulong)1;
+    cpu_env(cs)->PC = value & ~1;
 }
 
 static vaddr tricore_cpu_get_pc(CPUState *cs)
 {
     return cpu_env(cs)->PC;
+}
+
+static TCGTBCPUState tricore_get_tb_cpu_state(CPUState *cs)
+{
+    CPUTriCoreState *env = cpu_env(cs);
+
+    return (TCGTBCPUState){
+        .pc = env->PC,
+        .flags = FIELD_DP32(0, TB_FLAGS, PRIV, extract32(env->PSW, 10, 2)),
+    };
 }
 
 static void tricore_cpu_synchronize_from_tb(CPUState *cs,
@@ -72,6 +113,7 @@ static void tricore_cpu_reset_hold(Object *obj, ResetType type)
 
 static bool tricore_cpu_has_work(CPUState *cs)
 {
+    /* Interrupts are not implemented */
     return true;
 }
 
@@ -88,7 +130,7 @@ static void tricore_cpu_realizefn(DeviceState *dev, Error **errp)
     CPUTriCoreState *env = &cpu->env;
     Error *local_err = NULL;
 
-    cpu_exec_realizefn(cs, &local_err);
+    cpu_common_realize(cs, &local_err);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
         return;
@@ -164,21 +206,28 @@ static bool tricore_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 #include "hw/core/sysemu-cpu-ops.h"
 
 static const struct SysemuCPUOps tricore_sysemu_ops = {
-    .get_phys_page_debug = tricore_cpu_get_phys_page_debug,
+    .has_work = tricore_cpu_has_work,
+    .get_phys_addr_debug = tricore_cpu_get_phys_addr_debug,
 };
-
-#include "hw/core/tcg-cpu-ops.h"
 
 static const TCGCPUOps tricore_tcg_ops = {
+    /* MTTCG not yet supported: require strict ordering */
+    .guest_default_memory_order = TCG_MO_ALL,
+    .mttcg_supported = false,
     .initialize = tricore_tcg_init,
+    .translate_code = tricore_translate_code,
+    .get_tb_cpu_state = tricore_get_tb_cpu_state,
     .synchronize_from_tb = tricore_cpu_synchronize_from_tb,
     .restore_state_to_opc = tricore_restore_state_to_opc,
+    .mmu_index = tricore_cpu_mmu_index,
     .tlb_fill = tricore_cpu_tlb_fill,
+    .pointer_wrap = cpu_pointer_wrap_uint32,
     .cpu_exec_interrupt = tricore_cpu_exec_interrupt,
     .cpu_exec_halt = tricore_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
 };
 
-static void tricore_cpu_class_init(ObjectClass *c, void *data)
+static void tricore_cpu_class_init(ObjectClass *c, const void *data)
 {
     TriCoreCPUClass *mcc = TRICORE_CPU_CLASS(c);
     CPUClass *cc = CPU_CLASS(c);
@@ -191,13 +240,12 @@ static void tricore_cpu_class_init(ObjectClass *c, void *data)
     resettable_class_set_parent_phases(rc, NULL, tricore_cpu_reset_hold, NULL,
                                        &mcc->parent_phases);
     cc->class_by_name = tricore_cpu_class_by_name;
-    cc->has_work = tricore_cpu_has_work;
-    cc->mmu_index = tricore_cpu_mmu_index;
 
     cc->gdb_read_register = tricore_cpu_gdb_read_register;
     cc->gdb_write_register = tricore_cpu_gdb_write_register;
     cc->gdb_num_core_regs = 44;
     cc->gdb_arch_name = tricore_gdb_arch_name;
+    cc->disas_set_info = tricore_disas_set_info;
 
     cc->dump_state = tricore_cpu_dump_state;
     cc->set_pc = tricore_cpu_set_pc;

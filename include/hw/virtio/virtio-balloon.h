@@ -16,8 +16,9 @@
 #define QEMU_VIRTIO_BALLOON_H
 
 #include "standard-headers/linux/virtio_balloon.h"
+#include "hw/core/resettable.h"
 #include "hw/virtio/virtio.h"
-#include "sysemu/iothread.h"
+#include "system/iothread.h"
 #include "qom/object.h"
 
 #define TYPE_VIRTIO_BALLOON "virtio-balloon-device"
@@ -38,6 +39,7 @@ enum virtio_balloon_free_page_hint_status {
     FREE_PAGE_HINT_S_REQUESTED = 1,
     FREE_PAGE_HINT_S_START = 2,
     FREE_PAGE_HINT_S_DONE = 3,
+    FREE_PAGE_HINT_S_UNREALIZE = 4,
 };
 
 struct VirtIOBalloon {
@@ -69,8 +71,10 @@ struct VirtIOBalloon {
     int64_t stats_poll_interval;
     uint32_t host_features;
 
-    bool qemu_4_0_config_size;
     uint32_t poison_val;
+
+    /* State of the resettable container */
+    ResettableState reset_state;
 };
 
 #endif

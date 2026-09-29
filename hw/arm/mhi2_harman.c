@@ -1,18 +1,18 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "hw/boards.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/boards.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/arm/tegra30.h"
 #include "hw/arm/boot.h"
 #include "hw/misc/mmx_ioc.h"
 #include "hw/i2c/i2c.h"
 #include "hw/sd/sd.h"
 #include "hw/block/flash.h"
-#include "sysemu/blockdev.h"
-#include "sysemu/block-backend.h"
+#include "system/blockdev.h"
+#include "system/block-backend.h"
 
 static struct arm_boot_info mhi2_harman_binfo;
 

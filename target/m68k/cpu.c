@@ -19,10 +19,16 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
-#include "cpu.h"
-#include "migration/vmstate.h"
+#include "accel/tcg/cpu-ops.h"
 #include "fpu/softfloat.h"
+#include "qapi/error.h"
+#include "disas/capstone.h"
+#ifndef CONFIG_USER_ONLY
+#include "migration/vmstate.h"
+#include "monitor/hmp.h"
+#endif
+
+#include "cpu.h"
 
 static void m68k_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -38,6 +44,24 @@ static vaddr m68k_cpu_get_pc(CPUState *cs)
     return cpu->env.pc;
 }
 
+static TCGTBCPUState m68k_get_tb_cpu_state(CPUState *cs)
+{
+    CPUM68KState *env = cpu_env(cs);
+    uint32_t flags;
+
+    flags = (env->macsr >> 4) & TB_FLAGS_MACSR;
+    if (env->sr & SR_S) {
+        flags |= TB_FLAGS_MSR_S;
+        flags |= (env->sfc << (TB_FLAGS_SFC_S_BIT - 2)) & TB_FLAGS_SFC_S;
+        flags |= (env->dfc << (TB_FLAGS_DFC_S_BIT - 2)) & TB_FLAGS_DFC_S;
+    }
+    if (M68K_SR_TRACE(env->sr) == M68K_SR_TRACE_ANY_INS) {
+        flags |= TB_FLAGS_TRACE;
+    }
+
+    return (TCGTBCPUState){ .pc = env->pc, .flags = flags };
+}
+
 static void m68k_restore_state_to_opc(CPUState *cs,
                                       const TranslationBlock *tb,
                                       const uint64_t *data)
@@ -51,10 +75,12 @@ static void m68k_restore_state_to_opc(CPUState *cs,
     }
 }
 
+#ifndef CONFIG_USER_ONLY
 static bool m68k_cpu_has_work(CPUState *cs)
 {
-    return cs->interrupt_request & CPU_INTERRUPT_HARD;
+    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
+#endif /* !CONFIG_USER_ONLY */
 
 static int m68k_cpu_mmu_index(CPUState *cs, bool ifetch)
 {
@@ -76,7 +102,7 @@ static void m68k_cpu_reset_hold(Object *obj, ResetType type)
     CPUState *cs = CPU(obj);
     M68kCPUClass *mcc = M68K_CPU_GET_CLASS(obj);
     CPUM68KState *env = cpu_env(cs);
-    floatx80 nan = floatx80_default_nan(NULL);
+    floatx80 nan;
     int i;
 
     if (mcc->parent_phases.hold) {
@@ -89,10 +115,6 @@ static void m68k_cpu_reset_hold(Object *obj, ResetType type)
 #else
     cpu_m68k_set_sr(env, SR_S | SR_I);
 #endif
-    for (i = 0; i < 8; i++) {
-        env->fregs[i].d = nan;
-    }
-    cpu_m68k_set_fpcr(env, 0);
     /*
      * M68000 FAMILY PROGRAMMER'S REFERENCE MANUAL
      * 3.4 FLOATING-POINT INSTRUCTION DETAILS
@@ -109,16 +131,123 @@ static void m68k_cpu_reset_hold(Object *obj, ResetType type)
      * preceding paragraph for nonsignaling NaNs.
      */
     set_float_2nan_prop_rule(float_2nan_prop_ab, &env->fp_status);
+    /* Default NaN: sign bit clear, all frac bits set */
+    set_float_default_nan_pattern(0b01111111, &env->fp_status);
+    /*
+     * m68k-specific floatx80 behaviour:
+     *  * default Infinity values have a zero Integer bit
+     *  * input Infinities may have the Integer bit either 0 or 1
+     *  * pseudo-denormals supported for input and output
+     *  * don't raise Invalid for pseudo-NaN/pseudo-Inf/Unnormal
+     *
+     * With m68k, the explicit integer bit can be zero in the case of:
+     * - zeros                (exp == 0, mantissa == 0)
+     * - denormalized numbers (exp == 0, mantissa != 0)
+     * - unnormalized numbers (exp != 0, exp < 0x7FFF)
+     * - infinities           (exp == 0x7FFF, mantissa == 0)
+     * - not-a-numbers        (exp == 0x7FFF, mantissa != 0)
+     *
+     * For infinities and NaNs, the explicit integer bit can be either one or
+     * zero.
+     *
+     * The IEEE 754 standard does not define a zero integer bit. Such a number
+     * is an unnormalized number. Hardware does not directly support
+     * denormalized and unnormalized numbers, but implicitly supports them by
+     * trapping them as unimplemented data types, allowing efficient conversion
+     * in software.
+     *
+     * See "M68000 FAMILY PROGRAMMER’S REFERENCE MANUAL",
+     *     "1.6 FLOATING-POINT DATA TYPES"
+     *
+     * Note though that QEMU's fp emulation does directly handle both
+     * denormal and unnormal values, and does not trap to guest software.
+     */
+    set_floatx80_behaviour(floatx80_default_inf_int_bit_is_zero |
+                           floatx80_pseudo_inf_valid |
+                           floatx80_pseudo_nan_valid |
+                           floatx80_unnormal_valid |
+                           floatx80_pseudo_denormal_valid,
+                           &env->fp_status);
+
+    nan = floatx80_default_nan(&env->fp_status);
+    for (i = 0; i < 8; i++) {
+        env->fregs[i].d = nan;
+    }
+    cpu_m68k_set_fpcr(env, 0);
     env->fpsr = 0;
 
     /* TODO: We should set PC from the interrupt vector.  */
     env->pc = 0;
 }
 
-static void m68k_cpu_disas_set_info(CPUState *s, disassemble_info *info)
+static void m68k_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
 {
+    CPUM68KState *env = cpu_env((CPUState *)cs);
+    int cap_mode = 0;
+
     info->print_insn = print_insn_m68k;
+    info->endian = BFD_ENDIAN_BIG;
     info->mach = 0;
+
+    /* m68k support in capstone prior to v6 is unusably bad */
+    if (CS_API_MAJOR < 6) {
+        return;
+    }
+
+    info->cap_arch = CS_ARCH_M68K;
+    info->cap_insn_unit = 2;
+
+    if (m68k_feature(env, M68K_FEATURE_M68K)) {
+        /*
+         * m68k insns may have up to 11 words, and 5 words are common.
+         * Choosing 12 bytes splits after 6 words and disassembly
+         * uses no more than 2 lines.
+         */
+        info->cap_insn_split = 12;
+        if (m68k_feature(env, M68K_FEATURE_M68060)) {
+            cap_mode = CS_MODE_M68K_060;
+        } else if (m68k_feature(env, M68K_FEATURE_M68040)) {
+            cap_mode = CS_MODE_M68K_040;
+        } else if (m68k_feature(env, M68K_FEATURE_M68030)) {
+            cap_mode = CS_MODE_M68K_030;
+        } else if (m68k_feature(env, M68K_FEATURE_M68020)) {
+            cap_mode = CS_MODE_M68K_020;
+        } else if (m68k_feature(env, M68K_FEATURE_M68010)) {
+            cap_mode = CS_MODE_M68K_010;
+        } else {
+            cap_mode = CS_MODE_M68K_000;
+        }
+    } else {
+        /* ColdFire insns may have up to 3 words. */
+        info->cap_insn_split = 6;
+        if (m68k_feature(env, M68K_FEATURE_CF_ISA_A)) {
+            cap_mode |= CS_MODE_M68K_CF_ISA_A;
+            cap_mode |= CS_MODE_M68K_CF_DIV;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_ISA_B)) {
+            cap_mode |= CS_MODE_M68K_CF_ISA_B;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_ISA_APLUSC)) {
+            cap_mode |= CS_MODE_M68K_CF_ISA_A_PLUS;
+            cap_mode |= CS_MODE_M68K_CF_ISA_C;
+        }
+        if (m68k_feature(env, M68K_FEATURE_USP)) {
+            cap_mode |= CS_MODE_M68K_CF_USP;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_FPU)) {
+            cap_mode |= CS_MODE_M68K_CF_FPU;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_MAC)) {
+            cap_mode |= CS_MODE_M68K_CF_MAC;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_EMAC)) {
+            cap_mode |= CS_MODE_M68K_CF_EMAC;
+        }
+        if (m68k_feature(env, M68K_FEATURE_CF_EMAC_B)) {
+            cap_mode |= CS_MODE_M68K_CF_EMAC_B;
+        }
+    }
+    info->cap_mode = cap_mode;
 }
 
 /* CPU models */
@@ -173,7 +302,7 @@ static void m68010_cpu_initfn(Object *obj)
 
 /*
  * Adds BFCHG, BFCLR, BFEXTS, BFEXTU, BFFFO, BFINS, BFSET, BFTST, CAS, CAS2,
- *      CHK2, CMP2, DIVSL, DIVUL, EXTB, PACK, TRAPcc, UNPK.
+ *      CHK2, CMP2, DIVSL, DIVUL, EXTB, LINKL, PACK, TRAPcc, UNPK.
  *
  * 68020/30 only:
  *      CALLM, cpBcc, cpDBcc, cpGEN, cpRESTORE, cpSAVE, cpScc, cpTRAPcc
@@ -198,6 +327,7 @@ static void m68020_cpu_initfn(Object *obj)
     m68k_set_feature(env, M68K_FEATURE_MSP);
     m68k_set_feature(env, M68K_FEATURE_UNALIGNED_DATA);
     m68k_set_feature(env, M68K_FEATURE_TRAPCC);
+    m68k_set_feature(env, M68K_FEATURE_LINKL);
 }
 
 /*
@@ -322,7 +452,7 @@ static void m68k_cpu_realizefn(DeviceState *dev, Error **errp)
 
     register_m68k_insns(&cpu->env);
 
-    cpu_exec_realizefn(cs, &local_err);
+    cpu_common_realize(cs, &local_err);
     if (local_err != NULL) {
         error_propagate(errp, local_err);
         return;
@@ -536,29 +666,58 @@ static const VMStateDescription vmstate_m68k_cpu = {
     },
 };
 
+#ifdef CONFIG_HMP
+static const MonitorDef m68k_monitor_defs[] = {
+    { "ssp", offsetof(CPUM68KState, sp[0]) },
+    { "usp", offsetof(CPUM68KState, sp[1]) },
+    { "isp", offsetof(CPUM68KState, sp[2]) },
+    { "sfc", offsetof(CPUM68KState, sfc) },
+    { "dfc", offsetof(CPUM68KState, dfc) },
+    { "urp", offsetof(CPUM68KState, mmu.urp) },
+    { "srp", offsetof(CPUM68KState, mmu.srp) },
+    { "dttr0", offsetof(CPUM68KState, mmu.ttr[M68K_DTTR0]) },
+    { "dttr1", offsetof(CPUM68KState, mmu.ttr[M68K_DTTR1]) },
+    { "ittr0", offsetof(CPUM68KState, mmu.ttr[M68K_ITTR0]) },
+    { "ittr1", offsetof(CPUM68KState, mmu.ttr[M68K_ITTR1]) },
+    { "mmusr", offsetof(CPUM68KState, mmu.mmusr) },
+    { NULL },
+};
+#endif
+
 #include "hw/core/sysemu-cpu-ops.h"
 
 static const struct SysemuCPUOps m68k_sysemu_ops = {
-    .get_phys_page_debug = m68k_cpu_get_phys_page_debug,
+    .has_work = m68k_cpu_has_work,
+    .get_phys_addr_debug = m68k_cpu_get_phys_addr_debug,
+#ifdef CONFIG_HMP
+    .monitor_defs = m68k_monitor_defs,
+#endif
 };
 #endif /* !CONFIG_USER_ONLY */
 
-#include "hw/core/tcg-cpu-ops.h"
-
 static const TCGCPUOps m68k_tcg_ops = {
+    /* MTTCG not yet supported: require strict ordering */
+    .guest_default_memory_order = TCG_MO_ALL,
+    .mttcg_supported = false,
+
     .initialize = m68k_tcg_init,
+    .translate_code = m68k_translate_code,
+    .get_tb_cpu_state = m68k_get_tb_cpu_state,
     .restore_state_to_opc = m68k_restore_state_to_opc,
+    .mmu_index = m68k_cpu_mmu_index,
 
 #ifndef CONFIG_USER_ONLY
     .tlb_fill = m68k_cpu_tlb_fill,
+    .pointer_wrap = cpu_pointer_wrap_uint32,
     .cpu_exec_interrupt = m68k_cpu_exec_interrupt,
     .cpu_exec_halt = m68k_cpu_has_work,
+    .cpu_exec_reset = cpu_reset,
     .do_interrupt = m68k_cpu_do_interrupt,
     .do_transaction_failed = m68k_cpu_transaction_failed,
 #endif /* !CONFIG_USER_ONLY */
 };
 
-static void m68k_cpu_class_init(ObjectClass *c, void *data)
+static void m68k_cpu_class_init(ObjectClass *c, const void *data)
 {
     M68kCPUClass *mcc = M68K_CPU_CLASS(c);
     CPUClass *cc = CPU_CLASS(c);
@@ -571,8 +730,6 @@ static void m68k_cpu_class_init(ObjectClass *c, void *data)
                                        &mcc->parent_phases);
 
     cc->class_by_name = m68k_cpu_class_by_name;
-    cc->has_work = m68k_cpu_has_work;
-    cc->mmu_index = m68k_cpu_mmu_index;
     cc->dump_state = m68k_cpu_dump_state;
     cc->set_pc = m68k_cpu_set_pc;
     cc->get_pc = m68k_cpu_get_pc;
@@ -587,7 +744,7 @@ static void m68k_cpu_class_init(ObjectClass *c, void *data)
     cc->tcg_ops = &m68k_tcg_ops;
 }
 
-static void m68k_cpu_class_init_cf_core(ObjectClass *c, void *data)
+static void m68k_cpu_class_init_cf_core(ObjectClass *c, const void *data)
 {
     CPUClass *cc = CPU_CLASS(c);
 
@@ -602,7 +759,7 @@ static void m68k_cpu_class_init_cf_core(ObjectClass *c, void *data)
         .class_init = m68k_cpu_class_init_cf_core    \
     }
 
-static void m68k_cpu_class_init_m68k_core(ObjectClass *c, void *data)
+static void m68k_cpu_class_init_m68k_core(ObjectClass *c, const void *data)
 {
     CPUClass *cc = CPU_CLASS(c);
 

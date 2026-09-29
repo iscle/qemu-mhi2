@@ -13,7 +13,7 @@
 #include "qapi/error.h"
 #include "hw/virtio/virtio-bus.h"
 #include "qemu/error-report.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/virtio/vhost.h"
 #include "hw/virtio/vhost-vsock.h"
 #include "qemu/iov.h"
@@ -95,26 +95,27 @@ err_host_notifiers:
     return ret;
 }
 
-void vhost_vsock_common_stop(VirtIODevice *vdev)
+int vhost_vsock_common_stop(VirtIODevice *vdev)
 {
     VHostVSockCommon *vvc = VHOST_VSOCK_COMMON(vdev);
     BusState *qbus = BUS(qdev_get_parent_bus(DEVICE(vdev)));
     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
-    int ret;
+    int ret, err;
 
     if (!k->set_guest_notifiers) {
-        return;
+        return 0;
     }
 
-    vhost_dev_stop(&vvc->vhost_dev, vdev, true);
+    ret = vhost_dev_stop(&vvc->vhost_dev, vdev, true, false);
 
-    ret = k->set_guest_notifiers(qbus->parent, vvc->vhost_dev.nvqs, false);
-    if (ret < 0) {
-        error_report("vhost guest notifier cleanup failed: %d", ret);
-        return;
+    err = k->set_guest_notifiers(qbus->parent, vvc->vhost_dev.nvqs, false);
+    if (err < 0) {
+        error_report("vhost guest notifier cleanup failed: %d", err);
+        return err;
     }
 
     vhost_dev_disable_notifiers(&vvc->vhost_dev, vdev);
+    return ret;
 }
 
 
@@ -285,13 +286,12 @@ static struct vhost_dev *vhost_vsock_common_get_vhost(VirtIODevice *vdev)
     return &vvc->vhost_dev;
 }
 
-static Property vhost_vsock_common_properties[] = {
+static const Property vhost_vsock_common_properties[] = {
     DEFINE_PROP_ON_OFF_AUTO("seqpacket", VHostVSockCommon, seqpacket,
                             ON_OFF_AUTO_AUTO),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void vhost_vsock_common_class_init(ObjectClass *klass, void *data)
+static void vhost_vsock_common_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);

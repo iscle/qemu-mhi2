@@ -17,10 +17,13 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/registerfields.h"
+#include "hw/core/registerfields.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
+#include "exec/cputlb.h"
+#include "accel/tcg/cpu-loop.h"
+#include "accel/tcg/cpu-mmu-index.h"
 #include "exec/page-protection.h"
+#include "exec/target_page.h"
 #include "fpu/softfloat-helpers.h"
 #include "qemu/qemu-print.h"
 
@@ -33,7 +36,7 @@ enum {
 };
 
 static int get_physical_address(CPUTriCoreState *env, hwaddr *physical,
-                                int *prot, target_ulong address,
+                                int *prot, vaddr address,
                                 MMUAccessType access_type, int mmu_idx)
 {
     int ret = TLBRET_MATCH;
@@ -44,7 +47,7 @@ static int get_physical_address(CPUTriCoreState *env, hwaddr *physical,
     return ret;
 }
 
-hwaddr tricore_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
+hwaddr tricore_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
 {
     TriCoreCPU *cpu = TRICORE_CPU(cs);
     hwaddr phys_addr;
@@ -59,7 +62,7 @@ hwaddr tricore_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 }
 
 /* TODO: Add exception support */
-static void raise_mmu_exception(CPUTriCoreState *env, target_ulong address,
+static void raise_mmu_exception(CPUTriCoreState *env, vaddr address,
                                 int rw, int tlb_error)
 {
 }
@@ -116,7 +119,10 @@ void fpu_set_state(CPUTriCoreState *env)
     set_flush_inputs_to_zero(1, &env->fp_status);
     set_flush_to_zero(1, &env->fp_status);
     set_float_detect_tininess(float_tininess_before_rounding, &env->fp_status);
+    set_float_ftz_detection(float_ftz_before_rounding, &env->fp_status);
     set_default_nan_mode(1, &env->fp_status);
+    /* Default NaN pattern: sign bit clear, frac msb set */
+    set_float_default_nan_pattern(0b01000000, &env->fp_status);
 }
 
 uint32_t psw_read(CPUTriCoreState *env)

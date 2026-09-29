@@ -20,7 +20,12 @@
 #define HW_RISCV_IOMMU_STATE_H
 
 #include "qom/object.h"
+#include "hw/core/qdev-properties.h"
+#include "system/dma.h"
 #include "hw/riscv/iommu.h"
+#include "hw/riscv/riscv-iommu-bits.h"
+
+typedef enum riscv_iommu_igs_modes riscv_iommu_igs_mode;
 
 struct RISCVIOMMUState {
     /*< private >*/
@@ -29,6 +34,7 @@ struct RISCVIOMMUState {
     /*< public >*/
     uint32_t version;     /* Reported interface version number */
     uint32_t pid_bits;    /* process identifier width */
+    uint32_t pas_bits;    /* physical address bits */
     uint32_t bus;         /* PCI bus mapping for non-root endpoints */
 
     uint64_t cap;         /* IOMMU supported capabilities */
@@ -55,11 +61,6 @@ struct RISCVIOMMUState {
     /* interrupt notifier */
     void (*notify)(RISCVIOMMUState *iommu, unsigned vector);
 
-    /* IOMMU State Machine */
-    QemuThread core_proc; /* Background processing thread */
-    QemuCond core_cond;   /* Background processing wake up signal */
-    unsigned core_exec;   /* Processing thread execution actions */
-
     /* IOMMU target address space */
     AddressSpace *target_as;
     MemoryRegion *target_mr;
@@ -75,16 +76,51 @@ struct RISCVIOMMUState {
 
     /* MMIO Hardware Interface */
     MemoryRegion regs_mr;
-    uint8_t *regs_rw;  /* register state (user write) */
+    uint8_t *regs;  /* current register state */
     uint8_t *regs_wc;  /* write-1-to-clear mask */
-    uint8_t *regs_ro;  /* read-only mask */
+    /*
+     * read-only mask. NOTE: bits not present in this RO
+     * mask are assumed to be read and write.
+     */
+    uint8_t *regs_ro;
 
     QLIST_ENTRY(RISCVIOMMUState) iommus;
     QLIST_HEAD(, RISCVIOMMUSpace) spaces;
+
+    /* HPM cycle counter */
+    QEMUTimer *hpm_timer;
+    uint64_t hpmcycle_val;      /* Current value of cycle register */
+    uint64_t hpmcycle_prev;     /* Saved value of QEMU_CLOCK_VIRTUAL clock */
+    uint64_t irq_overflow_left; /* Value beyond INT64_MAX after overflow */
+
+    /* HPM event counters */
+    GHashTable *hpm_event_ctr_map; /* Mapping of events to counters */
+    uint8_t hpm_cntrs;
 };
 
 void riscv_iommu_pci_setup_iommu(RISCVIOMMUState *iommu, PCIBus *bus,
          Error **errp);
+void riscv_iommu_set_cap_igs(RISCVIOMMUState *s, riscv_iommu_igs_mode mode);
+void riscv_iommu_reset(RISCVIOMMUState *s);
+void riscv_iommu_notify(RISCVIOMMUState *s, int vec_type);
+void riscv_iommu_fault(RISCVIOMMUState *s, struct riscv_iommu_fq_record *ev);
+DeviceState *riscv_create_iommu_sys(DeviceState *mmio_irqchip,
+                                    hwaddr addr, int base_irq,
+                                    bool is_32_bit);
+
+typedef struct RISCVIOMMUContext RISCVIOMMUContext;
+/* Device translation context state. */
+struct RISCVIOMMUContext {
+    uint64_t devid:24;          /* Requester Id, AKA device_id */
+    uint64_t process_id:20;     /* Process ID. PASID for PCIe */
+    uint64_t tc;                /* Translation Control */
+    uint64_t ta;                /* Translation Attributes */
+    uint64_t satp;              /* S-Stage address translation and protection */
+    uint64_t gatp;              /* G-Stage address translation and protection */
+    uint64_t msi_addr_mask;     /* MSI filtering - address mask */
+    uint64_t msi_addr_pattern;  /* MSI filtering - address pattern */
+    uint64_t msiptp;            /* MSI redirection page table pointer */
+};
 
 /* private helpers */
 
@@ -92,39 +128,39 @@ void riscv_iommu_pci_setup_iommu(RISCVIOMMUState *iommu, PCIBus *bus,
 static inline uint32_t riscv_iommu_reg_mod32(RISCVIOMMUState *s,
     unsigned idx, uint32_t set, uint32_t clr)
 {
-    uint32_t val = ldl_le_p(s->regs_rw + idx);
-    stl_le_p(s->regs_rw + idx, (val & ~clr) | set);
+    uint32_t val = ldl_le_p(s->regs + idx);
+    stl_le_p(s->regs + idx, (val & ~clr) | set);
     return val;
 }
 
 static inline void riscv_iommu_reg_set32(RISCVIOMMUState *s, unsigned idx,
                                          uint32_t set)
 {
-    stl_le_p(s->regs_rw + idx, set);
+    stl_le_p(s->regs + idx, set);
 }
 
 static inline uint32_t riscv_iommu_reg_get32(RISCVIOMMUState *s, unsigned idx)
 {
-    return ldl_le_p(s->regs_rw + idx);
+    return ldl_le_p(s->regs + idx);
 }
 
 static inline uint64_t riscv_iommu_reg_mod64(RISCVIOMMUState *s, unsigned idx,
                                              uint64_t set, uint64_t clr)
 {
-    uint64_t val = ldq_le_p(s->regs_rw + idx);
-    stq_le_p(s->regs_rw + idx, (val & ~clr) | set);
+    uint64_t val = ldq_le_p(s->regs + idx);
+    stq_le_p(s->regs + idx, (val & ~clr) | set);
     return val;
 }
 
 static inline void riscv_iommu_reg_set64(RISCVIOMMUState *s, unsigned idx,
                                          uint64_t set)
 {
-    stq_le_p(s->regs_rw + idx, set);
+    stq_le_p(s->regs + idx, set);
 }
 
 static inline uint64_t riscv_iommu_reg_get64(RISCVIOMMUState *s,
-    unsigned idx)
+                                             unsigned idx)
 {
-    return ldq_le_p(s->regs_rw + idx);
+    return ldq_le_p(s->regs + idx);
 }
 #endif

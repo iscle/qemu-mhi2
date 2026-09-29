@@ -13,18 +13,17 @@
 #include "hw/i386/pc.h"
 #include "hw/i386/sgx-epc.h"
 #include "hw/mem/memory-device.h"
-#include "hw/qdev-properties.h"
+#include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "target/i386/cpu.h"
-#include "exec/address-spaces.h"
+#include "system/address-spaces.h"
 
-static Property sgx_epc_properties[] = {
+static const Property sgx_epc_properties[] = {
     DEFINE_PROP_UINT64(SGX_EPC_ADDR_PROP, SGXEPCDevice, addr, 0),
     DEFINE_PROP_UINT32(SGX_EPC_NUMA_NODE_PROP, SGXEPCDevice, node, 0),
     DEFINE_PROP_LINK(SGX_EPC_MEMDEV_PROP, SGXEPCDevice, hostmem,
                      TYPE_MEMORY_BACKEND_EPC, HostMemoryBackendEpc *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void sgx_epc_get_size(Object *obj, Visitor *v, const char *name,
@@ -40,12 +39,6 @@ static void sgx_epc_get_size(Object *obj, Visitor *v, const char *name,
     }
 
     visit_type_uint64(v, name, &value, errp);
-}
-
-static void sgx_epc_init(Object *obj)
-{
-    object_property_add(obj, SGX_EPC_SIZE_PROP, "uint64", sgx_epc_get_size,
-                        NULL, NULL, NULL);
 }
 
 static void sgx_epc_realize(DeviceState *dev, Error **errp)
@@ -148,7 +141,7 @@ static void sgx_epc_md_fill_device_info(const MemoryDeviceState *md,
     info->type = MEMORY_DEVICE_INFO_KIND_SGX_EPC;
 }
 
-static void sgx_epc_class_init(ObjectClass *oc, void *data)
+static void sgx_epc_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     MemoryDeviceClass *mdc = MEMORY_DEVICE_CLASS(oc);
@@ -165,16 +158,20 @@ static void sgx_epc_class_init(ObjectClass *oc, void *data)
     mdc->get_plugged_size = sgx_epc_md_get_plugged_size;
     mdc->get_memory_region = sgx_epc_md_get_memory_region;
     mdc->fill_device_info = sgx_epc_md_fill_device_info;
+
+    object_class_property_add(oc, SGX_EPC_SIZE_PROP, "uint64",
+                              sgx_epc_get_size,
+                              NULL,
+                              NULL, NULL);
 }
 
 static const TypeInfo sgx_epc_info = {
     .name          = TYPE_SGX_EPC,
     .parent        = TYPE_DEVICE,
     .instance_size = sizeof(SGXEPCDevice),
-    .instance_init = sgx_epc_init,
     .class_init    = sgx_epc_class_init,
     .class_size    = sizeof(DeviceClass),
-    .interfaces = (InterfaceInfo[]) {
+    .interfaces = (const InterfaceInfo[]) {
         { TYPE_MEMORY_DEVICE },
         { }
     },

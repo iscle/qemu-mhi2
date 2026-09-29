@@ -16,13 +16,14 @@
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
 #include "monitor-internal.h"
+#include "monitor-hmp-internal.h"
 #include "monitor/qdev.h"
 #include "monitor/qmp-helpers.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/kvm.h"
-#include "sysemu/runstate.h"
-#include "sysemu/runstate-action.h"
-#include "sysemu/block-backend.h"
+#include "system/system.h"
+#include "system/kvm.h"
+#include "system/runstate.h"
+#include "system/runstate-action.h"
+#include "system/block-backend.h"
 #include "qapi/error.h"
 #include "qapi/qapi-init-commands.h"
 #include "qapi/qapi-commands-control.h"
@@ -31,6 +32,7 @@
 #include "qapi/type-helpers.h"
 #include "hw/mem/memory-device.h"
 #include "hw/intc/intc.h"
+#include "migration/misc.h"
 
 NameInfo *qmp_query_name(Error **errp)
 {
@@ -83,6 +85,9 @@ void qmp_cont(Error **errp)
     } else if (runstate_check(RUN_STATE_FINISH_MIGRATE)) {
         error_setg(errp, "Migration is not finalized yet");
         return;
+    } else if (runstate_check(RUN_STATE_COLO)) {
+        error_setg(errp, "COLO checkpoint in progress");
+        return;
     }
 
     for (blk = blk_next(NULL); blk; blk = blk_next(blk)) {
@@ -96,21 +101,18 @@ void qmp_cont(Error **errp)
         }
     }
 
-    /* Continuing after completed migration. Images have been inactivated to
-     * allow the destination to take control. Need to get control back now.
-     *
-     * If there are no inactive block nodes (e.g. because the VM was just
-     * paused rather than completing a migration), bdrv_inactivate_all() simply
-     * doesn't do anything. */
-    bdrv_activate_all(&local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
-    }
-
     if (runstate_check(RUN_STATE_INMIGRATE)) {
         autostart = 1;
     } else {
+        /*
+         * Continuing after completed migration. Images have been
+         * inactivated to allow the destination to take control. Need to
+         * get control back now.
+         */
+        if (!migration_block_activate(&local_err)) {
+            error_propagate(errp, local_err);
+            return;
+        }
         vm_start();
     }
 }
@@ -161,16 +163,15 @@ void qmp_add_client(const char *protocol, const char *fdname,
     }
 }
 
+#ifdef CONFIG_HMP
 char *qmp_human_monitor_command(const char *command_line, bool has_cpu_index,
                                 int64_t cpu_index, Error **errp)
 {
     char *output = NULL;
-    MonitorHMP hmp = {};
-
-    monitor_data_init(&hmp.common, false, true, false);
+    MonitorHMP *hmp = MONITOR_HMP(object_new(TYPE_MONITOR_HMP));
 
     if (has_cpu_index) {
-        int ret = monitor_set_cpu(&hmp.common, cpu_index);
+        int ret = monitor_hmp_set_cpu(hmp, cpu_index);
         if (ret < 0) {
             error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "cpu-index",
                        "a CPU number");
@@ -178,16 +179,17 @@ char *qmp_human_monitor_command(const char *command_line, bool has_cpu_index,
         }
     }
 
-    handle_hmp_command(&hmp, command_line);
+    handle_hmp_command(hmp, command_line);
 
-    WITH_QEMU_LOCK_GUARD(&hmp.common.mon_lock) {
-        output = g_strdup(hmp.common.outbuf->str);
+    WITH_QEMU_LOCK_GUARD(&hmp->parent_obj.mon_lock) {
+        output = g_strdup(hmp->parent_obj.outbuf->str);
     }
 
 out:
-    monitor_data_destroy(&hmp.common);
+    object_unref(hmp);
     return output;
 }
+#endif /* CONFIG_HMP */
 
 static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
 {

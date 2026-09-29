@@ -1,10 +1,10 @@
 #include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "hw/irq.h"
+#include "hw/core/sysbus.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "sysemu/dma.h"
+#include "system/dma.h"
 #include "hw/misc/tegra30_snor.h"
 
 /*
@@ -174,7 +174,7 @@ static const VMStateDescription tegra30_snor_vmstate = {
     }
 };
 
-static void tegra30_snor_class_init(ObjectClass *klass, void *data)
+static void tegra30_snor_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

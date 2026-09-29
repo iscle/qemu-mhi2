@@ -29,8 +29,7 @@
 //#include <asm/system.h>
 
 
-FPA11* qemufpa = NULL;
-CPUARMState* user_registers;
+__thread FPA11* qemufpa = NULL;
 
 /* Reset the FPA11 chip.  Called to initialize and reset the emulator. */
 void resetFPA11(void)
@@ -69,6 +68,11 @@ void resetFPA11(void)
    * this late date.
    */
   set_float_2nan_prop_rule(float_2nan_prop_s_ab, &fpa11->fp_status);
+  /*
+   * Use the same default NaN value as Arm VFP. This doesn't match
+   * the Linux kernel's nwfpe emulation, which uses an all-1s value.
+   */
+  set_float_default_nan_pattern(0b01000000, &fpa11->fp_status);
 }
 
 void SetRoundingMode(const unsigned int opcode)
@@ -150,8 +154,7 @@ void SetRoundingPrecision(const unsigned int opcode)
 }
 
 /* Emulate the instruction in the opcode. */
-/* ??? This is not thread safe.  */
-unsigned int EmulateAll(unsigned int opcode, FPA11* qfpa, CPUARMState* qregs)
+unsigned int EmulateAll(unsigned int opcode, FPA11* qfpa)
 {
   unsigned int nRc = 0;
 //  unsigned long flags;
@@ -168,12 +171,6 @@ unsigned int EmulateAll(unsigned int opcode, FPA11* qfpa, CPUARMState* qregs)
   }
 
   qemufpa=qfpa;
-  user_registers=qregs;
-
-#if 0
-  fprintf(stderr,"emulating FP insn 0x%08x, PC=0x%08x\n",
-          opcode, qregs[ARM_REG_PC]);
-#endif
   fpa11 = GET_FPA11();
 
   if (fpa11->initflag == 0)		/* good place for __builtin_expect */

@@ -9,24 +9,22 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/sysbus.h"
+#include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "hw/arm/boot.h"
 #include "hw/misc/arm_integrator_debug.h"
 #include "hw/net/smc91c111.h"
 #include "net/net.h"
-#include "exec/address-spaces.h"
-#include "sysemu/runstate.h"
-#include "sysemu/sysemu.h"
+#include "system/address-spaces.h"
+#include "system/runstate.h"
+#include "system/system.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "hw/char/pl011.h"
-#include "hw/hw.h"
-#include "hw/irq.h"
+#include "hw/core/irq.h"
 #include "hw/sd/sd.h"
 #include "qom/object.h"
-#include "audio/audio.h"
 #include "target/arm/cpu-qom.h"
 
 #define TYPE_INTEGRATOR_CM "integrator_core"
@@ -106,9 +104,6 @@ static uint64_t integratorcm_read(void *opaque, hwaddr offset,
         } else {
             return s->cm_lock;
         }
-    case 6: /* CM_LMBUSCNT */
-        /* ??? High frequency timer.  */
-        hw_error("integratorcm_read: CM_LMBUSCNT");
     case 7: /* CM_AUXOSC */
         return s->cm_auxosc;
     case 8: /* CM_SDRAM */
@@ -181,10 +176,17 @@ static void integratorcm_set_ctrl(IntegratorCMState *s, uint32_t value)
 
 static void integratorcm_update(IntegratorCMState *s)
 {
-    /* ??? The CPU irq/fiq is raised when either the core module or base PIC
-       are active.  */
-    if (s->int_level & (s->irq_enabled | s->fiq_enabled))
-        hw_error("Core module interrupt\n");
+    /*
+     * ??? The CPU irq/fiq is raised when either the core module or base PIC
+     * are active. To implement this we would need to run these signals
+     * through an OR gate with the PIC outputs. In practice guests don't
+     * use this, which is intended for an external debugger.
+     */
+    if (s->int_level & (s->irq_enabled | s->fiq_enabled)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "%s: raising IRQ/FIQ via core module registers is not implemented\n",
+                      __func__);
+    }
 }
 
 static void integratorcm_write(void *opaque, hwaddr offset,
@@ -578,13 +580,19 @@ static void icp_control_init(Object *obj)
 
 /* Board init.  */
 
-static struct arm_boot_info integrator_binfo = {
-    .loader_start = 0x0,
-    .board_id = 0x113,
+#define TYPE_INTEGRATORCP_MACHINE MACHINE_TYPE_NAME("integratorcp")
+OBJECT_DECLARE_SIMPLE_TYPE(IntegratorcpMachineState,
+                           INTEGRATORCP_MACHINE)
+
+struct IntegratorcpMachineState {
+    MachineState parent;
+
+    struct arm_boot_info bootinfo;
 };
 
 static void integratorcp_init(MachineState *machine)
 {
+    IntegratorcpMachineState *icms = INTEGRATORCP_MACHINE(machine);
     ram_addr_t ram_size = machine->ram_size;
     Object *cpuobj;
     ARMCPU *cpu;
@@ -677,8 +685,10 @@ static void integratorcp_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, 0xc0000000);
     sysbus_connect_irq(SYS_BUS_DEVICE(dev), 0, pic[22]);
 
-    integrator_binfo.ram_size = ram_size;
-    arm_load_kernel(cpu, machine, &integrator_binfo);
+    icms->bootinfo.loader_start = 0x0;
+    icms->bootinfo.board_id = 0x113;
+    icms->bootinfo.ram_size = ram_size;
+    arm_load_kernel(cpu, machine, &icms->bootinfo);
 }
 
 static void integratorcp_machine_init(MachineClass *mc)
@@ -688,18 +698,20 @@ static void integratorcp_machine_init(MachineClass *mc)
     mc->ignore_memory_transaction_failures = true;
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("arm926");
     mc->default_ram_id = "integrator.ram";
+    mc->auto_create_sdcard = true;
 
     machine_add_audiodev_property(mc);
 }
 
-DEFINE_MACHINE("integratorcp", integratorcp_machine_init)
+DEFINE_MACHINE_EXTENDED("integratorcp", MACHINE, IntegratorcpMachineState,
+                        integratorcp_machine_init, false, false,
+                        NULL)
 
-static Property core_properties[] = {
+static const Property core_properties[] = {
     DEFINE_PROP_UINT32("memsz", IntegratorCMState, memsz, 0),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
-static void core_class_init(ObjectClass *klass, void *data)
+static void core_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -708,14 +720,14 @@ static void core_class_init(ObjectClass *klass, void *data)
     dc->vmsd = &vmstate_integratorcm;
 }
 
-static void icp_pic_class_init(ObjectClass *klass, void *data)
+static void icp_pic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_icp_pic;
 }
 
-static void icp_control_class_init(ObjectClass *klass, void *data)
+static void icp_control_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 

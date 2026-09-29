@@ -21,6 +21,20 @@ SRST
 ERST
 
     {
+        .name       = "clear",
+        .args_type  = "",
+        .params     = "",
+        .help       = "clear the monitor screen",
+        .cmd        = hmp_clear,
+        .flags      = "p",
+    },
+
+SRST
+``clear``
+  Clear the monitor screen.
+ERST
+
+    {
         .name       = "commit",
         .args_type  = "device:B",
         .params     = "device|all",
@@ -257,8 +271,8 @@ ERST
         .name       = "screendump",
         .args_type  = "filename:F,format:-fs,device:s?,head:i?",
         .params     = "filename [-f format] [device [head]]",
-        .help       = "save screen from head 'head' of display device 'device'"
-                      "in specified format 'format' as image 'filename'."
+        .help       = "save screen from head 'head' of display device 'device' "
+                      "in specified format 'format' as image 'filename'. "
                       "Currently only 'png' and 'ppm' formats are supported.",
          .cmd        = hmp_screendump,
         .coroutine  = true,
@@ -285,10 +299,9 @@ ERST
 
     {
         .name       = "trace-event",
-        .args_type  = "name:s,option:b,vcpu:i?",
-        .params     = "name on|off [vcpu]",
-        .help       = "changes status of a specific trace event "
-                      "(vcpu: vCPU to set, default is all)",
+        .args_type  = "name:s,option:b",
+        .params     = "name on|off",
+        .help       = "changes status of a specific trace event",
         .cmd = hmp_trace_event,
         .command_completion = trace_event_completion,
     },
@@ -738,13 +751,13 @@ ERST
         .name       = "mouse_button",
         .args_type  = "button_state:i",
         .params     = "state",
-        .help       = "change mouse button state (1=L, 2=M, 4=R)",
+        .help       = "change mouse button state (1=L, 2=R, 4=M)",
         .cmd        = hmp_mouse_button,
     },
 
 SRST
 ``mouse_button`` *val*
-  Change the active mouse button state *val* (1=L, 2=M, 4=R).
+  Change the active mouse button state *val* (1=L, 2=R, 4=M).
 ERST
 
     {
@@ -764,11 +777,12 @@ SRST
 
 ERST
 
+/* BEGIN deprecated */
     {
         .name       = "wavcapture",
         .args_type  = "path:F,audiodev:s,freq:i?,bits:i?,nchannels:i?",
         .params     = "path audiodev [frequency [bits [channels]]]",
-        .help       = "capture audio to a wave file (default frequency=44100 bits=16 channels=2)",
+        .help       = "capture audio to a wave file (deprecated, default frequency=44100 bits=16 channels=2)",
         .cmd        = hmp_wavcapture,
     },
 SRST
@@ -782,13 +796,15 @@ SRST
   - Sample rate = 44100 Hz - CD quality
   - Bits = 16
   - Number of channels = 2 - Stereo
+
+  Deprecated.
 ERST
 
     {
         .name       = "stopcapture",
         .args_type  = "n:i",
         .params     = "capture index",
-        .help       = "stop capture",
+        .help       = "stop capture (deprecated)",
         .cmd        = hmp_stopcapture,
     },
 SRST
@@ -797,7 +813,9 @@ SRST
 
     info capture
 
+  Deprecated.
 ERST
+/* END deprecated */
 
     {
         .name       = "memsave",
@@ -846,12 +864,13 @@ ERST
         .name       = "nmi",
         .args_type  = "",
         .params     = "",
-        .help       = "inject an NMI",
+        .help       = "Inject an NMI, in a machine-specific way",
         .cmd        = hmp_nmi,
     },
 SRST
-``nmi`` *cpu*
-  Inject an NMI on the default CPU (x86/s390) or all CPUs (ppc64).
+``nmi``
+  Inject an NMI, in a machine-specific way.
+  Not all machines implement NMI handling.
 ERST
 
     {
@@ -909,16 +928,17 @@ ERST
 
     {
         .name       = "migrate",
-        .args_type  = "detach:-d,resume:-r,uri:s",
-        .params     = "[-d] [-r] uri",
+        .args_type  = "detach:-d,resume:-r,uri-cpr:-cs,uri:s",
+        .params     = "[-d] [-r] [-c uri-cpr] uri",
         .help       = "migrate to URI (using -d to not wait for completion)"
-		      "\n\t\t\t -r to resume a paused postcopy migration",
+		      "\n\t\t\t -r to resume a paused postcopy migration"
+		      "\n\t\t\t -c to specify a CPR URI for cpr-transfer mode",
         .cmd        = hmp_migrate,
     },
 
 
 SRST
-``migrate [-d] [-r]`` *uri*
+``migrate [-d] [-r] [-c uri-cpr]`` *uri*
   Migrate the VM to *uri*.
 
   ``-d``
@@ -926,6 +946,9 @@ SRST
     query an ongoing migration process, use "info migrate".
   ``-r``
     Resume a paused postcopy migration.
+  ``-c`` *uri-cpr*
+    Specify the CPR URI for cpr-transfer mode. It must be a UNIX domain
+    socket.
 ERST
 
     {
@@ -1009,7 +1032,7 @@ ERST
 
     {
         .name       = "migrate_set_parameter",
-        .args_type  = "parameter:s,value:s",
+        .args_type  = "parameter:s,value:S",
         .params     = "parameter value",
         .help       = "Set the parameter for migration",
         .cmd        = hmp_migrate_set_parameter,
@@ -1120,30 +1143,28 @@ SRST
 
 ERST
 
-#if defined(TARGET_S390X)
     {
         .name       = "dump-skeys",
         .args_type  = "filename:F",
         .params     = "",
         .help       = "Save guest storage keys into file 'filename'.\n",
         .cmd        = hmp_dump_skeys,
+        .arch_bitmask = QEMU_ARCH_S390X,
     },
-#endif
 
 SRST
 ``dump-skeys`` *filename*
   Save guest storage keys to a file.
 ERST
 
-#if defined(TARGET_S390X)
     {
         .name       = "migration_mode",
         .args_type  = "mode:i",
         .params     = "mode",
         .help       = "Enables or disables migration mode\n",
         .cmd        = hmp_migrationmode,
+        .arch_bitmask = QEMU_ARCH_S390X,
     },
-#endif
 
 SRST
 ``migration_mode`` *mode*
@@ -1152,7 +1173,7 @@ ERST
 
     {
         .name       = "snapshot_blkdev",
-        .args_type  = "reuse:-n,device:B,snapshot-file:s?,format:s?",
+        .args_type  = "reuse:-n,device:B,snapshot-file:s,format:s?",
         .params     = "[-n] device [new-image-file] [format]",
         .help       = "initiates a live snapshot\n\t\t\t"
                       "of device. If a new image file is specified, the\n\t\t\t"
@@ -1287,6 +1308,9 @@ ERST
         .name       = "netdev_add",
         .args_type  = "netdev:O",
         .params     = "[user|tap|socket|stream|dgram|vde|bridge|hubport|netmap|vhost-user"
+#ifdef CONFIG_PASST
+                      "|passt"
+#endif
 #ifdef CONFIG_AF_XDP
                       "|af-xdp"
 #endif
@@ -1354,8 +1378,8 @@ ERST
     {
         .name       = "hostfwd_add",
         .args_type  = "arg1:s,arg2:s?",
-        .params     = "[netdev_id] [tcp|udp]:[hostaddr]:hostport-[guestaddr]:guestport",
-        .help       = "redirect TCP or UDP connections from host to guest (requires -net user)",
+        .params     = "[netdev_id] [tcp|udp|unix]:[[hostaddr]:hostport|hostpath]-[guestaddr]:guestport",
+        .help       = "redirect TCP, UDP or UNIX connections from host to guest (requires -net user)",
         .cmd        = hmp_hostfwd_add,
     },
 #endif
@@ -1482,18 +1506,15 @@ SRST
   Stop the QEMU embedded NBD server.
 ERST
 
-
-#if defined(TARGET_I386)
-
     {
         .name       = "mce",
         .args_type  = "broadcast:-b,cpu_index:i,bank:i,status:l,mcg_status:l,addr:l,misc:l",
         .params     = "[-b] cpu bank status mcgstatus addr misc",
         .help       = "inject a MCE on the given CPU [and broadcast to other CPUs with -b option]",
         .cmd        = hmp_mce,
+        .arch_bitmask = QEMU_ARCH_I386,
     },
 
-#endif
 SRST
 ``mce`` *cpu* *bank* *status* *mcgstatus* *addr* *misc*
   Inject an MCE on the given CPU (x86 only).
@@ -1806,16 +1827,6 @@ SRST
   command.
 ERST
 
-    {
-        .name       = "info",
-        .args_type  = "item:s?",
-        .params     = "[subcommand]",
-        .help       = "show various information about the system state",
-        .cmd        = hmp_info_help,
-        .sub_table  = hmp_info_cmds,
-        .flags      = "p",
-    },
-
 #if defined(CONFIG_FDT)
     {
         .name       = "dumpdtb",
@@ -1831,7 +1842,6 @@ SRST
 ERST
 #endif
 
-#if defined(CONFIG_XEN_EMU)
     {
         .name       = "xen-event-inject",
         .args_type  = "port:i",
@@ -1858,4 +1868,20 @@ SRST
 ``xen-event-list``
   List event channels in the guest
 ERST
-#endif
+
+HXCOMM *** MUST BE LAST ENTRY **
+    {
+        .name       = "info",
+        .args_type  = "item:s?",
+        .params     = "[subcommand]",
+        .help       = "show various information about the system state",
+        .cmd        = hmp_info_help,
+        .sub_table  = hmp_info_cmds,
+        .flags      = "p",
+    },
+
+SRST
+``info`` *subcommand*
+  Show various information about the system state.
+ERST
+HXCOMM *** MUST BE LAST ENTRY **
