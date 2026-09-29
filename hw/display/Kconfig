@@ -25,6 +25,9 @@ config PL110
     bool
     select FRAMEBUFFER
 
+config TEGRA30_DC
+    bool
+
 config SII9022
     bool
     depends on I2C

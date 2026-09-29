@@ -10,7 +10,7 @@
  */
 
 /** Size of register I/O address space used by APB misc device */
-#define TEGRA30_APB_MISC_IOSIZE        (0xFFF)
+#define TEGRA30_APB_MISC_IOSIZE        (0x3FFF)
 
 /** Total number of known registers */
 #define TEGRA30_APB_MISC_REGS_NUM      (TEGRA30_APB_MISC_IOSIZE / sizeof(uint32_t))

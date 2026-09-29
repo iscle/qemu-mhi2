@@ -224,4 +224,16 @@ config TEGRA30_CLK
 config TEGRA30_PMC
     bool
 
+config TEGRA30_FLOW
+    bool
+
+config TEGRA30_ARB_SEMA
+    bool
+
+config TEGRA30_SNOR
+    bool
+
+config MMX_IOC
+    bool
+
 source macio/Kconfig

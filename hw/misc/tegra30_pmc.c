@@ -8,7 +8,8 @@
 
 /* Register offsets */
 enum {
-    REG_APBDEV_PMC_SCRATCH1_0    = 0x054,
+    REG_APBDEV_PMC_PWRGATE_STATUS_0 = 0x038,
+    REG_APBDEV_PMC_SCRATCH1_0       = 0x054,
 };
 
 #define REG_INDEX(offset)    (offset / sizeof(uint32_t))
@@ -26,7 +27,8 @@ enum {
 
 /* Register reset values */
 enum {
-    REG_APBDEV_PMC_SCRATCH1_0_RST         = 0x0,
+    REG_APBDEV_PMC_PWRGATE_STATUS_0_RST = 0b11111111111111,
+    REG_APBDEV_PMC_SCRATCH1_0_RST       = 0x0,
 };
 
 static uint64_t tegra30_pmc_read(void *opaque, hwaddr offset,
@@ -36,6 +38,9 @@ static uint64_t tegra30_pmc_read(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
+    case REG_APBDEV_PMC_PWRGATE_STATUS_0:
+        // empty
+        break;
     case REG_APBDEV_PMC_SCRATCH1_0:
         // empty
         break;
@@ -58,9 +63,6 @@ static void tegra30_pmc_write(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
-    case REG_APBDEV_PMC_SCRATCH1_0:
-        // empty
-        break;
     case 0x314 ... TEGRA30_PMC_IOSIZE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: out-of-bounds offset 0x%04x\n",
                       __func__, (uint32_t)offset);
@@ -90,6 +92,7 @@ static void tegra30_pmc_reset(DeviceState *dev)
     Tegra30PmcState *s = TEGRA30_PMC(dev);
 
     /* Set default values for registers */
+    s->regs[REG_INDEX(REG_APBDEV_PMC_PWRGATE_STATUS_0)] = REG_APBDEV_PMC_PWRGATE_STATUS_0_RST;
     s->regs[REG_INDEX(REG_APBDEV_PMC_SCRATCH1_0)] = REG_APBDEV_PMC_SCRATCH1_0_RST;
 }
 

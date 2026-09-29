@@ -21,10 +21,14 @@
 static uint64_t unimp_read(void *opaque, hwaddr offset, unsigned size)
 {
     UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
+    CPUState *cpu = qemu_get_cpu(0);
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    uint32_t pc = cc->get_pc(cpu);
 
     qemu_log_mask(LOG_UNIMP, "%s: unimplemented device read  "
-                  "(size %d, offset 0x%0*" HWADDR_PRIx ")\n",
+                  "(size %d, offset 0x%0*" HWADDR_PRIx ")",
                   s->name, size, s->offset_fmt_width, offset);
+    printf(" @ pc 0x%x\n", pc);
     return 0;
 }
 
@@ -32,11 +36,15 @@ static void unimp_write(void *opaque, hwaddr offset,
                         uint64_t value, unsigned size)
 {
     UnimplementedDeviceState *s = UNIMPLEMENTED_DEVICE(opaque);
+    CPUState *cpu = qemu_get_cpu(0);
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    uint32_t pc = cc->get_pc(cpu);
 
     qemu_log_mask(LOG_UNIMP, "%s: unimplemented device write "
                   "(size %d, offset 0x%0*" HWADDR_PRIx
-                  ", value 0x%0*" PRIx64 ")\n",
+                  ", value 0x%0*" PRIx64 ")",
                   s->name, size, s->offset_fmt_width, offset, size << 1, value);
+    printf(" @ pc 0x%x\n", pc);
 }
 
 static const MemoryRegionOps unimp_ops = {

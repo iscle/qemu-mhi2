@@ -4,29 +4,46 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "exec/address-spaces.h"
+#include "target/arm/arm-powerctl.h"
 #include "hw/misc/tegra30_clk.h"
 
 /* Register offsets */
 enum {
-    REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0    = 0x330,
+    REG_CLK_RST_CONTROLLER_PLLP_BASE_0      = 0x0A0,
+    REG_CLK_RST_CONTROLLER_PLLU_BASE_0      = 0x0C0,
+    REG_CLK_RST_CONTROLLER_PLLX_BASE_0      = 0x0E0,
+    REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0  = 0x330,
+    REG_CLK_RST_CONTROLLER_RST_CPUG_CMPLX_CLR_0 = 0x344,
 };
+
+/* Number of Cortex-A9 cores in the "G" complex driven by RST_CPUG_CMPLX. */
+#define TEGRA30_CLK_NUM_G_CPUS  4
+
+/* Where the firmware stores the CPU entry point (EVP block). */
+#define EVP_CPU_RESET_VECTOR    0x6000F100
 
 #define REG_INDEX(offset)    (offset / sizeof(uint32_t))
 
-// /* CCU register flags */
-// enum {
-//     REG_DRAM_CFG_UPDATE      = (1 << 16),
-// };
+/* CLK register flags */
+enum {
+    REG_PLLP_LOCK   = (1 << 27),
+};
 
-// enum {
-//     REG_PLL_ENABLE           = (1 << 31),
-//     REG_PLL_LOCK             = (1 << 28),
-// };
+enum {
+    REG_PLLU_LOCK   = (1 << 27),
+};
 
+enum {
+    REG_PLLX_LOCK   = (1 << 27),
+};
 
 /* Register reset values */
 enum {
-    REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0_RST         = 0b00101111100000000101000000000,
+    REG_CLK_RST_CONTROLLER_PLLP_BASE_0_RST      = 0b00000000000000000000000100001100,
+    REG_CLK_RST_CONTROLLER_PLLU_BASE_0_RST      = 0b00000000000000000000000100001100,
+    REG_CLK_RST_CONTROLLER_PLLX_BASE_0_RST      = 0b00000000000000000000000100001100,
+    REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0_RST  = 0b00101111100000000101000000000,
 };
 
 static uint64_t tegra30_clk_read(void *opaque, hwaddr offset,
@@ -36,6 +53,12 @@ static uint64_t tegra30_clk_read(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
+    case REG_CLK_RST_CONTROLLER_PLLP_BASE_0:
+        return s->regs[idx] | REG_PLLP_LOCK;
+    case REG_CLK_RST_CONTROLLER_PLLU_BASE_0:
+        return s->regs[idx] | REG_PLLU_LOCK;
+    case REG_CLK_RST_CONTROLLER_PLLX_BASE_0:
+        return s->regs[idx] | REG_PLLX_LOCK;
     case REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0:
         // empty
         break;
@@ -58,9 +81,25 @@ static void tegra30_clk_write(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
-    case REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0:
-        // empty
+    case REG_CLK_RST_CONTROLLER_RST_CPUG_CMPLX_CLR_0: {
+        /*
+         * Writing a CPUn core-reset bit (bits [3:0]) to RST_CPUG_CMPLX_CLR
+         * deasserts that Cortex-A9's reset, i.e. brings it out of reset.  The
+         * QNX startup uses this to release the secondary G-cluster cores after
+         * programming their shared entry point into EVP_CPU_RESET_VECTOR.
+         * Fetch that vector and power the affected cores on there.  CPU0 is
+         * already running, so arm_set_cpu_on() is a no-op for it.
+         */
+        uint32_t vec = address_space_ldl_le(&address_space_memory,
+                                            EVP_CPU_RESET_VECTOR,
+                                            MEMTXATTRS_UNSPECIFIED, NULL);
+        for (int cpu = 0; cpu < TEGRA30_CLK_NUM_G_CPUS; cpu++) {
+            if ((val & (1u << cpu)) && vec != 0) {
+                arm_set_cpu_on(cpu, vec, 0, 1 /* EL1 */, false /* AArch32 */);
+            }
+        }
         break;
+    }
     case 0x4c0 ... TEGRA30_CLK_IOSIZE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: out-of-bounds offset 0x%04x\n",
                       __func__, (uint32_t)offset);
@@ -90,6 +129,9 @@ static void tegra30_clk_reset(DeviceState *dev)
     Tegra30ClkState *s = TEGRA30_CLK(dev);
 
     /* Set default values for registers */
+    s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLP_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLP_BASE_0_RST;
+    s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLU_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLU_BASE_0_RST;
+    s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLX_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLX_BASE_0_RST;
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0)] = REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0_RST;
 }
 
