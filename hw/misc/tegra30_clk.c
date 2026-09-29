@@ -128,6 +128,11 @@ static void tegra30_clk_reset(DeviceState *dev)
 {
     Tegra30ClkState *s = TEGRA30_CLK(dev);
 
+    memset(s->regs, 0, sizeof(s->regs));
+    /* NVIDIA T30 arclk_rst.h reset values. */
+    s->regs[0x20 / 4] = 0x10000000; /* CCLK_BURST_POLICY: IDLE, CLK_M */
+    s->regs[0x50 / 4] = 0x3f1; /* OSC_CTRL */
+
     /* Set default values for registers */
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLP_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLP_BASE_0_RST;
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLU_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLU_BASE_0_RST;

@@ -6,7 +6,8 @@
 #include "hw/core/boards.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/arm/tegra30.h"
-#include "hw/arm/boot.h"
+#include "hw/core/loader.h"
+#include "system/reset.h"
 #include "hw/misc/mmx_ioc.h"
 #include "hw/i2c/i2c.h"
 #include "hw/sd/sd.h"
@@ -14,15 +15,50 @@
 #include "system/blockdev.h"
 #include "system/block-backend.h"
 
-static struct arm_boot_info mhi2_harman_binfo;
+typedef struct MHI2MachineState {
+    MachineState parent_obj;
+    char *iram_filename;
+    Tegra30State *soc;
+} MHI2MachineState;
+
+static char *mhi2_get_iram(Object *obj, Error **errp)
+{
+    return g_strdup(((MHI2MachineState *)obj)->iram_filename);
+}
+
+static void mhi2_set_iram(Object *obj, const char *value, Error **errp)
+{
+    MHI2MachineState *s = (MHI2MachineState *)obj;
+    g_free(s->iram_filename);
+    s->iram_filename = g_strdup(value);
+}
+
+static void mhi2_reset(void *opaque)
+{
+    MHI2MachineState *s = opaque;
+    CPUState *boot_cpu = CPU(&s->soc->avp);
+
+    for (int i = 0; i < TEGRA30_NUM_CPUS; i++) {
+        cpu_reset(CPU(&s->soc->cpus[i]));
+    }
+    cpu_reset(CPU(&s->soc->lp_cpu));
+    cpu_reset(boot_cpu);
+    cpu_set_pc(boot_cpu, 0x480e0000);
+}
 
 static void mhi2_harman_init(MachineState *machine)
 {
     Tegra30State *soc;
+    MHI2MachineState *ms = (MHI2MachineState *)machine;
 
+    if (!machine->firmware) {
+        error_report("MHI2 requires -bios <64 MiB NOR image>");
+        exit(1);
+    }
     info_report("Initializing MHI2 Harman");
 
     soc = TEGRA30(object_new(TYPE_TEGRA30));
+    ms->soc = soc;
     object_property_add_child(OBJECT(machine), "soc", OBJECT(soc));
     
     // TODO: SoC setup
@@ -30,20 +66,6 @@ static void mhi2_harman_init(MachineState *machine)
     // TODO: Move emem init to tegra30.c
     memory_region_init_ram(&soc->emem, OBJECT(soc), "emem", machine->ram_size, &error_fatal);
     memory_region_add_subregion(get_system_memory(), 0x80000000, &soc->emem);
-
-    /*
-     * The Tegra 3 DRAM is also visible at low addresses.  The OS boot image
-     * (an Android boot image) is built for low load addresses - the recovery
-     * kernel decompresses to kernel_addr 0xa00800 and the second-stage loader
-     * disables the MMU and jumps there expecting it to be the same DRAM that
-     * lives at 0x80a00800.  Mirror DRAM at 0x00000000 up to the IRAM so those
-     * low addresses resolve to the same memory.
-     */
-    MemoryRegion *dram_low = g_new(MemoryRegion, 1);
-    uint64_t low_size = MIN(machine->ram_size, 0x40000000);
-    memory_region_init_alias(dram_low, OBJECT(soc), "dram-low-alias",
-                             &soc->emem, 0, low_size);
-    memory_region_add_subregion(get_system_memory(), 0, dram_low);
 
     sysbus_realize_and_unref(SYS_BUS_DEVICE(soc), &error_fatal);
 
@@ -93,7 +115,7 @@ static void mhi2_harman_init(MachineState *machine)
     i2c_slave_realize_and_unref(ioc_cfg, soc->i2c[4].bus, &error_fatal);
 
     /*
-     * eMMC on SDMMC4 (the device the second stage loads the OS from).  Backed
+     * eMMC on SDMMC4 (QNX mounts the app filesystem from it). Backed
      * by the IF_SD drive if the user supplies one, e.g.
      * -drive if=sd,format=raw,file=emmc.img
      */
@@ -108,14 +130,19 @@ static void mhi2_harman_init(MachineState *machine)
 
     uint8_t *nor;
     size_t nor_size;
-    if (!g_file_get_contents("/mnt/f51890a6-f42e-44c1-a4b0-92e1089fd7de/home/iscle/Documents/mib/mmx_fs0_k2589", (gchar **) &nor, (gsize *) &nor_size, NULL)) {
+    if (!g_file_get_contents(machine->firmware, (gchar **) &nor, (gsize *) &nor_size, NULL)) {
         error_report("Failed to load nor");
         exit(1);
     }
 
-    AddressSpace *nsas = cpu_get_address_space(CPU(&soc->avp), ARMASIdx_NS);
+    if (nor_size != 64 * MiB) {
+        error_report("MHI2 NOR image must be exactly 64 MiB");
+        exit(1);
+    }
+
     /* QuickBoot is shadowed to and executed from DRAM at 0x83F28000. */
-    address_space_write(nsas, 0x83F28000, MEMTXATTRS_UNSPECIFIED, nor, nor_size);
+    rom_add_blob_fixed("mhi2-quickboot-shadow", nor, nor_size, 0x83F28000);
+    g_free(nor);
 
     /*
      * NOR boot flash window at 0x48000000.  The firmware probes the NOR as an
@@ -125,7 +152,7 @@ static void mhi2_harman_init(MachineState *machine)
      * a plain RAM window.  64 MiB, x16, 512 x 128 KiB sectors.
      */
     BlockBackend *nor_blk = blk_new_open(
-        "/mnt/f51890a6-f42e-44c1-a4b0-92e1089fd7de/home/iscle/Documents/mib/mmx_fs0_k2589",
+        machine->firmware,
         NULL, NULL, 0, &error_fatal);
     DeviceState *flash = qdev_new(TYPE_PFLASH_CFI02);
     qdev_prop_set_drive(flash, "drive", nor_blk);
@@ -149,24 +176,18 @@ static void mhi2_harman_init(MachineState *machine)
                            &error_fatal);
     memory_region_add_subregion(get_system_memory(), 0x40000000, &soc->iram);
 
-    uint8_t *iram;
-    size_t iram_size;
-    if (g_file_get_contents("/mnt/f51890a6-f42e-44c1-a4b0-92e1089fd7de/home/iscle/Documents/mib/tegra3_iram.bin",
-                            (gchar **)&iram, (gsize *)&iram_size, NULL)) {
-        address_space_write(nsas, 0x40000000, MEMTXATTRS_UNSPECIFIED,
-                            iram, iram_size);
-        g_free(iram);
+    if (ms->iram_filename) {
+        if (load_image_targphys(ms->iram_filename, 0x40000000, 0x40000, &error_fatal) < 0) {
+            error_report("Cannot load IRAM image %s", ms->iram_filename);
+            exit(1);
+        }
     } else {
-        error_report("Failed to load tegra3_iram.bin");
+        error_report("Quickboot needs -machine iram=<captured IRAM/BIT image>");
+        exit(1);
     }
 
+    qemu_register_reset(mhi2_reset, ms);
 
-    /*
-     * Boot starts on the AVP (COP) processor, which runs the first-stage
-     * bootloader out of NOR flash.  It will bring the Cortex-A9 complex out
-     * of reset via the flow controller once it has set up the system.
-     */
-    cpu_set_pc(CPU(&soc->avp), 0x48000000 + 0xe0000);
 }
 
 static void mhi2_harman_machine_init(MachineClass *mc)
@@ -176,6 +197,8 @@ static void mhi2_harman_machine_init(MachineClass *mc)
         NULL
     };
 
+    object_class_property_add_str(OBJECT_CLASS(mc), "iram",
+                                  mhi2_get_iram, mhi2_set_iram);
     mc->desc = "MHI2 Harman";
     mc->init = mhi2_harman_init;
     mc->block_default_type = IF_SD;
@@ -189,4 +212,5 @@ static void mhi2_harman_machine_init(MachineClass *mc)
     mc->default_ram_id = "mhi2-harman.ram";
 }
 
-DEFINE_MACHINE("mhi2-harman", mhi2_harman_machine_init)
+DEFINE_MACHINE_EXTENDED("mhi2-harman", MACHINE, MHI2MachineState,
+                        mhi2_harman_machine_init, false, false, NULL)

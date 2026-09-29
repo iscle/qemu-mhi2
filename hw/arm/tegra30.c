@@ -255,13 +255,17 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     memory_region_init_ram(&s->evp, OBJECT(s), "evp", 0x1000, &error_fatal);
     memory_region_add_subregion(get_system_memory(), 0x6000F000, &s->evp);
 
-    serial_mm_init(get_system_memory(), 0x70006000, 2, 0,
+    serial_mm_init(get_system_memory(), 0x70006000, 2,
+                   qdev_get_gpio_in(DEVICE(&s->a9mpcore), 36),
                    115200, serial_hd(0), DEVICE_NATIVE_ENDIAN);
-    serial_mm_init(get_system_memory(), 0x70006040, 2, 0,
+    serial_mm_init(get_system_memory(), 0x70006040, 2,
+                   qdev_get_gpio_in(DEVICE(&s->a9mpcore), 37),
                    115200, serial_hd(1), DEVICE_NATIVE_ENDIAN);
-    serial_mm_init(get_system_memory(), 0x70006200, 2, 0,
+    serial_mm_init(get_system_memory(), 0x70006200, 2,
+                   qdev_get_gpio_in(DEVICE(&s->a9mpcore), 46),
                    115200, serial_hd(2), DEVICE_NATIVE_ENDIAN);
-    serial_mm_init(get_system_memory(), 0x70006300, 2, 0,
+    serial_mm_init(get_system_memory(), 0x70006300, 2,
+                   qdev_get_gpio_in(DEVICE(&s->a9mpcore), 90),
                    115200, serial_hd(3), DEVICE_NATIVE_ENDIAN);
 
     create_unimplemented_device("unimplemented-memory", 0, 0xFFFFFFFF);

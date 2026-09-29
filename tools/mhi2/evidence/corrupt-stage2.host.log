@@ -1,0 +1,5 @@
+qemu-system-arm: info: Initializing MHI2 Harman
+qemu-system-arm: info: Tegra 3 initialization: s=0x564e7879d310
+qemu-system-arm: info: Tegra 3 CPUs initialized
+qemu-system-arm: info: Realizing Tegra 3
+qemu-system-arm: info: Tegra30 realized
