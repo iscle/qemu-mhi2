@@ -1,0 +1,6 @@
+{
+  "primary-header": "80a00808: 0x00ff7eeb 0x00010001 0x00280100 0x80a06ad0\r\n80a00818: 0x00000000 0x80a00808 0x80a00808 0x006c53cc\r\n80a00828: 0x0001a108 0x006c53cc 0x00000000 0x006ab2c4\r\n80a00838: 0x00000008 0x00000000\r\n",
+  "cpu0-after-userspace-start": "\r\nCPU#0\r\nR00=fc410000 R01=00000000 R02=00000000 R03=fc41201c\r\nR04=fe0e675c R05=effdd010 R06=00000000 R07=00000000\r\nR08=00000000 R09=00000000 R10=00000000 R11=00000000\r\nR12=00000002 R13=effcc268 R14=fe0a6664 R15=fc412030\r\nPSR=6000009f -ZC- A sys32\r\n",
+  "primary-reset": "Primary QNX userspace reached twice, including system_reset",
+  "corrupt-stage2": "CMAC mismatch rejected before QNX handoff"
+}

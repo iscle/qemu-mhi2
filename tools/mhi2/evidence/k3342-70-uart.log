@@ -1,0 +1,132 @@
+<.STARTUP>
+<cpu>: nVidia Quickboot 17.37.03 (Build Nov 28 2018)
+<cpu>: modified by e.Solutions GmbH
+<cpu>: Loading stage 2 primary bootloader...
+<cpu>: Stage2 loaded
+<cpu>: Trying to load kernel 8
+<cpu>: Press <E> to run Emergency Flash Utility.
+<cpu>: jumping to kernel
+Kernel Dumper information structure at paddr 80000000
+kdumper: starting next program at 0xfe085a60
+VFPv3: fpsid=41033090
+coproc_attach(10): attach fe0a4c4c (fe0a6c20)
+coproc_attach(11): attach fe0a4c4c (fe0a6c20)
+Starting i2c interface for PMU
+Path=0 - Generic SDHCI
+mount: Can't mount /mnt/app (type qnx6) 
+mount: Possible reason: Invalid argument 
+Unable to access "/dev/i2c5" (2)
+Starting devg-nvpower
+Error opening PMU I2C Device: /dev/i2c5
+Failed to open PMU I2C device.
+devg-nvpower: failed to initialize power driver
+Starting /usr/sbin/startup.sh ...
+mount: Can't mount /mnt/boardbook (type qnx6) 
+mount: Possible reason: Invalid argument 
+mount: Can't mount /mnt/speech (type qnx6) 
+mount: Possible reason: Invalid argument 
+Unable to access /dev/nvpower/init_lp_state
+/usr/sbin/ooc-starter.sh[10]: cannot open /dev/nvpower/init_lp_state: No such file or directory
+[OOC.Main] INFO: Version 2.2.0-RELEASE
+[OOC.Main] INFO: ESO common libs version 4.5.2
+[ResMgrI2C.I2cIoc] INFO: I2C slave thread started
+[OOC.SdisWlan] INFO: fsm:sdis_wlan_start_thread
+[OOC.SdisWlan] INFO: fsm:run_pdd_callback state change <> (-1) = > (0) event (1) registered (0) allow request (0) Clamp15 (0) ClampS (0) mmi_state (0)
+[OOC.SdisWlan] INFO: fsm:run_pdd_callback inactive state update carwakeup (0)
+[OOC.IOC] INFO: ioc:Received Event UpdateCarWakeup 0
+[OOC.DelayManager] INFO: Clear DelayBits requested: (0)
+[OOC.DelayManager] INFO: eval_delay_request:  phone: is 0, requests 0 | uota: is 0, requests 0 | online: is 0, requests 0 | rtc: is 0, requests 0 | phone_pdd: is 0, requests 0 | nav_pdd: is 0, requests 0 
+[ResMgrI2C.I2cIoc] INFO: Enabled I2C on IOC
+[OOC.IOC] INFO: Clamp  S: off
+[OOC.IOC] INFO: Clamp 15: off
+[OOC.IOC] INFO: Clamp 50: off
+[OOC.IOC] INFO: Clamp  X: off
+[OOC.IOC] INFO: MMI state: MMI_STATE_UNDEFINED
+[OOC.DelayManager] INFO: eval_delay_request:  phone: is 0, requests 0 | uota: is 0, requests 0 | online: is 0, requests 0 | rtc: is 0, requests 0 | phone_pdd: is 0, requests 0 | nav_pdd: is 0, requests 0 [OOC.IOC] INFO: Key state: KEY_STATE_NONE
+
+[OOC.IOC] INFO: MMI state right: MMI_STATE_UNDEFINED
+[OOC.SdisWlan] INFO: fsm:iocHandleClampStateChanged KL15(0) KLS(0)
+[OOC.IOC] INFO: Key state right: KEY_STATE_NONE
+[OOC.SdisWlan] INFO: fsm:updateTimInternalState for state current next [0 => 2]event (1)
+[OOC.IOC] INFO: RVC active: false
+[OOC.IOC] INFO: RVC variant: FBAS
+[OOC.IOC] INFO: Startup variant: 0x00
+[OOC.IOC] INFO: Last on: 0x00
+[OOC.IOC] INFO: IOC shutdown request: SHUTDOWN_REQUEST_NONE
+[OOC.IOC] INFO: IOC final shutdown request: false
+[OOC.IOC] INFO: IOC car lock signal: false
+[OOC.IOC] INFO: IOC power on pin status: false
+[OOC.SdisWlan] INFO: fsm:iocHandleHandleUpdatePowerstateMain mmi state change: (0)->(0) keycode state change : (0)->(0) longpress state change detected: (0)
+mount: Can't mount /mnt/gracenotedb (type qnx6) 
+mount: Possible reason: Invalid argument 
+mount: Can't mount /mnt/mmebackup (type qnx6) 
+mount: Possible reason: Invalid argument 
+/usr/sbin/startup.sh[76]: cannot open /dev/nvpower/init_lp_state: No such file or directory
+[OOC.FwLibLoader] ERROR: Error Timeout waiting for path specified in IPL_CONFIG_DIR environment variable in fwlibloader_waitForConfigDir (/home/jenkins/workspace/PM_build_swdl/systools_src/ooc/ooc_main/fwlibloader.c:143)
+[OOC.FwLibLoader] FATAL: Could not load fw library! Trigger system reset
+[OOC.IOC] WARN: Request reset without persistency.
+LP_GPIO_ST
+do start display
+display_init: failed to open /dev/nvdisp-ctrl
+display_init: failed to initialize display modes
+nvsplash: failed to open display handle
+ main failed, e 0x4
+display_init: failed to open /dev/i2c1
+do start pci
+IFS Loader (Build Nov 28 2018)
+IFSLOADER: time 0 ms, [wait for NOR done]
+IFSLOADER: time 0 ms, [wait for NOR done]
+IFSLOADER: mnand will wait for /mnt/app/img_restore/main_stage2.ifs.lzo
+IFSLOADER: NOR Load Block Infos
+IFSLOADER: found lzo1z header
+IFSLOADER: Max Comp Block Size: 1305600
+IFSLOADER: found 35 blocks
+IFSLOADER: mem da: phys 0x92000000 virt 0x2C100000
+CAPP: entering main
+[capp_misc] [INFO]: cap_app started
+cap_app started
+[capp_misc] [INFO]: CAPP: start read json config file: /usr/sbin/cap_app.json
+[capp_config] [INFO]: start to read config file: /usr/sbin/cap_app.json
+[capp_misc] [INFO]: read json config finished
+[capp_misc] [INFO]: assuming ADV7180
+[cal_capture_engine] [INFO]: XSe: GPIO interrupt for ADV718x: '/dev/nvgpio/vd1_int_q'
+[cal_capture_engine] [INFO]: XSe: interrupt mode
+[cal_capture_engine] [INFO]: cdevg-nvcapture: thread priority:      15
+odevg-nvcapture: capture buffer count: 4
+ndevg-nvcapture: capture timeout:      250 ms
+fdevg-nvcapture: display width:        800
+idevg-nvcapture: display height:       480
+gdevg-nvcapture: overlay:              VIP
+.devg-nvcapture: metadata:             NONE
+sdevg-nvcapture: unadulterated CSI:             Disabled
+hdevg-nvcapture: CSI is forced to reset/restart on configure:    Enabled
+adevg-nvcapture: verbose level:        2
+dowRegister[0x51]: 0x2d
+[cal_capture_engine] [FATAL]: vdXSeCreateInstance failed
+
+[cal_capture_avc] [FATAL]: cannot create AVC engine
+[cal_api] [FATAL]: initSession AVC failed!
+
+[cal_capture_engine] [INFO]: CSI engine is uinsg /dev/nvgpio/csi_lock for LVDS interrupts
+[
+Process 450578 (cap_app) terminated SIGSEGV code=1 fltno=11 ip=00106ee0(/usr/sbin/cap_app@_btext+0x5500) ref=00000000
+IFSLOADER: Warning: waiting for /mnt/app/img_restore/main_stage2.ifs.lzo timed out after 700 ms.
+IFSLOADER: Error: init() failed.
+IFSLOADER: Warning: mnandCounter = 0, PLEASE CHECK MNAND SPEED
+IFSLOADER: NorCounter = 37
+IFSLOADER: mount point '/' mount param 'offset=0x92000000,size=0x4600000'
+IFSLOADER: Image mounted successfully.
+IFSLOADER: Image size: 73400320 bytes
+IFSLOADER: Transfer time: 0.793000 s
+IFSLOADER: Transfer speed: 88.272383 MB/s
+
+Process 565269 (devf-generic-tegra2) terminated SIGBUS code=3 fltno=5 ip=0012a0c8(/sbin/devf-generic-tegra2@main+0x27270) ref=28000000
+NvPCIESocConfigPowerState: Failed to access node /dev/nvpower/sata_pcie. errno 2 (No such file or directory).
+main:915:-1 Failure in NvPCIESocInitResources()
+pcie_driver_startup axi_regs mapped
+afi ok
+bad id rp 0
+driver_enable failed
+Can't find! device
+mount: Can't mount / (type io-pkt) 
+mount: Possible reason: No such device 
