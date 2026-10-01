@@ -977,6 +977,19 @@ static uint64_t ehci_port_read(void *ptr, hwaddr addr,
     uint32_t val;
 
     val = s->portsc[addr >> 2];
+    if (s->integrated_tt) {
+        USBDevice *dev = s->ports[addr >> 2].dev;
+
+        val &= ~(3U << 26);
+        if (dev && dev->attached) {
+            /* ChipIdea PORTSC PSPD: full = 0, low = 1, high = 2. */
+            if (dev->speed == USB_SPEED_HIGH) {
+                val |= 2U << 26;
+            } else if (dev->speed == USB_SPEED_LOW) {
+                val |= 1U << 26;
+            }
+        }
+    }
     trace_usb_ehci_portsc_read(addr + s->portscbase, addr >> 2, val);
     return val;
 }
@@ -1045,7 +1058,8 @@ static void ehci_port_write(void *ptr, hwaddr addr,
          *  Table 2.16 Set the enable bit(and enable bit change) to indicate
          *  to SW that this port has a high speed device attached
          */
-        if (dev && dev->attached && (dev->speedmask & USB_SPEED_MASK_HIGH)) {
+        if (dev && dev->attached &&
+            (s->integrated_tt || (dev->speedmask & USB_SPEED_MASK_HIGH))) {
             val |= PORTSC_PED;
         }
     }
@@ -2638,7 +2652,8 @@ void usb_ehci_realize(EHCIState *s, DeviceState *dev, Error **errp)
                 &ehci_bus_ops_companion : &ehci_bus_ops_standalone, dev);
     for (i = 0; i < s->portnr; i++) {
         usb_register_port(&s->bus, &s->ports[i], s, i, &ehci_port_ops,
-                          USB_SPEED_MASK_HIGH);
+                          USB_SPEED_MASK_HIGH | (s->integrated_tt ?
+                          USB_SPEED_MASK_FULL | USB_SPEED_MASK_LOW : 0));
         s->ports[i].dev = 0;
     }
 

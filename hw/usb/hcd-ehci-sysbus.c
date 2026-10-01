@@ -159,8 +159,12 @@ typedef struct Tegra30EHCIState {
 static uint64_t tegra30_usb_read(void *opaque, hwaddr addr, unsigned size)
 {
     Tegra30EHCIState *s = opaque;
-    addr += 0x1b0;
     uint32_t value = s->regs[addr / 4];
+
+    if (addr == 0x124) {
+        /* DCCPARAMS: host capable; the device controller is not modeled. */
+        return BIT(8);
+    }
     if (addr == 0x400) {
         bool utmi = (value & BIT(12)) && !(value & BIT(11));
         bool hsic = (value & BIT(19)) && !(value & BIT(14));
@@ -176,7 +180,9 @@ static void tegra30_usb_write(void *opaque, hwaddr addr, uint64_t value,
                              unsigned size)
 {
     Tegra30EHCIState *s = opaque;
-    addr += 0x1b0;
+    if (addr == 0x124) {
+        return;
+    }
     if (addr == 0x400) {
         value &= ~BIT(7);
     }
@@ -193,9 +199,12 @@ static const MemoryRegionOps tegra30_usb_ops = {
 static void tegra30_usb_init(Object *obj)
 {
     Tegra30EHCIState *s = (Tegra30EHCIState *)obj;
+
+    s->parent.ehci.integrated_tt = true;
     memory_region_init_io(&s->vendor, obj, &tegra30_usb_ops, s,
-                          "tegra30-usb-phy", 0x1000 - 0x1b0);
-    memory_region_add_subregion(&s->parent.ehci.mem, 0x1b0, &s->vendor);
+                          "tegra30-usb-phy", 0x1000);
+    /* The generic EHCI regions take priority over Tegra's vendor registers. */
+    memory_region_add_subregion_overlap(&s->parent.ehci.mem, 0, &s->vendor, -1);
 }
 
 static void tegra30_usb_reset(DeviceState *dev)
