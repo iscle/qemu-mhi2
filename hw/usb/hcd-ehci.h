@@ -364,6 +364,7 @@ struct EHCIPCIState {
 #define TYPE_AW_H3_EHCI "aw-h3-ehci-usb"
 #define TYPE_NPCM7XX_EHCI "npcm7xx-ehci-usb"
 #define TYPE_TEGRA2_EHCI "tegra2-ehci-usb"
+#define TYPE_TEGRA30_EHCI "tegra30-ehci-usb"
 #define TYPE_PPC4xx_EHCI "ppc4xx-ehci-usb"
 #define TYPE_FUSBH200_EHCI "fusbh200-ehci-usb"
 

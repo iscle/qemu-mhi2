@@ -734,7 +734,9 @@ static const MemoryRegionOps pflash_cfi02_ops = {
     .read = pflash_read,
     .write = pflash_write,
     .valid.min_access_size = 1,
-    .valid.max_access_size = 4,
+    /* A CPU doubleword access is split into native flash bus cycles. */
+    .valid.max_access_size = 8,
+    .impl.max_access_size = 4,
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 

@@ -717,6 +717,31 @@ config ARMSSE
     select SSE_COUNTER
     select SSE_TIMER
 
+config TEGRA30
+    bool
+    default y
+    depends on TCG && ARM
+    select USB_EHCI_SYSBUS
+    select TEGRA30_APB_MISC
+    select TEGRA30_CLK
+    select TEGRA30_PMC
+    select TEGRA30_TIMER
+    select TEGRA30_FLOW
+    select TEGRA30_ARB_SEMA
+    select TEGRA30_I2C
+    select TEGRA30_ICTLR
+    select TEGRA30_SNOR
+    select TEGRA30_GPIO
+    select TEGRA30_DC
+    select A9MPCORE
+    select PL310 # L2 cache controller (cache-controller@50043000)
+
+config MHI2_HARMAN
+    bool
+    default y
+    depends on TEGRA30
+    select MMX_IOC
+
 config AXIADO_SOC
     bool
     select ARM_GIC

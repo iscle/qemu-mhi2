@@ -97,6 +97,8 @@ arm_common_ss.add(when: 'CONFIG_XEN', if_true: files(
   'xen-stubs.c',
   'xen-pvh.c',
 ))
+arm_common_ss.add(when: 'CONFIG_TEGRA30', if_true: files('tegra30.c'))
+arm_common_ss.add(when: 'CONFIG_MHI2_HARMAN', if_true: files('mhi2_harman.c'))
 
 arm_common_ss.add(when: 'CONFIG_ARM_SMMUV3', if_true: files('smmu-common.c'))
 arm_common_ss.add(when: 'CONFIG_COLLIE', if_true: files('collie.c'))

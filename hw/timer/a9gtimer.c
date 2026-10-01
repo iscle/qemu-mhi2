@@ -29,6 +29,7 @@
 #include "qapi/error.h"
 #include "qemu/timer.h"
 #include "qemu/bitops.h"
+#include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
@@ -60,12 +61,12 @@ static inline int a9_gtimer_get_current_cpu(A9GTimerState *s)
     return current_cpu->cpu_index;
 }
 
-static inline uint64_t a9_gtimer_get_conv(A9GTimerState *s)
+static inline uint64_t a9_gtimer_get_prescale(A9GTimerState *s)
 {
     uint64_t prescale = extract32(s->control, R_CONTROL_PRESCALER_SHIFT,
                                   R_CONTROL_PRESCALER_LEN);
 
-    return (prescale + 1) * 10;
+    return prescale + 1;
 }
 
 static A9GTimerUpdate a9_gtimer_get_update(A9GTimerState *s)
@@ -74,7 +75,8 @@ static A9GTimerUpdate a9_gtimer_get_update(A9GTimerState *s)
 
     ret.now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     ret.new = s->ref_counter +
-              (ret.now - s->cpu_ref_time) / a9_gtimer_get_conv(s);
+              muldiv64(ret.now - s->cpu_ref_time, s->frequency,
+                       NANOSECONDS_PER_SECOND) / a9_gtimer_get_prescale(s);
     return ret;
 }
 
@@ -117,7 +119,9 @@ static void a9_gtimer_update(A9GTimerState *s, bool sync)
     if (next_cdiff) {
         DB_PRINT("scheduling qemu_timer to fire again in %"
                  PRIx64 " cycles\n", next_cdiff);
-        timer_mod(s->timer, update.now + next_cdiff * a9_gtimer_get_conv(s));
+        uint64_t delay = muldiv64(next_cdiff * a9_gtimer_get_prescale(s),
+                                  NANOSECONDS_PER_SECOND, s->frequency);
+        timer_mod(s->timer, update.now + MAX(delay, 1));
     }
 
     if (s->control & R_CONTROL_TIMER_ENABLE) {
@@ -301,6 +305,11 @@ static void a9_gtimer_realize(DeviceState *dev, Error **errp)
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     int i;
 
+    if (!s->frequency) {
+        error_setg(errp, "a9gtimer frequency must be nonzero");
+        return;
+    }
+
     if (s->num_cpu < 1 || s->num_cpu > A9_GTIMER_MAX_CPUS) {
         error_setg(errp, "%s: num-cpu must be between 1 and %d",
                    __func__, A9_GTIMER_MAX_CPUS);
@@ -375,6 +384,7 @@ static const VMStateDescription vmstate_a9_gtimer = {
 
 static const Property a9_gtimer_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", A9GTimerState, num_cpu, 0),
+    DEFINE_PROP_UINT32("frequency", A9GTimerState, frequency, 100000000),
 };
 
 static void a9_gtimer_class_init(ObjectClass *klass, const void *data)

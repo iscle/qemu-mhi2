@@ -1,0 +1,28 @@
+<.STARTUP>
+<cpu>: nVidia Quickboot 17.37.03 (Build Nov 28 2018)
+<cpu>: modified by e.Solutions GmbH
+<cpu>: Loading stage 2 primary bootloader...
+<cpu>: Stage2 loaded
+<cpu>: Trying to load kernel 8
+<cpu>: Press <E> to run Emergency Flash Utility.
+<cpu>: jumping to kernel
+Kernel Dumper information structure at paddr 80000000
+kdumper: starting next program at 0xfe085a60
+VFPv3: fpsid=41033090
+coproc_attach(10): attach fe0a4c4c (fe0a6c20)
+coproc_attach(11): attach fe0a4c4c (fe0a6c20)
+Starting i2c interface for PMU
+<.STARTUP>
+<cpu>: nVidia Quickboot 17.37.03 (Build Nov 28 2018)
+<cpu>: modified by e.Solutions GmbH
+<cpu>: Loading stage 2 primary bootloader...
+<cpu>: Stage2 loaded
+<cpu>: Trying to load kernel 8
+<cpu>: Press <E> to run Emergency Flash Utility.
+<cpu>: jumping to kernel
+Kernel Dumper information structure at paddr 80000000
+kdumper: starting next program at 0xfe085a60
+VFPv3: fpsid=41033090
+coproc_attach(10): attach fe0a4c4c (fe0a6c20)
+coproc_attach(11): attach fe0a4c4c (fe0a6c20)
+Starting i2c interface for PMU

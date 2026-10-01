@@ -147,6 +147,88 @@ static void ehci_tegra2_class_init(ObjectClass *oc, const void *data)
     set_bit(DEVICE_CATEGORY_USB, dc->categories);
 }
 
+/* Tegra30 host controller and UTMI/HSIC PHY control registers. The EHCI
+ * engine owns transfers and interrupts; this block owns PHY configuration.
+ * Register definitions: Linux drivers/usb/phy/phy-tegra-usb.c. */
+typedef struct Tegra30EHCIState {
+    EHCISysBusState parent;
+    MemoryRegion vendor;
+    uint32_t regs[0x1000 / 4];
+} Tegra30EHCIState;
+
+static uint64_t tegra30_usb_read(void *opaque, hwaddr addr, unsigned size)
+{
+    Tegra30EHCIState *s = opaque;
+    addr += 0x1b0;
+    uint32_t value = s->regs[addr / 4];
+    if (addr == 0x400) {
+        bool utmi = (value & BIT(12)) && !(value & BIT(11));
+        bool hsic = (value & BIT(19)) && !(value & BIT(14));
+        value &= ~BIT(7);
+        if ((utmi || hsic) && !(s->regs[0x1b4 / 4] & BIT(22))) {
+            value |= BIT(7); /* PHY_CLK_VALID, read-only */
+        }
+    }
+    return value;
+}
+
+static void tegra30_usb_write(void *opaque, hwaddr addr, uint64_t value,
+                             unsigned size)
+{
+    Tegra30EHCIState *s = opaque;
+    addr += 0x1b0;
+    if (addr == 0x400) {
+        value &= ~BIT(7);
+    }
+    s->regs[addr / 4] = value;
+}
+
+static const MemoryRegionOps tegra30_usb_ops = {
+    .read = tegra30_usb_read,
+    .write = tegra30_usb_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
+static void tegra30_usb_init(Object *obj)
+{
+    Tegra30EHCIState *s = (Tegra30EHCIState *)obj;
+    memory_region_init_io(&s->vendor, obj, &tegra30_usb_ops, s,
+                          "tegra30-usb-phy", 0x1000 - 0x1b0);
+    memory_region_add_subregion(&s->parent.ehci.mem, 0x1b0, &s->vendor);
+}
+
+static void tegra30_usb_reset(DeviceState *dev)
+{
+    Tegra30EHCIState *s = (Tegra30EHCIState *)dev;
+    memset(s->regs, 0, sizeof(s->regs));
+    ehci_reset(&s->parent.ehci);
+}
+
+static const VMStateDescription vmstate_tegra30_usb = {
+    .name = "tegra30-ehci",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(parent, Tegra30EHCIState, 0, vmstate_ehci_sysbus,
+                       EHCISysBusState),
+        VMSTATE_UINT32_ARRAY(regs, Tegra30EHCIState, 0x1000 / 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void tegra30_usb_class_init(ObjectClass *oc, const void *data)
+{
+    SysBusEHCIClass *sec = SYS_BUS_EHCI_CLASS(oc);
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    sec->capsbase = 0x100;
+    sec->opregbase = 0x130;
+    sec->portscbase = 0x44;
+    sec->portnr = 1;
+    dc->vmsd = &vmstate_tegra30_usb;
+    device_class_set_legacy_reset(dc, tegra30_usb_reset);
+}
+
 static void ehci_ppc4xx_init(Object *o)
 {
     EHCISysBusState *s = SYS_BUS_EHCI(o);
@@ -267,6 +349,13 @@ static const TypeInfo ehci_sysbus_types[] = {
         .name          = TYPE_TEGRA2_EHCI,
         .parent        = TYPE_SYS_BUS_EHCI,
         .class_init    = ehci_tegra2_class_init,
+    },
+    {
+        .name          = TYPE_TEGRA30_EHCI,
+        .parent        = TYPE_SYS_BUS_EHCI,
+        .instance_size = sizeof(Tegra30EHCIState),
+        .instance_init = tegra30_usb_init,
+        .class_init    = tegra30_usb_class_init,
     },
     {
         .name          = TYPE_PPC4xx_EHCI,

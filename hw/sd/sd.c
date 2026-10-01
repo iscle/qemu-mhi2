@@ -203,6 +203,7 @@ struct SDState {
         RPMBDataFrame result;
     } rpmb;
     QEMUTimer *ocr_power_timer;
+    uint32_t ocr_power_delay_ns;
     uint8_t dat_lines;
     bool cmd_line;
     char *preset_auth_key;
@@ -2272,6 +2273,24 @@ static sd_rsp_type_t sd_cmd_SEND_OP_COND(SDState *sd, SDRequest req)
         return sd_invalid_state_for_cmd(sd, req);
     }
 
+    /* Some firmware pipelines MMC initialization across boot stages. Model
+     * the busy interval instead of completing the first voltage request
+     * immediately. A ready OCR is reported only after the delay expires;
+     * the card changes state on a subsequent CMD1, not on the timer event.
+     */
+    if (sd_is_emmc(sd) && sd->ocr_power_delay_ns) {
+        if (!FIELD_EX32(sd->ocr, OCR, CARD_POWER_UP)) {
+            if (!timer_pending(sd->ocr_power_timer)) {
+                timer_mod_ns(sd->ocr_power_timer,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                    sd->ocr_power_delay_ns);
+            }
+        } else if (FIELD_EX32(sd->ocr & req.arg, OCR, VDD_VOLTAGE_WINDOW)) {
+            sd->state = sd_ready_state;
+        }
+        return sd_r3;
+    }
+
     /*
      * If it's the first ACMD41 since reset, we need to decide
      * whether to power up. If this is not an enquiry ACMD41,
@@ -3213,6 +3232,7 @@ static const Property sd_properties[] = {
 };
 
 static const Property emmc_properties[] = {
+    DEFINE_PROP_UINT32("ocr-power-delay-ns", SDState, ocr_power_delay_ns, 0),
     DEFINE_PROP_UINT64("boot-partition-size", SDState, boot_part_size, 0),
     DEFINE_PROP_UINT8("boot-config", SDState, boot_config, 0x0),
     DEFINE_PROP_UINT64("rpmb-partition-size", SDState, rpmb_part_size, 0),

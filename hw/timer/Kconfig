@@ -66,5 +66,7 @@ config STELLARIS_GPTM
 config AVR_TIMER16
     bool
 
+config TEGRA30_TIMER
+
 config HEX_QTIMER
     bool
