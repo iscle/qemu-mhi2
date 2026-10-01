@@ -41,6 +41,32 @@ struct Tegra30PCIEState {
     unsigned pending_len;
 };
 
+/* NVIDIA's FPCI layout differs from ECAM; Linux slides a 4 KiB window. */
+static bool config_offset(Tegra30PCIEState *s, hwaddr addr, uint32_t *offset)
+{
+    uint64_t base = s->regs[0x3818 / 4];
+    uint64_t size = (uint64_t)s->regs[0x3800 / 4] << 12;
+    uint64_t fpci;
+
+    if (size && addr >= base && addr - base < size) {
+        fpci = ((uint64_t)s->regs[0x3830 / 4] << 8) + addr - base;
+        if (fpci >= 0xfe00000000ULL && fpci < 0xfe20000000ULL) {
+            *offset = fpci & 0x0fffffff;
+            return true;
+        }
+        if (fpci >= 0xfdfe000000ULL && fpci < 0xfe00000000ULL) {
+            *offset = fpci & 0x00ffffff;
+            return true;
+        }
+    }
+    /* Preserve the original QNX model's aperture before BAR programming. */
+    if (!size && addr >= 0x01000000 && addr < 0x02000000) {
+        *offset = addr & 0x00ffffff;
+        return true;
+    }
+    return false;
+}
+
 static int root_offset(hwaddr addr)
 {
     if (addr < 0x2000) {
@@ -204,6 +230,8 @@ static void rcc_poll(void *opaque)
 
 static uint32_t read_word(Tegra30PCIEState *s, hwaddr addr)
 {
+    uint32_t cfg;
+
     if (addr < sizeof(s->regs)) {
         int offset = root_offset(addr);
         uint32_t value = s->regs[addr / 4];
@@ -216,12 +244,15 @@ static uint32_t read_word(Tegra30PCIEState *s, hwaddr addr)
         return value;
     }
     /* AFI BAR0 config aperture: bus:device:function = 16:11:8. */
-    if (addr >= 0x1000000 && addr < 0x2000000) {
-        unsigned bus = (addr >> 16) & 0xff;
-        unsigned slot = (addr >> 8) & 0xff;
-        unsigned reg = addr & 0xff;
+    if (config_offset(s, addr, &cfg)) {
+        unsigned bus = (cfg >> 16) & 0xff;
+        unsigned slot = (cfg >> 8) & 0xff;
+        unsigned reg = ((cfg >> 16) & 0xf00) | (cfg & 0xff);
         unsigned secondary = (s->regs[0x1018 / 4] >> 8) & 0xff;
         if (!secondary || bus != secondary || slot != 0) return UINT32_MAX;
+        if (reg >= sizeof(s->config)) {
+            return 0; /* No extended capabilities on the RCC endpoint. */
+        }
         if (reg == 0x10 && s->bar_probe[0]) return 0xfffff000;
         if (reg == 0x14 && s->bar_probe[1]) return 0xffffc000;
         if (reg == 0x18 && s->bar_probe[2]) return 0xfffff000;
@@ -245,6 +276,8 @@ static uint32_t read_word(Tegra30PCIEState *s, hwaddr addr)
 
 static void write_word(Tegra30PCIEState *s, hwaddr addr, uint32_t value)
 {
+    uint32_t cfg;
+
     if (addr < sizeof(s->regs)) {
         int offset = root_offset(addr);
         if (offset == 0 || offset == 8 || offset == 0xc) return;
@@ -254,11 +287,14 @@ static void write_word(Tegra30PCIEState *s, hwaddr addr, uint32_t value)
         update_irq(s);
         return;
     }
-    if (addr >= 0x1000000 && addr < 0x2000000) {
-        unsigned bus = (addr >> 16) & 0xff, slot = (addr >> 8) & 0xff;
-        unsigned reg = addr & 0xff;
+    if (config_offset(s, addr, &cfg)) {
+        unsigned bus = (cfg >> 16) & 0xff, slot = (cfg >> 8) & 0xff;
+        unsigned reg = ((cfg >> 16) & 0xf00) | (cfg & 0xff);
         unsigned secondary = (s->regs[0x1018 / 4] >> 8) & 0xff;
         if (!secondary || bus != secondary || slot != 0) return;
+        if (reg >= sizeof(s->config)) {
+            return;
+        }
         if (reg == 0x10 || reg == 0x14 || reg == 0x18 || reg == 0x1c) {
             unsigned index = (reg - 0x10) / 4;
             s->bar_probe[index] = value == UINT32_MAX;
@@ -284,6 +320,9 @@ static void write_word(Tegra30PCIEState *s, hwaddr addr, uint32_t value)
         }
         if (offset == 0x7c && value == 0xdeadbeef) {
             /* RCC publishes its ring layout after MMX outbound DMA setup. */
+            s->tx_head = s->rx_head = 0;
+            s->link_notified = false;
+            memset(s->shared, 0, sizeof(s->shared));
             s->shared[0x18 / 4] = 0x48;
             s->shared[0x1c / 4] = 32;
             s->shared[0x30 / 4] = 0x48 + 32 * 28;
