@@ -22,6 +22,7 @@
 typedef struct MHI2MachineState {
     MachineState parent_obj;
     char *iram_filename;
+    char *pmic_model;
     Tegra30State *soc;
     MemoryRegion gl_mmio;
     MemoryRegion gl_bulk;
@@ -105,6 +106,26 @@ static const MemoryRegionOps gl_ops = {
     .read = gl_read, .write = gl_write, .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 4 },
 };
+
+static char *mhi2_get_pmic(Object *obj, Error **errp)
+{
+    MHI2MachineState *s = (MHI2MachineState *)obj;
+
+    return g_strdup(s->pmic_model ? s->pmic_model : "legacy");
+}
+
+static void mhi2_set_pmic(Object *obj, const char *value, Error **errp)
+{
+    MHI2MachineState *s = (MHI2MachineState *)obj;
+
+    if (strcmp(value, "legacy") && strcmp(value, "tps65911") &&
+        strcmp(value, "max20024")) {
+        error_setg(errp, "pmic must be legacy, tps65911 or max20024");
+        return;
+    }
+    g_free(s->pmic_model);
+    s->pmic_model = g_strdup(value);
+}
 
 static char *mhi2_get_iram(Object *obj, Error **errp)
 {
@@ -211,9 +232,21 @@ static void mhi2_harman_init(MachineState *machine)
      * reads the 6-byte board ID from registers 0x6a.. and matches the first
      * byte against a board-variant table; 0x20 selects a known board.
      */
-    I2CSlave *pmic = i2c_slave_new("tegra30-i2c-dbg", 0x2d);
-    qdev_prop_set_uint8(DEVICE(pmic), "fill", 0x20);
-    i2c_slave_realize_and_unref(pmic, soc->i2c[4].bus, &error_fatal);
+    I2CSlave *pmic;
+    if (!ms->pmic_model || !strcmp(ms->pmic_model, "legacy")) {
+        pmic = i2c_slave_new("tegra30-i2c-dbg", 0x2d);
+        qdev_prop_set_uint8(DEVICE(pmic), "fill", 0x20);
+        i2c_slave_realize_and_unref(pmic, soc->i2c[4].bus, &error_fatal);
+    } else {
+        bool maxim = !strcmp(ms->pmic_model, "max20024");
+
+        pmic = i2c_slave_new("mhi2-pmic", maxim ? 0x3c : 0x2d);
+        qdev_prop_set_bit(DEVICE(pmic), "maxim", maxim);
+        i2c_slave_realize_and_unref(pmic, soc->i2c[4].bus, &error_fatal);
+        /* Emulator fixture wiring; production PMIC IRQ routing is unproven. */
+        qdev_connect_gpio_out(DEVICE(pmic), 0,
+                              qdev_get_gpio_in(DEVICE(&soc->a9mpcore), 86));
+    }
 
     /*
      * IOC control interface: QNX's IocI2c resmgr masters to the IOC as an I2C
@@ -313,6 +346,8 @@ static void mhi2_harman_machine_init(MachineClass *mc)
 
     object_class_property_add_str(OBJECT_CLASS(mc), "iram",
                                   mhi2_get_iram, mhi2_set_iram);
+    object_class_property_add_str(OBJECT_CLASS(mc), "pmic",
+                                  mhi2_get_pmic, mhi2_set_pmic);
     mc->desc = "MHI2 Harman";
     mc->init = mhi2_harman_init;
     mc->block_default_type = IF_SD;
