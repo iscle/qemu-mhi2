@@ -2,6 +2,7 @@
 #include "qemu/units.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -93,6 +94,22 @@ static uint64_t tegra30_clk_read(void *opaque, hwaddr offset,
     return s->regs[idx];
 }
 
+/* CAR L/H/U/V/W peripheral reset registers and atomic set/clear aliases. */
+static const unsigned reset_reg[] = { 0x004, 0x008, 0x00c, 0x358, 0x35c };
+static const unsigned reset_set[] = { 0x300, 0x308, 0x310, 0x430, 0x438 };
+static const unsigned reset_clr[] = { 0x304, 0x30c, 0x314, 0x434, 0x43c };
+static const unsigned i2c_reset_id[] = { 12, 54, 67, 103, 47 };
+
+static void tegra30_clk_update_resets(Tegra30ClkState *s)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(i2c_reset_id); i++) {
+        unsigned id = i2c_reset_id[i];
+
+        qemu_set_irq(s->i2c_reset[i],
+                     !!(s->regs[reset_reg[id / 32] / 4] & BIT(id % 32)));
+    }
+}
+
 static void tegra30_clk_write(void *opaque, hwaddr offset,
                                    uint64_t val, unsigned size)
 {
@@ -105,6 +122,22 @@ static void tegra30_clk_write(void *opaque, hwaddr offset,
         offset = 0x36c;
     }
     const uint32_t idx = REG_INDEX(offset);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(reset_reg); i++) {
+        uint32_t *reg = &s->regs[reset_reg[i] / 4];
+
+        if (offset == reset_reg[i]) {
+            *reg = val;
+        } else if (offset == reset_set[i]) {
+            *reg |= val;
+        } else if (offset == reset_clr[i]) {
+            *reg &= ~val;
+        } else {
+            continue;
+        }
+        tegra30_clk_update_resets(s);
+        return;
+    }
 
     switch (offset) {
     case REG_CLK_RST_CONTROLLER_RST_CPUG_CMPLX_CLR_0: {
@@ -155,6 +188,7 @@ static void tegra30_clk_reset(DeviceState *dev)
     Tegra30ClkState *s = TEGRA30_CLK(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
+    tegra30_clk_update_resets(s);
     /* NVIDIA T30 arclk_rst.h reset values. */
     s->regs[0x20 / 4] = 0x10000000; /* CCLK_BURST_POLICY: IDLE, CLK_M */
     s->regs[0x368 / 4] = 0x10000000; /* CCLKG_BURST_POLICY: IDLE, CLK_M */
@@ -188,6 +222,7 @@ static void tegra30_clk_init(Object *obj)
     memory_region_init_io(&s->iomem, OBJECT(s), &tegra30_clk_ops, s,
                           TYPE_TEGRA30_CLK, TEGRA30_CLK_IOSIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+    qdev_init_gpio_out_named(DEVICE(obj), s->i2c_reset, "i2c-reset", 5);
 }
 
 static const VMStateDescription tegra30_clk_vmstate = {

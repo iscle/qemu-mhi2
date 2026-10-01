@@ -203,6 +203,10 @@ static uint64_t tegra30_i2c_read(void *opaque, hwaddr offset,
     Tegra30I2CState *s = TEGRA30_I2C(opaque);
     uint32_t avail;
 
+    if (s->reset_asserted) {
+        return 0;
+    }
+
     switch (offset) {
     case 0x54: {
         uint32_t word = 0;
@@ -323,6 +327,10 @@ static void tegra30_i2c_write(void *opaque, hwaddr offset,
 {
     Tegra30I2CState *s = TEGRA30_I2C(opaque);
 
+    if (s->reset_asserted) {
+        return;
+    }
+
     switch (offset) {
     case I2C_CNFG_OFFSET:
         s->cnfg = value;
@@ -350,11 +358,10 @@ static void tegra30_i2c_write(void *opaque, hwaddr offset,
         /* read-only */
         break;
     case I2C_SL_CNFG_OFFSET:
+        I2C_DBG(s, "SL_CNFG 0x%08x -> 0x%08x (phase %u)",
+                s->sl_cnfg, (uint32_t)value, s->slv_phase);
         s->sl_cnfg = value;
-        if (value & BIT(1)) {
-            /* NACK disables slave reception while the master owns the bus. */
-            tegra30_i2c_slv_frame_done(s);
-        }
+        /* NACK rejects new addresses; a received frame still needs draining. */
         break;
     case I2C_SL_STATUS_OFFSET:
         /*
@@ -422,7 +429,7 @@ static void tegra30_i2c_write(void *opaque, hwaddr offset,
 void tegra30_i2c_slave_deliver(Tegra30I2CState *s, const uint8_t *buf,
                                uint32_t len)
 {
-    if (s->sl_cnfg & BIT(1)) {
+    if (s->reset_asserted || (s->sl_cnfg & BIT(1))) {
         return;
     }
     if (s->slv_phase != 0) {
@@ -455,6 +462,11 @@ static void tegra30_i2c_reset(DeviceState *dev)
 {
     Tegra30I2CState *s = TEGRA30_I2C(dev);
 
+    s->reset_asserted = false;
+    if (s->bus) {
+        i2c_end_transfer(s->bus);
+    }
+    qemu_set_irq(s->irq, 0);
     s->packet_words = s->packet_remaining = 0;
     s->rx_count = s->rx_pos = 0;
     s->packet_seen = s->packet_active = s->packet_read = false;
@@ -484,6 +496,16 @@ static void tegra30_i2c_reset(DeviceState *dev)
     memset(s->regs, 0, sizeof(s->regs));
 }
 
+static void tegra30_i2c_reset_input(void *opaque, int n, int level)
+{
+    Tegra30I2CState *s = opaque;
+
+    if (level && !s->reset_asserted) {
+        tegra30_i2c_reset(DEVICE(s));
+    }
+    s->reset_asserted = level;
+}
+
 static void tegra30_i2c_realize(DeviceState *dev, Error **errp)
 {
     Tegra30I2CState *s = TEGRA30_I2C(dev);
@@ -495,13 +517,15 @@ static void tegra30_i2c_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 
     s->bus = i2c_init_bus(dev, NULL);
+    qdev_init_gpio_in_named(dev, tegra30_i2c_reset_input, "reset", 1);
 }
 
 static const VMStateDescription tegra30_i2c_vmstate = {
     .name = "tegra30-i2c",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_V(reset_asserted, Tegra30I2CState, 3),
         VMSTATE_UINT32_ARRAY(packet_header, Tegra30I2CState, 3),
         VMSTATE_UINT32(packet_words, Tegra30I2CState),
         VMSTATE_UINT32(packet_remaining, Tegra30I2CState),

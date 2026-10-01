@@ -41,6 +41,7 @@ struct Tegra30ClkState {
     /** Array of hardware registers */
     uint32_t regs[TEGRA30_CLK_REGS_NUM];
     bool oscillator_12mhz;
+    qemu_irq i2c_reset[5];
 
 };
 
