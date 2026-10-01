@@ -1,6 +1,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -166,7 +167,10 @@ static void tegra30_clk_reset(DeviceState *dev)
     s->regs[0xd0 / 4] = 0x10c;
     s->regs[0x4b8 / 4] = 0x10c;
     s->regs[0xe8 / 4] = 0x0d18c801; /* PLLE_BASE, TRM 6.5.41 */
-    s->regs[0x50 / 4] = 0x3f1; /* OSC_CTRL */
+    s->regs[0x50 / 4] = 0x3f1; /* OSC_CTRL: default 13 MHz crystal. */
+    if (s->oscillator_12mhz) {
+        s->regs[0x50 / 4] |= 8U << 28;
+    }
 
     /* Set default values for registers */
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLP_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLP_BASE_0_RST;
@@ -196,12 +200,18 @@ static const VMStateDescription tegra30_clk_vmstate = {
     }
 };
 
+static const Property tegra30_clk_properties[] = {
+    DEFINE_PROP_BOOL("oscillator-12mhz", Tegra30ClkState, oscillator_12mhz,
+                     false),
+};
+
 static void tegra30_clk_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     device_class_set_legacy_reset(dc, tegra30_clk_reset);
     dc->vmsd = &tegra30_clk_vmstate;
+    device_class_set_props(dc, tegra30_clk_properties);
 }
 
 static const TypeInfo tegra30_clk_info = {
