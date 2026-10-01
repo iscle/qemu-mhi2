@@ -200,6 +200,8 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     static const int i2c_irq[5] = { 38, 84, 92, 120, 53 };
     for (int i = 0; i < ARRAY_SIZE(s->i2c); i++) {
         sysbus_realize(SYS_BUS_DEVICE(&s->i2c[i]), &error_fatal);
+        qdev_connect_gpio_out_named(DEVICE(&s->clk), "i2c-reset", i,
+                qdev_get_gpio_in_named(DEVICE(&s->i2c[i]), "reset", 0));
         sysbus_mmio_map(SYS_BUS_DEVICE(&s->i2c[i]), 0, i2c_base[i]);
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->i2c[i]), 0,
                            qdev_get_gpio_in(DEVICE(&s->a9mpcore), i2c_irq[i]));

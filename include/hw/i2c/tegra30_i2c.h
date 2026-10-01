@@ -89,6 +89,7 @@ struct Tegra30I2CState {
     uint32_t cmd_data2;
     uint32_t status;
     uint32_t sl_cnfg;
+    bool reset_asserted;
 
     /* Slave-mode receive path, used by the on-board companion (IOC) link. */
     uint32_t sl_addr1;
