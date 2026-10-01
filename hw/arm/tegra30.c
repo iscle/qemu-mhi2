@@ -190,6 +190,9 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(pcie), 1,
                        qdev_get_gpio_in(DEVICE(&s->a9mpcore), 99));
 
+    sysbus_create_simple("tegra30-rtc", 0x7000e000,
+                         qdev_get_gpio_in(DEVICE(&s->a9mpcore), 2));
+
     /* I2C controllers (I2C1-4 and the DVC controller, I2C5) + GIC SPIs. */
     static const hwaddr i2c_base[5] = {
         0x7000C000, 0x7000C400, 0x7000C500, 0x7000C700, 0x7000D000,
