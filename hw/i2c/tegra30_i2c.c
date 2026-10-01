@@ -351,6 +351,10 @@ static void tegra30_i2c_write(void *opaque, hwaddr offset,
         break;
     case I2C_SL_CNFG_OFFSET:
         s->sl_cnfg = value;
+        if (value & BIT(1)) {
+            /* NACK disables slave reception while the master owns the bus. */
+            tegra30_i2c_slv_frame_done(s);
+        }
         break;
     case I2C_SL_STATUS_OFFSET:
         /*
@@ -418,6 +422,9 @@ static void tegra30_i2c_write(void *opaque, hwaddr offset,
 void tegra30_i2c_slave_deliver(Tegra30I2CState *s, const uint8_t *buf,
                                uint32_t len)
 {
+    if (s->sl_cnfg & BIT(1)) {
+        return;
+    }
     if (s->slv_phase != 0) {
         /* A frame is still being consumed by the driver; drop this one. */
         I2C_DBG(s, "deliver dropped: phase %u busy", s->slv_phase);
@@ -487,7 +494,7 @@ static void tegra30_i2c_realize(DeviceState *dev, Error **errp)
                           TYPE_TEGRA30_I2C, TEGRA30_I2C_IOSIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
 
-    s->bus = i2c_init_bus(dev, "i2c");
+    s->bus = i2c_init_bus(dev, NULL);
 }
 
 static const VMStateDescription tegra30_i2c_vmstate = {
