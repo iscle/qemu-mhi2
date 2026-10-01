@@ -162,7 +162,7 @@ static void tegra30_clk_write(void *opaque, hwaddr offset,
     case 0x4c0 ... TEGRA30_CLK_IOSIZE:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: out-of-bounds offset 0x%04x\n",
                       __func__, (uint32_t)offset);
-        break;
+        return;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: unimplemented write offset 0x%04x\n",
                       __func__, (uint32_t)offset);
