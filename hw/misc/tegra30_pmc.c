@@ -8,6 +8,8 @@
 
 /* Register offsets */
 enum {
+    REG_PWRGATE_TOGGLE              = 0x030,
+    REG_REMOVE_CLAMPING             = 0x034,
     REG_APBDEV_PMC_PWRGATE_STATUS_0 = 0x038,
     REG_APBDEV_PMC_SCRATCH1_0       = 0x054,
 };
@@ -38,13 +40,16 @@ static uint64_t tegra30_pmc_read(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
+    case REG_PWRGATE_TOGGLE:
+    case REG_REMOVE_CLAMPING:
+        break;
     case REG_APBDEV_PMC_PWRGATE_STATUS_0:
         // empty
         break;
     case REG_APBDEV_PMC_SCRATCH1_0:
         // empty
         break;
-    case 0x314 ... TEGRA30_PMC_IOSIZE:
+    case 0x314 ... TEGRA30_PMC_IOSIZE - 1:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: out-of-bounds offset 0x%04x\n",
                       __func__, (uint32_t)offset);
         return 0;
@@ -63,10 +68,24 @@ static void tegra30_pmc_write(void *opaque, hwaddr offset,
     const uint32_t idx = REG_INDEX(offset);
 
     switch (offset) {
-    case 0x314 ... TEGRA30_PMC_IOSIZE:
+    case REG_PWRGATE_TOGGLE:
+        /* START toggles the selected partition; completion clears START. */
+        if ((val & BIT(8)) && (val & 0x1f) < 14) {
+            s->regs[REG_INDEX(REG_APBDEV_PMC_PWRGATE_STATUS_0)] ^=
+                BIT(val & 0x1f);
+        }
+        s->regs[idx] = val & ~BIT(8);
+        return;
+    case REG_REMOVE_CLAMPING:
+        /* Command register: clamp removal completes synchronously. */
+        s->regs[idx] = 0;
+        return;
+    case REG_APBDEV_PMC_PWRGATE_STATUS_0:
+        return;
+    case 0x314 ... TEGRA30_PMC_IOSIZE - 1:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: out-of-bounds offset 0x%04x\n",
                       __func__, (uint32_t)offset);
-        break;
+        return;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: unimplemented write offset 0x%04x\n",
                       __func__, (uint32_t)offset);
@@ -91,6 +110,7 @@ static void tegra30_pmc_reset(DeviceState *dev)
 {
     Tegra30PmcState *s = TEGRA30_PMC(dev);
 
+    memset(s->regs, 0, sizeof(s->regs));
     /* Set default values for registers */
     s->regs[REG_INDEX(REG_APBDEV_PMC_PWRGATE_STATUS_0)] = REG_APBDEV_PMC_PWRGATE_STATUS_0_RST;
     s->regs[REG_INDEX(REG_APBDEV_PMC_SCRATCH1_0)] = REG_APBDEV_PMC_SCRATCH1_0_RST;
@@ -109,8 +129,8 @@ static void tegra30_pmc_init(Object *obj)
 
 static const VMStateDescription tegra30_pmc_vmstate = {
     .name = "tegra30-pmc",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, Tegra30PmcState, TEGRA30_PMC_REGS_NUM),
         VMSTATE_END_OF_LIST()

@@ -10,7 +10,7 @@
  */
 
 /** Size of register I/O address space used by power management controller device */
-#define TEGRA30_PMC_IOSIZE        (0x3FF)
+#define TEGRA30_PMC_IOSIZE        0x400
 
 /** Total number of known registers */
 #define TEGRA30_PMC_REGS_NUM      (TEGRA30_PMC_IOSIZE / sizeof(uint32_t))
