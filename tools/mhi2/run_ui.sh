@@ -2,22 +2,13 @@
 # Run the prepared experimental media with the production RCC input peer.
 set -eu
 cd "$(dirname "$0")/../.."
-media=/home/iscle/Downloads/mhi2-analysis/qemu
 export MHI2_GL=1 MHI2_RCC=1 MHI2_MOST=1
-export MHI2_DEBUG_NOR="$media/k3342-gl-debug-nor.bin"
-if [[ -z "${MHI2_EMMC:-}" ]]; then
-    MHI2_EMMC="$media/emmc-gl.raw"
-    if [[ -f "$media/emmc-maps.raw" && -f "$media/emmc-maps.maps.json" ]]; then
-        MHI2_EMMC="$media/emmc-maps.raw"
-    fi
-    if [[ -f "$media/emmc-complete.raw" && -f "$media/emmc-complete.speech.json" ]]; then
-        MHI2_EMMC="$media/emmc-complete.raw"
-    fi
+if [[ -x ../build/qemu/qemu-system-arm ]]; then
+    export QEMU_SYSTEM_ARM="${QEMU_SYSTEM_ARM:-$PWD/../build/qemu/qemu-system-arm}"
 fi
-export MHI2_EMMC
 export MHI2_TIMEOUT="${MHI2_TIMEOUT:-86400}"
 export MHI2_COMMAND_FIFO=/tmp/mhi2-shell-commands
-if [[ ! -x /tmp/mhi2-glhost || tools/mhi2/glforward/host/glhost.c -nt /tmp/mhi2-glhost || tools/mhi2/glforward/host/known_shaders.h -nt /tmp/mhi2-glhost || tools/mhi2/glforward/host/encoder.h -nt /tmp/mhi2-glhost ]]; then
+if [[ ! -x /tmp/mhi2-glhost || tools/mhi2/glforward/host/glhost.c -nt /tmp/mhi2-glhost || tools/mhi2/glforward/host/known_shaders.h -nt /tmp/mhi2-glhost || tools/mhi2/glforward/host/audi_shaders.h -nt /tmp/mhi2-glhost || tools/mhi2/glforward/host/encoder.h -nt /tmp/mhi2-glhost ]]; then
     cc -O2 tools/mhi2/glforward/host/glhost.c -o /tmp/mhi2-glhost -lEGL -lGLESv2 -pthread
 fi
 cat > /tmp/mhi2-diag-commands.txt <<'GUEST'

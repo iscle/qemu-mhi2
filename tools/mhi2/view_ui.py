@@ -7,10 +7,12 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
 
-# Firmware org.dsi.ifc.keypanel.Constants; RCC peer selects ABT keyboard 13.
+from firmware_profile import current
+
+# Firmware org.dsi.ifc.keypanel.Constants; profile selects ABT/FCC identity.
 LEFT_KEYS = [('RADIO', 15), ('MEDIA', 1), ('PHONE', 3), ('VOICE', 50)]
 RIGHT_KEYS = [('NAV', 4), ('TRAFFIC', 5), ('CAR', 6), ('MENU', 78)]
 
@@ -20,6 +22,7 @@ class Panel(QWidget):
         super().__init__()
         self.setFixedSize(800, 480)
         self.status = status
+        self.touch_enabled = current()["touch"]
         self.frame = QImage()
         self.stamp = None
         self.pressed = None
@@ -43,7 +46,7 @@ class Panel(QWidget):
                        y=max(0, min(479, point.y()))))
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if self.touch_enabled and event.button() == Qt.LeftButton:
             self.pressed = event.position().toPoint()
             self.touch('press', self.pressed)
 
@@ -118,6 +121,8 @@ def control_column(keys, knob_text, knob_code, panel):
         connect_key(button, code, panel)
         column.addWidget(button)
     column.addStretch()
+    if knob_code is None:
+        return column
     column.addWidget(RotaryButton(knob_text, knob_code, panel), alignment=Qt.AlignHCenter)
     turns = QHBoxLayout()
     for text, ticks in [('−', -1), ('+', 1)]:
@@ -178,7 +183,8 @@ class ClusterWindow(QWidget):
 
 def create_window():
     window = QWidget()
-    window.setWindowTitle('Volkswagen MHI2')
+    profile = current()
+    window.setWindowTitle(profile['title'])
     window.setStyleSheet('''
         QWidget { background: #202124; color: #eeeeee; }
         QPushButton { background: #34363a; border: 1px solid #65676b;
@@ -189,20 +195,53 @@ def create_window():
         QLabel { color: #bfc2c7; font-size: 12px; }
     ''')
     layout = QVBoxLayout(window)
-    status = QLabel('Touch the screen or use the side buttons. Scroll over a knob to turn it.')
+    status = QLabel('Touch the screen or use the side buttons. Scroll over a knob to turn it.'
+                   if profile['touch'] else
+                   'Use the MMI controller: turn to browse, press to select. Arrow keys, Enter and Esc also work.')
     panel = Panel(status)
     fascia = QHBoxLayout()
     fascia.setSpacing(14)
-    fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
-    fascia.addWidget(panel)
-    fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
-    layout.addLayout(fascia)
+    if profile['touch']:
+        fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
+        fascia.addWidget(panel)
+        fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
+        layout.addLayout(fascia)
+    else:
+        layout.addWidget(panel)
+        shortcuts = QHBoxLayout()
+        for name, code in [('RADIO',15), ('MEDIA',1), ('NAV',4), ('TEL',3), ('CAR',6), ('MENU',78)]:
+            button = QPushButton(name)
+            button.setObjectName(name.lower())
+            button.setMinimumHeight(42)
+            connect_key(button, code, panel)
+            shortcuts.addWidget(button)
+        layout.addLayout(shortcuts)
+        controller = QHBoxLayout()
+        controller.addLayout(control_column([('TOP\nLEFT',8), ('BOTTOM\nLEFT',9)], 'VOLUME',17,panel))
+        controller.addStretch()
+        controller.addLayout(control_column([], 'SELECT',16,panel))
+        controller.addStretch()
+        controller.addLayout(control_column([('TOP\nRIGHT',11), ('BOTTOM\nRIGHT',12), ('BACK',13)], None,None,panel))
+        layout.addLayout(controller)
+        def tap(code):
+            panel.send(dict(type='key',code=code,pressed=1))
+            QTimer.singleShot(60, lambda: panel.send(dict(type='key',code=code,pressed=0)))
+        window.input_shortcuts = []
+        for key, ticks in [('Left',-1), ('Up',-1), ('Right',1), ('Down',1)]:
+            shortcut = QShortcut(QKeySequence(key),window)
+            shortcut.activated.connect(lambda ticks=ticks: panel.send(dict(type='encoder',code=16,ticks=ticks)))
+            window.input_shortcuts.append(shortcut)
+        for key, code in [('Return',16), ('Enter',16), ('Escape',13), ('M',78)]:
+            shortcut = QShortcut(QKeySequence(key),window)
+            shortcut.activated.connect(lambda code=code: tap(code))
+            window.input_shortcuts.append(shortcut)
     footer = QHBoxLayout()
-    back = QPushButton('BACK')
-    back.setFixedSize(100, 32)
-    back.setToolTip('Additional back control')
-    connect_key(back, 13, panel)
-    footer.addWidget(back)
+    if profile['touch']:
+        back = QPushButton('BACK')
+        back.setFixedSize(100, 32)
+        back.setToolTip('Additional back control')
+        connect_key(back, 13, panel)
+        footer.addWidget(back)
     footer.addStretch()
     cluster=ClusterWindow(window,panel.send)
     window.cluster=cluster

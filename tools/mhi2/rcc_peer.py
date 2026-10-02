@@ -16,6 +16,7 @@ import select
 import uuid
 import json
 import stat
+from firmware_profile import current
 from rcc_services import Services
 from rcc_features import state_vector
 from audio_host import AudioEndpoint
@@ -46,6 +47,7 @@ class Peer:
         self.flows = {}
         self.cluster_requested = False
         self.services = Services()
+        self.profile = current()
         self.next_connect = time.monotonic() + 5
         self.local_port = 40000 + int(time.monotonic()) % 20000
         self.audio = AudioEndpoint()
@@ -168,21 +170,23 @@ class Peer:
             if 'keypanel_reply' not in flow: continue
             now = int(time.monotonic() * 1000) & 0x7fffffff
             if event['type'] == 'touch':
+                if not self.profile['touch']:
+                    raise ValueError('This firmware uses the console controller, not a touchscreen')
                 gesture = {'press': 4, 'release': 3, 'tap': 1, 'drag': 5}[event['action']]
                 payload = struct.pack('!iiiBiiiiii', 13, gesture, 1, 0, x, y, 1, 0, now, 1)
                 method = 42
             elif event['type'] == 'key':
                 if not 0 <= int(event['code']) <= 116 or int(event['pressed']) not in (0, 1):
                     raise ValueError('Invalid key code or state')
-                # K3342 configurationmanager.res maps display hardkeys to
-                # keyboard 13 (the ABT), not generic FCC keyboard 1.
-                payload = struct.pack('!iiiii', 13, int(event['code']), int(event['pressed']), now, 1)
+                # VW uses the display panel (ABT 13); Audi uses the
+                # center-console controller (FCC 1).
+                payload = struct.pack('!iiiii', self.profile['keyboard'], int(event['code']), int(event['pressed']), now, 1)
                 method = 38
             elif event['type'] == 'encoder':
                 code, ticks = int(event['code']), int(event['ticks'])
                 if code not in (16, 17) or not -32 <= ticks <= 32 or not ticks:
                     raise ValueError('Invalid encoder or tick count')
-                payload = struct.pack('!iiiii', 13, code, ticks, 0, 1)
+                payload = struct.pack('!iiiii', self.profile['keyboard'], code, ticks, 0, 1)
                 method = 30
             else: raise ValueError('Unknown input type')
             self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], method) + payload)
@@ -388,15 +392,15 @@ class Peer:
                     attrs = struct.unpack_from('!' + 'I' * count, msg, 10)
                     print('Keypanel subscriptions', attrs, flush=True)
                     for attr in attrs:
-                        initial = {25: (38, (13, 0, 0, 0, 129)),
-                                   26: (43, (13, 1, 129)),
+                        initial = {25: (38, (self.profile['keyboard'], 0, 0, 0, 129)),
+                                   26: (43, (self.profile['keyboard'], 1, 129)),
                                    19: (6, (1, 129)),
-                                   23: (30, (13, 0, 0, 0, 129))}.get(attr)
+                                   23: (30, (self.profile['keyboard'], 0, 0, 0, 129))}.get(attr)
                         if initial:
                             mid, values = initial
                             self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], mid) + struct.pack('!' + 'i' * len(values), *values))
                         elif attr == 20:
-                            self.comm(key, flow, b'\x06' + struct.pack('!HHiiiBiiiiii', flow['keypanel_reply'], 42, 13, 0, 1, 0, 0, 0, 0, 0, 0, 129))
+                            self.comm(key, flow, b'\x06' + struct.pack('!HHiiiBiiiiii', flow['keypanel_reply'], 42, self.profile['keyboard'], 0, 1, 0, 0, 0, 0, 0, 0, 129))
                 elif stub == 100:
                     try:
                         for mid, payload in self.services.handle('DSIKeyPanel', method, msg[5:]):

@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Check firmware input routing and the desktop controller without a VM."""
+import os
+import struct
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QPushButton
+from firmware_profile import current
+from rcc_peer import Peer
+from view_ui import Panel, create_window
+
+app = QApplication([])
+for name, keyboard in [('vw', 13), ('audi-a3', 1)]:
+    os.environ['MHI2_FIRMWARE'] = name
+    peer = Peer.__new__(Peer)
+    peer.profile = current()
+    peer.flows = {0: {'keypanel_reply': 123}}
+    packets = []
+    peer.comm = lambda key, flow, data: packets.append(data)
+    peer.input_event(dict(type='key', code=78, pressed=1))
+    peer.input_event(dict(type='encoder', code=16, ticks=-2))
+    assert struct.unpack('!HH', packets[0][1:5]) == (123, 38)
+    assert struct.unpack('!iii', packets[0][5:17]) == (keyboard, 78, 1)
+    assert struct.unpack('!HHiii', packets[1][1:17]) == (123, 30, keyboard, 16, -2)
+    if name == 'audi-a3':
+        try:
+            peer.input_event(dict(type='touch', action='tap', x=100, y=100))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Audi accepted a touchscreen event')
+    window = create_window()
+    window.show()
+    app.processEvents()
+    panel = window.findChild(Panel)
+    events = []
+    panel.send = events.append
+    QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(100, 100))
+    if name == 'vw':
+        assert [event['action'] for event in events] == ['press', 'tap', 'release']
+    else:
+        assert events == []
+        QTest.mouseClick(window.findChild(QPushButton, 'menu'), Qt.LeftButton)
+        assert [event['pressed'] for event in events] == [1, 0]
+        assert all(event['code'] == 78 for event in events)
+        events.clear()
+        QTest.mouseClick(window.findChild(QPushButton, 'encoder_16_1'), Qt.LeftButton)
+        assert events == [dict(type='encoder', code=16, ticks=1)]
+        events.clear()
+        QTest.keyClick(window, Qt.Key_Left)
+        assert events == [dict(type='encoder', code=16, ticks=-1)]
+    window.close()
+    print(name, 'input routing and controls passed')
