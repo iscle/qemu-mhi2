@@ -31,7 +31,8 @@ extern void free(void *);
 extern void abort(void);
 static unsigned record_key;
 static volatile unsigned record_key_state;
-struct Record { unsigned char *data; unsigned size, used, capacity, reply; };
+struct ClientAttribute { const void *pointer; u32 size, type, normalized, stride, buffer, upload, enabled; };
+struct Record { u32 array_buffer, element_buffer; struct ClientAttribute attribute[16]; u32 index_upload; unsigned char *data; unsigned size, used, capacity, reply; };
 static void release_record(void *p)
 { struct Record *r=p; if(r){free(r->data);free(r);} }
 static struct Record *current_record(void)
@@ -44,7 +45,7 @@ static struct Record *current_record(void)
     }
     struct Record *r=pthread_getspecific(record_key);
     if(!r){r=malloc(sizeof(*r));if(!r)abort();
-        r->data=0;r->capacity=r->used=r->size=r->reply=0;
+        for(unsigned i=0;i<sizeof(*r);i++)((unsigned char *)r)[i]=0;
         if(pthread_setspecific(record_key,r))abort();}
     return r;
 }
@@ -136,7 +137,7 @@ static void rec(u32 op,u32 total)
     if(size>r->capacity){r->data=realloc(r->data,size);if(!r->data)abort();r->capacity=size;}
     u32 *h=(u32 *)r->data;
     h[0]=119;h[1]=4;h[2]=getpid();h[3]=op;h[4]=total;
-    r->size=size;r->used=20;r->reply=(op>=100&&op<=109)||op==120||op==121||op==123||op==124||op==126||op==127;
+    r->size=size;r->used=20;r->reply=(op>=100&&op<=109)||op==120||op==121||op==123||op==124||op==126||op==127||op==128;
     if(!total)commit_record(r);
 }
 static void record_part(const void *p,unsigned n)
@@ -276,7 +277,16 @@ u32 eglReleaseThread(void) { return 1; }
 u32 eglBindAPI(u32 api) {if(api!=0x30a0){egl_error=0x300c;return 0;}bound_api=api;return 1;}
 u32 eglWaitGL(void) { return 1; }
 u32 eglWaitNative(i32 e) { (void)e; return 1; }
-const char *eglQueryString(void *dpy, i32 name) { (void)dpy; if(name==0x3055)return "EGL_KHR_image EGL_KHR_image_base "; return "glshim-fwd"; }
+const char *eglQueryString(void *dpy, i32 name) { (void)dpy; if(name==0x3055)return "EGL_KHR_image EGL_KHR_image_base EGL_NV_system_time "; return "glshim-fwd"; }
+/* EGL_NV_system_time uses the guest's monotonic nanosecond clock. */
+extern int ClockTime(int, const unsigned long long *, unsigned long long *);
+unsigned long long eglGetSystemTimeFrequencyNV(void) { return 1000000000ULL; }
+unsigned long long eglGetSystemTimeNV(void)
+{
+    unsigned long long now = 0;
+    if (ClockTime(2 /* QNX CLOCK_MONOTONIC */, 0, &now) != 0) abort();
+    return now;
+}
 void *eglGetProcAddress(const char *n);
 void *eglGetCurrentDisplay(void) { return (void *)1; }
 void *eglGetCurrentContext(void) { return (void *)1; }
@@ -332,7 +342,11 @@ void glGenBuffers(i32 n, u32 *b)
     u32 cnt = (u32)n; PART(&cnt, 4);
     for (i32 i = 0; i < n; i++) { b[i] = __sync_add_and_fetch(&g_id,1); PART(&b[i], 4); }
 }
-void glBindBuffer(u32 target, u32 id) { u32 p[2] = { target, id }; emit_iv(16, (i32 *)p, 2); }
+void glBindBuffer(u32 target, u32 id) {
+    struct Record *state=current_record();
+    if(target==0x8892)state->array_buffer=id;
+    if(target==0x8893)state->element_buffer=id;
+    u32 p[2] = { target, id }; emit_iv(16, (i32 *)p, 2); }
 void glBufferData(u32 target, i32 size, const void *data, u32 usage)
 {
     u32 sz = size < 0 ? 0 : (u32)size;
@@ -352,11 +366,56 @@ void glDeleteBuffers(i32 n, const u32 *b) { (void)n;(void)b; }
 /* ---------------- vertex attribs ---------------- */
 void glVertexAttribPointer(u32 index, i32 size, u32 type, u32 norm, i32 stride, const void *ptr)
 {
-    u32 p[6] = { index, (u32)size, type, norm ? 1u : 0u, (u32)stride, (u32)(unsigned long)ptr };
-    emit_iv(19, (i32 *)p, 6);
+    struct Record *state=current_record();
+    if(index>=16 || size<1 || size>4 || stride<0)abort();
+    struct ClientAttribute *at=&state->attribute[index];
+    at->pointer=ptr;at->size=size;at->type=type;at->normalized=!!norm;
+    at->stride=stride;at->buffer=state->array_buffer;
+    if(at->buffer){
+        u32 p[6]={index,size,type,!!norm,stride,(u32)(unsigned long)ptr};
+        emit_iv(19,(i32 *)p,6);
+    }
 }
-void glEnableVertexAttribArray(u32 index) { emit_iv(20, (i32 *)&index, 1); }
-void glDisableVertexAttribArray(u32 index) { emit_iv(21, (i32 *)&index, 1); }
+void glEnableVertexAttribArray(u32 index) {
+    if(index>=16)abort();current_record()->attribute[index].enabled=1;
+    emit_iv(20,(i32 *)&index,1);
+}
+void glDisableVertexAttribArray(u32 index) {
+    if(index>=16)abort();current_record()->attribute[index].enabled=0;
+    emit_iv(21,(i32 *)&index,1);
+}
+static unsigned component_bytes(u32 type)
+{
+    switch(type){case 0x1400:case 0x1401:return 1;
+    case 0x1402:case 0x1403:return 2;
+    case 0x1404:case 0x1405:case 0x1406:case 0x140c:return 4;
+    default:abort();return 0;}
+}
+static int has_client_attributes(void)
+{
+    struct Record *state=current_record();
+    for(unsigned i=0;i<16;i++)
+        if(state->attribute[i].enabled && !state->attribute[i].buffer)return 1;
+    return 0;
+}
+static void upload_client_attributes(unsigned vertices)
+{
+    struct Record *state=current_record();u32 restore=state->array_buffer;
+    for(unsigned i=0;i<16;i++){
+        struct ClientAttribute *at=&state->attribute[i];
+        if(!at->enabled || at->buffer)continue;
+        unsigned element=at->size*component_bytes(at->type);
+        unsigned stride=at->stride?at->stride:element;
+        unsigned long long bytes=(unsigned long long)(vertices-1)*stride+element;
+        if(!at->pointer || bytes>16*1024*1024-12)abort();
+        if(!at->upload)glGenBuffers(1,&at->upload);
+        glBindBuffer(0x8892,at->upload);
+        glBufferData(0x8892,(i32)bytes,at->pointer,0x88e0);
+        u32 p[6]={i,at->size,at->type,at->normalized,stride,0};
+        emit_iv(19,(i32 *)p,6);
+    }
+    glBindBuffer(0x8892,restore);
+}
 
 /* ---------------- uniforms ---------------- */
 static void uni_vec(u32 op, i32 loc, i32 count, u32 per, const float *v)
@@ -382,9 +441,42 @@ void glUniform1f(i32 loc, float v) { float p[2]; ((i32 *)p)[0] = loc; p[1] = v; 
 void glUniform1i(i32 loc, i32 v) { i32 p[2] = { loc, v }; emit_iv(30, p, 2); }
 
 /* ---------------- draws ---------------- */
-void glDrawArrays(u32 mode, i32 first, i32 count) { i32 p[3] = { (i32)mode, first, count }; emit_iv(31, p, 3); }
+void glDrawArrays(u32 mode, i32 first, i32 count)
+{
+    if(first<0 || count<0 || (u32)count>0x7fffffffU-(u32)first)abort();
+    if(count && has_client_attributes())upload_client_attributes((u32)first+count);
+    i32 p[3]={mode,first,count};emit_iv(31,p,3);
+}
 void glDrawElements(u32 mode, i32 count, u32 type, const void *indices)
-{ u32 p[4] = { mode, (u32)count, type, (u32)(unsigned long)indices }; emit_iv(32, (i32 *)p, 4); }
+{
+    struct Record *state=current_record();u32 restore=state->element_buffer;
+    if(count<0 || (type!=0x1401 && type!=0x1403 && type!=0x1405))abort();
+    unsigned bytes=component_bytes(type),maximum=0;
+    if(count && has_client_attributes()){
+        if(restore){
+            u32 p[3]={count,type,(u32)(unsigned long)indices};
+            emit_iv(128,(i32 *)p,3);recv_all(&maximum,4);
+            if(maximum==0xffffffffU)abort();
+        }else{
+            if(!indices)abort();
+            for(i32 i=0;i<count;i++){
+                u32 value=0;memcpy(&value,(const unsigned char *)indices+i*bytes,bytes);
+                if(value>maximum)maximum=value;
+            }
+        }
+        if(maximum==0xffffffffU)abort();
+        upload_client_attributes(maximum+1);
+    }
+    if(count && !restore){
+        if(!indices || (unsigned long long)count*bytes>16*1024*1024-12)abort();
+        if(!state->index_upload)glGenBuffers(1,&state->index_upload);
+        glBindBuffer(0x8893,state->index_upload);
+        glBufferData(0x8893,count*bytes,indices,0x88e0);
+        indices=0;
+    }
+    u32 p[4]={mode,count,type,(u32)(unsigned long)indices};emit_iv(32,(i32 *)p,4);
+    glBindBuffer(0x8893,restore);
+}
 
 /* ---------------- pipeline state ---------------- */
 void glEnable(u32 cap) { emit_iv(33, (i32 *)&cap, 1); }
@@ -662,6 +754,8 @@ int glVertexAttribPointerBounds(void) { static int seen; if(!seen){seen=1;const 
 extern int strcmp(const char *,const char *);
 void *eglGetProcAddress(const char *n)
 {
+    if (!strcmp(n,"eglGetSystemTimeFrequencyNV")) return (void *)&eglGetSystemTimeFrequencyNV;
+    if (!strcmp(n,"eglGetSystemTimeNV")) return (void *)&eglGetSystemTimeNV;
     if (!strcmp(n,"eglCreateImageKHR")) return (void *)&eglCreateImageKHR;
     if (!strcmp(n,"eglDestroyImageKHR")) return (void *)&eglDestroyImageKHR;
     if (!strcmp(n,"eglBindAPI")) return (void *)&eglBindAPI;
@@ -892,5 +986,8 @@ void *eglGetProcAddress(const char *n)
     if (!strcmp(n,"glVertexAttribPointer")) return (void *)&glVertexAttribPointer;
     if (!strcmp(n,"glVertexAttribPointerBounds")) return (void *)&glVertexAttribPointerBounds;
     if (!strcmp(n,"glViewport")) return (void *)&glViewport;
+    write(2, "glbridge: unresolved EGL procedure: ", sizeof("glbridge: unresolved EGL procedure: ")-1);
+    write(2, n, strlen(n));
+    write(2, "\n", 1);
     return 0;
 }

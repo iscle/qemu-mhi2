@@ -72,9 +72,10 @@ static void begin_binary_blend(unsigned mode, struct BlendState *saved)
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &saved->equation_alpha);
     glEnable(GL_BLEND);
     glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
-    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
-                        mode == 2 ? GL_ZERO : GL_ONE,
-                        mode == 2 ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(mode == 5 ? GL_ZERO : (mode == 3 ? GL_SRC_ALPHA : GL_ONE),
+                        mode >= 4 ? GL_ZERO : GL_ONE_MINUS_SRC_ALPHA,
+                        (mode == 2 || mode == 5) ? GL_ZERO : (mode == 3 ? GL_SRC_ALPHA : GL_ONE),
+                        mode == 2 ? GL_ONE : (mode >= 4 ? GL_ZERO : GL_ONE_MINUS_SRC_ALPHA));
 }
 
 static void end_binary_blend(unsigned mode, const struct BlendState *saved)
@@ -83,6 +84,37 @@ static void end_binary_blend(unsigned mode, const struct BlendState *saved)
     glBlendFuncSeparate(saved->src_rgb, saved->dst_rgb, saved->src_alpha, saved->dst_alpha);
     glBlendEquationSeparate(saved->equation_rgb, saved->equation_alpha);
     if (!saved->enabled) glDisable(GL_BLEND);
+}
+
+/* Local GLSL extracted from paired source/binary Kanzi firmware resources. */
+static char *load_firmware_shader(uint64_t hash, uint32_t size, unsigned *mode)
+{
+    const char *directory = getenv("MHI2_SHADER_CACHE");
+    char path[4096];
+    if (!directory) return NULL;
+    int n = snprintf(path, sizeof(path), "%s/%016llx-%u.blend",
+                     directory, (unsigned long long)hash, size);
+    if (n < 0 || n >= sizeof(path)) return NULL;
+    FILE *file = fopen(path, "r");
+    if (!file) return NULL;
+    int valid = fscanf(file, "%u", mode) == 1 && *mode <= 5;
+    fclose(file);
+    if (!valid) return NULL;
+    snprintf(path, sizeof(path), "%s/%016llx-%u.glsl",
+             directory, (unsigned long long)hash, size);
+    file = fopen(path, "rb");
+    if (!file) return NULL;
+    if (fseek(file, 0, SEEK_END)) { fclose(file); return NULL; }
+    long length = ftell(file);
+    if (length <= 0 || length > 1024*1024) { fclose(file); return NULL; }
+    rewind(file);
+    char *source = malloc(length + 1);
+    if (!source) { fclose(file); return NULL; }
+    valid = fread(source, 1, length, file) == length;
+    fclose(file);
+    if (!valid) { free(source); return NULL; }
+    source[length] = 0;
+    return source;
 }
 
 static GLuint M(uint32_t id) { return id < MAXOBJ ? gmap[id] : 0; }
@@ -281,6 +313,8 @@ static int valid_record(uint32_t op,uint32_t len,const uint8_t *p)
     if(op==127)return len>=24 && u32(p,4)>0 && u32(p,4)<=2048 && u32(p,8)>0 && u32(p,8)<=2048 &&
         !(u32(p,4)&1) && !(u32(p,8)&1) && u32(p,12)>0 && u32(p,12)<=60 &&
         u32(p,16)>=64000 && u32(p,16)<=20000000 && u32(p,20)<=1 && (uint64_t)u32(p,4)*u32(p,8)*4==len-24;
+    if(op==128)return len==12 && u32(p,0)<=16*1024*1024 &&
+        (u32(p,4)==GL_UNSIGNED_BYTE || u32(p,4)==GL_UNSIGNED_SHORT || u32(p,4)==GL_UNSIGNED_INT);
     if(op==122 || op==126)return len==4;
     if(op==123 || op==124)return len==12 && u32(p,8)<=4096;
     if(op==125)return len==4 && u32(p,0)==1;
@@ -446,9 +480,38 @@ static void serve(int cfd)
             uint32_t tgt = u32(p,0), off = u32(p,4), sz = u32(p,8);
             glBufferSubData(tgt, off, sz, (len >= 12 + sz && sz) ? (p + 12) : NULL); } break;
 
-        case 19: /* glVertexAttribPointer {index,size,type,norm,stride,offset} */
+        case 19: { /* Guest pointers are offsets into a bound VBO only. */
+            GLint binding = 0;
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &binding);
+            if (!binding) {
+                fprintf(stderr, "glhost: vertex array lacks transferred buffer\n");
+                return;
+            }
             glVertexAttribPointer(u32(p,0), i32(p,4), u32(p,8), u32(p,12) ? GL_TRUE : GL_FALSE,
                                   i32(p,16), (const void *)(uintptr_t)u32(p,20)); break;
+        }
+        case 128: { /* Maximum EBO index for copying guest client attributes. */
+            uint32_t maximum = UINT32_MAX, count = u32(p,0), type = u32(p,4), offset = u32(p,8);
+            unsigned width = type == GL_UNSIGNED_BYTE ? 1 : (type == GL_UNSIGNED_SHORT ? 2 : (type == GL_UNSIGNED_INT ? 4 : 0));
+            GLint size = 0;
+            glGetBufferParameteriv(GL_ELEMENT_ARRAY_BUFFER, GL_BUFFER_SIZE, &size);
+            void *(*map)(GLenum, GLintptr, GLsizeiptr, GLbitfield) = (void *)eglGetProcAddress("glMapBufferRange");
+            GLboolean (*unmap)(GLenum) = (void *)eglGetProcAddress("glUnmapBuffer");
+            if (width && count && map && unmap && (uint64_t)offset+(uint64_t)count*width <= (uint32_t)size) {
+                const uint8_t *indices = map(GL_ELEMENT_ARRAY_BUFFER, offset, (size_t)count*width, 1 /* GL_MAP_READ_BIT */);
+                if (indices) {
+                    maximum = 0;
+                    for (uint32_t i = 0; i < count; i++) {
+                        uint32_t value = 0;
+                        memcpy(&value, indices+(size_t)i*width, width);
+                        if (value > maximum) maximum = value;
+                    }
+                    unmap(GL_ELEMENT_ARRAY_BUFFER);
+                }
+            }
+            fwrite(&maximum, 4, 1, stdout); fflush(stdout);
+            break;
+        }
         case 20: glEnableVertexAttribArray(u32(p,0)); break;
         case 21: glDisableVertexAttribArray(u32(p,0)); break;
 
@@ -519,6 +582,20 @@ static void serve(int cfd)
                     glShaderSource(shader,1,&shaders[i].source,NULL);
                     glCompileShader(shader);check_shader("translated shader",shader,0);
                     matched=true;break;
+                }
+            }
+            if (!matched && count == 1) {
+                unsigned mode;
+                char *source = load_firmware_shader(hash, size, &mode);
+                if (source) {
+                    GLuint shader = M(u32(p,12));
+                    blend->shader[u32(p,12)] = mode;
+                    const char *text = source;
+                    glShaderSource(shader, 1, &text, NULL);
+                    glCompileShader(shader);
+                    check_shader("firmware source shader", shader, 0);
+                    free(source);
+                    matched = true;
                 }
             }
             if (!matched) fprintf(stderr,"UNSUPPORTED NVIDIA shader hash=%016llx\n",(unsigned long long)hash);

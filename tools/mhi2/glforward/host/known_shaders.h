@@ -7,6 +7,7 @@
  * Tegra's baked destination reads without requiring framebuffer-fetch GLSL.
  */
 static const struct { uint64_t hash; size_t size; const char *source; unsigned blend; } shaders[] = {
+#include "audi_shaders.h"
 { UINT64_C(0x841571f264507820), 708, "attribute vec2 position;uniform vec2 uGlobalOffset;uniform vec4 uSource,uTarget;varying mediump vec2 texout;void main(){texout=position*uSource.zw+uSource.xy;gl_Position=vec4(position*uTarget.zw+uTarget.xy+uGlobalOffset,0.0,1.0);}" },
 { UINT64_C(0x713bf0146ddfca27), 744, "attribute vec2 position;uniform vec4 uSourceBottom,uSourceTop,uTarget;varying mediump vec2 texBottom,texTop;void main(){texBottom=position*uSourceBottom.zw+uSourceBottom.xy;texTop=position*uSourceTop.zw+uSourceTop.xy;gl_Position=vec4(position*uTarget.zw+uTarget.xy,0.0,1.0);}" },
 { UINT64_C(0xf5f1d8bd3514e58c), 520, "attribute vec2 attrTex,attrVertex;varying mediump vec2 var_tex;void main(){var_tex=attrTex;gl_Position=vec4(attrVertex,0.0,1.0);}" },
@@ -36,4 +37,7 @@ static const struct { uint64_t hash; size_t size; const char *source; unsigned b
 { UINT64_C(0x4b859a92ee435632), 904, "precision mediump float;uniform vec4 u_color;uniform vec3 u_fogColor;varying float v_fogFactor;void main(){gl_FragColor=vec4(mix(u_fogColor,u_color.rgb,clamp(v_fogFactor,0.0,1.0)),1.0);}" },
 { UINT64_C(0x798d05d4c458a967), 1104, "attribute vec4 a_position;attribute vec4 a_custom;uniform mat4 u_mvpMatrix;uniform vec3 u_origin;uniform vec2 u_scaleH;uniform float u_scaleXYZ,u_widthScale,u_roadGeometryWidthHalf,u_fogStart,u_fogEnd;varying mediump float v_fogFactor;void main(){vec3 p=a_position.xyz*u_scaleXYZ;p+=(u_origin+p)*(a_position.w*u_scaleH.x+u_scaleH.y);p+=a_custom.xyz*(u_widthScale*u_roadGeometryWidthHalf);gl_Position=u_mvpMatrix*vec4(p,1.0);v_fogFactor=gl_Position.w*u_fogStart+u_fogEnd;}" },
 { UINT64_C(0x7d495213a2eb81e3), 1228, "precision mediump float;uniform vec4 u_color;uniform vec3 u_fogColor;varying float v_fogFactor;void main(){vec3 rgb=clamp(mix(u_fogColor,u_color.rgb,clamp(v_fogFactor,0.0,1.0)),0.0,1.0);float a=clamp(u_color.a,0.0,1.0);gl_FragColor=vec4(rgb*a,a);}", 2 },
+/* Audi P5089 masked compositor, recovered from captured Tegra programs. */
+{ UINT64_C(0xb372986db48cc454), 1412, "attribute vec2 position; uniform vec4 uSource,uTarget; uniform vec2 uResolution,maskOffset; uniform float uAngle,maskAngle; varying mediump vec2 texout,maskout; void main(){ vec2 inv=1.0/uResolution; vec2 rotated=vec2(cos(uAngle)*position.x-sin(uAngle)*position.y,sin(uAngle)*position.x+cos(uAngle)*position.y); vec2 origin=uTarget.xy*inv*2.0-1.0; origin-=vec2(fract(uTarget.z*.5)>0.0?inv.x:0.0,fract(uTarget.w*.5)>0.0?inv.y:0.0); gl_Position=vec4(rotated*uTarget.zw*inv+origin,0.0,1.0); texout=uSource.xy+(position+1.0)*uSource.zw*.5; vec2 m=texout-maskOffset*inv; maskout=vec2(cos(maskAngle)*m.x-sin(maskAngle)*m.y,sin(maskAngle)*m.x+cos(maskAngle)*m.y); }" },
+{ UINT64_C(0xa1d1062962f918ff), 952, "precision mediump float; varying vec2 texout,maskout; uniform sampler2D tex,mask; uniform float opacity; void main(){ gl_FragColor=texture2D(tex,texout)*(texture2D(mask,maskout).r*opacity); }", 1 },
 };
