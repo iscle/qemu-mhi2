@@ -4,8 +4,10 @@ Upstream QEMU `81ce3a87737aa50716c42db8886082d12783e0a1` was merged into
 `mhi2-mainline-boot` in `/home/iscle/qemu-mhi2`. The original mounted checkout
 and firmware captures have not been modified.
 
-See [Audi A3 P5089 support](AUDI_A3.md) for the second firmware profile and
-rotary controller interface.
+For a new computer, start with the [Audi A3 reproduction guide](AUDI_A3.md#reproduce-on-another-computer).
+It covers dependencies, the private bootstrap download, building from the
+original P5089 archive, and launching the native UI with rotary controls.
+The workspace-specific commands below describe the older VW setup.
 
 ## Run the prepared K3342 firmware
 
