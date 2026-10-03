@@ -21,18 +21,21 @@ def run(command, **kwargs):
     subprocess.run(list(map(str, command)), check=True, **kwargs)
 
 
-def build_dependencies():
+def build_dependencies(cache):
     """Fetch the pinned C build dependencies without Meson's shallow clones."""
     for name in ('keycodemapdb', 'berkeley-softfloat-3', 'berkeley-testfloat-3'):
         wrap = configparser.ConfigParser()
         wrap.read(REPO/'subprojects'/(name+'.wrap'))
         spec = wrap['wrap-git']
         destination = REPO/'subprojects'/name
+        vendored = destination.exists() and not (destination/'.git').exists()
+        vendored_source = destination
+        if vendored:
+            destination = cache/name
+            cache.mkdir(parents=True, exist_ok=True)
         if not destination.exists():
             run(['git', 'clone', spec['url'], destination])
             run(['git', '-C', destination, 'checkout', '--detach', spec['revision']])
-        if not (destination/'.git').exists():
-            raise ValueError('Unversioned build dependency; use a fresh QEMU clone: '+str(destination))
         shallow = subprocess.check_output(['git', '-C', str(destination),
                                            'rev-parse', '--is-shallow-repository'], text=True).strip()
         if shallow == 'true':
@@ -48,6 +51,23 @@ def build_dependencies():
                     if not target.exists():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(source, target)
+        if vendored:
+            # This private branch includes dependency snapshots. Verify every
+            # tracked snapshot file against the pinned full-history checkout,
+            # including QEMU's build overlays, without changing source files.
+            tracked = subprocess.check_output(
+                ['git', '-C', str(REPO), 'ls-files', '-z', '--',
+                 str(vendored_source.relative_to(REPO))]).decode().split('\0')
+            if not any(tracked):
+                raise ValueError('Untracked dependency directory: '+str(vendored_source))
+            for filename in filter(None, tracked):
+                original = REPO/filename
+                relative = original.relative_to(vendored_source)
+                if relative.name == '.meson-subproject-wrap-hash.txt':
+                    continue
+                expected = destination/relative
+                if not expected.is_file() or original.read_bytes() != expected.read_bytes():
+                    raise ValueError('Vendored dependency differs from pinned source: '+filename)
 
 
 def main():
@@ -87,7 +107,7 @@ def main():
     metadata = (firmware/'metainfo2.txt').read_text()
     if 'MHI2_ER_AU37x_P5089' not in metadata:
         ap.error('Archive is not the supported Audi A3 P5089 update')
-    build_dependencies()
+    build_dependencies(args.output/'dependencies')
     build = args.output/'qemu'
     build.mkdir()
     run([REPO/'configure', '--target-list=arm-softmmu', '--disable-docs',

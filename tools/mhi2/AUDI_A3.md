@@ -62,8 +62,10 @@ python -m pip install -r tools/mhi2/requirements-audi.txt
 ```
 
 This is a full-history clone. The build script also clones QEMU's three pinned
-C build dependencies with full history, applies their Meson build overlays,
-and disables optional Rust devices. There is no need to build all the ROM
+C build dependencies with full history and applies their Meson build overlays.
+For dependency snapshots already included in this private branch, it keeps
+the full histories under `audi-build/dependencies/` and verifies the snapshot
+files against the pinned upstream sources. It disables optional Rust devices. There is no need to build all the ROM
 submodules. Initial setup needs access to GitHub, GitLab and PyPI. See
 [QEMU's build-system documentation](https://www.qemu.org/docs/master/devel/build-system.html)
 for the configure/Meson/Ninja workflow.
