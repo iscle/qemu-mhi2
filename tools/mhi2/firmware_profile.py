@@ -15,7 +15,10 @@ def current():
     name = os.environ.get('MHI2_FIRMWARE', 'vw')
     if name not in PROFILES:
         raise ValueError('Unknown MHI2 firmware: ' + name)
-    return PROFILES[name]
+    profile = dict(PROFILES[name])
+    if os.environ.get('MHI2_METADATA'):
+        profile['metadata'] = os.environ['MHI2_METADATA']
+    return profile
 
 
 def configure(name, media=None):
@@ -25,11 +28,16 @@ def configure(name, media=None):
     profile = current()
     os.environ['MHI2_OSCILLATOR_12MHZ'] = str(int(profile['oscillator_12mhz']))
     if name == 'audi-a3' or media:
-        directory = Path(media or '/home/iscle/mhi2-audi-port/media/audi-a3')
+        directory = Path(media or '/home/iscle/mhi2-audi-port/media/audi-a3').resolve()
         import json
         manifest = json.loads((directory / 'ui-manifest.json').read_text())
         if manifest.get('firmware_train') != profile['train']:
             raise ValueError('Media firmware does not match selected profile')
+        if manifest.get('metadata'):
+            metadata = directory / manifest['metadata']
+            if not metadata.is_file():
+                raise ValueError('Missing firmware metadata: ' + str(metadata))
+            os.environ['MHI2_METADATA'] = str(metadata)
         if manifest.get('shader_cache'):
             cache = directory / manifest['shader_cache']
             if not (cache / 'manifest.json').is_file():

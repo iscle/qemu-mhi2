@@ -24,7 +24,7 @@ if os.environ.get('MHI2_GL'):
   assert stat.S_ISFIFO(os.stat(name).st_mode)
  glin=os.open('/tmp/mhi2-gl.in',os.O_RDWR)
  glout=os.open('/tmp/mhi2-gl.out',os.O_RDWR)
- glhost=subprocess.Popen(['/tmp/mhi2-glhost'],stdin=glout,stdout=glin,stderr=open('/tmp/mhi2-glhost.log','w'))
+ glhost=subprocess.Popen([os.environ.get('MHI2_GLHOST', '/tmp/mhi2-glhost')],stdin=glout,stdout=glin,stderr=open('/tmp/mhi2-glhost.log','w'))
  cmd += ['-chardev','pipe,id=glbridge,path=/tmp/mhi2-gl']
 rcc_peer = None
 pass_fds = ()

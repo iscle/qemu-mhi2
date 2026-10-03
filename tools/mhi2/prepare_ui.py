@@ -56,6 +56,7 @@ def pack_lzo(raw):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--bridge-dir', type=Path, default=Path('/tmp'))
     ap.add_argument('--base', type=Path, required=True)
     ap.add_argument('--main-ifs', type=Path, required=True)
     ap.add_argument('--app', type=Path, required=True)
@@ -100,12 +101,12 @@ def main():
     replacements = {}
     for name, offset, size in entries(main):
         if name in ('lib/libEGL.so', 'lib/libGLESv2.so', 'lib/libnvvsenc.so'):
-            data = Path('/tmp/mhi2-'+name[4:]).read_bytes()
+            data = (args.bridge_dir / ('mhi2-'+name[4:])).read_bytes()
             assert len(data) <= size
             main[offset:offset+size] = data.ljust(size, b'\0')
             replacements[name] = hashlib.sha256(data).hexdigest()
     assert len(replacements) == 3
-    main = add_file(main, 'sbin/mhi2-pcm-endpoint', Path('/tmp/mhi2-pcm-endpoint').read_bytes())
+    main = add_file(main, 'sbin/mhi2-pcm-endpoint', (args.bridge_dir / 'mhi2-pcm-endpoint').read_bytes())
     compressed = pack_lzo(main)
     assert len(compressed) <= 0x2a00000
     nor[0xa60000:0x3460000] = compressed.ljust(0x2a00000, b'\xff')
@@ -139,7 +140,8 @@ def main():
             out.write(payload[offset:offset+fs.bs])
     subprocess.run([sys.executable, str(Path(__file__).with_name('extract_kanzi_shaders.py')),
                     '--app', str(args.app), '--output', str(args.output / 'shaders')], check=True)
-    report = {'firmware_train': train, 'shader_cache': 'shaders', 'base': str(args.base), 'app': str(args.app),
+    subprocess.run(['cp', str(metadata), str(args.output / 'metainfo2.txt')], check=True)
+    report = {'metadata': 'metainfo2.txt', 'firmware_train': train, 'shader_cache': 'shaders', 'base': str(args.base), 'app': str(args.app),
               'graphics_bridge': replacements,
               'startup': 'production startup plus diagnostic shell',
               'hmi_executable': 'unchanged', 'emulator_only': True}

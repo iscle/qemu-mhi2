@@ -32,30 +32,186 @@ click the selection knob to enter. Arrow keys turn the selection knob,
 Enter selects, Esc goes back, and M opens Menu. Screen clicks do not generate
 touch events. VW retains touchscreen input and ABT keyboard 13.
 
-## Preparation
+## Reproduce on another computer
 
-Keep the archive and previous VW media unchanged. Extract the Audi archive to
-`/home/iscle/mhi2-audi-port/firmware`, then use `prepare.py` with that directory
-and the previously captured variant-70 baseline NOR/IRAM/eMMC. Use
-`extract_main_ifs.py` to unpack Audi's `mifs-stage2.img`.
+Use a Linux x86-64 host, Python 3.11 or newer, an EGL/OpenGL ES capable graphics
+driver, and an ordinary desktop session for the viewer. The tested host is
+Fedora; the following package example is for Ubuntu 24.04. Reserve about 25 GB
+for a full-history checkout, extracted firmware, build outputs and sparse disk
+images. More space is needed if the destination filesystem does not preserve
+sparse files. No QNX SDK or Ghidra installation is required.
 
-Build the bridge libraries without invoking the old VW-specific media builder:
+### 1. Install dependencies and clone the private branch
 
 ```sh
-MHI2_BUILD_LIBRARIES_ONLY=1 bash tools/mhi2/glforward/build_local.sh
-python3 tools/mhi2/prepare_ui.py \
-  --base /home/iscle/mhi2-audi-port/media/base \
-  --main-ifs /home/iscle/mhi2-audi-port/media/main-ifs \
-  --app /home/iscle/mhi2-audi-port/firmware/MMX2/app/70/default/app.img \
-  --formatted-disk /home/iscle/Downloads/mhi2-analysis/qemu/emmc-full.raw \
-  --output /path/to/new-audi-media
+sudo apt update
+sudo apt install build-essential git pkg-config ninja-build python3-venv \
+  python3-dev libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
+  libffi-dev libegl-dev libgles-dev liblzo2-2 p7zip-full zstd ffmpeg \
+  libxcb-cursor0 libxkbcommon-x11-0 gh curl
+
+gh auth login
+gh auth setup-git
+mkdir -p "$HOME/mhi2-repro"
+cd "$HOME/mhi2-repro"
+git clone --branch mhi2-audi-a3 https://github.com/iscle/qemu-mhi2.git qemu
+cd qemu
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r tools/mhi2/requirements-audi.txt
 ```
 
-The builder requires a new output directory. It copies the formatted data-disk
-layout, replaces its app filesystem, installs matching compressed main IFS
-copies in NOR and `/img_restore`, and adds the existing diagnostic shell/audio
-endpoint and graphics bridge. It extracts the local Kanzi GLSL cache from the
-user's app image. Firmware binaries, generated GLSL and media are not Git assets.
+This is a full-history clone. The build script also clones QEMU's three pinned
+C build dependencies with full history, applies their Meson build overlays,
+and disables optional Rust devices. There is no need to build all the ROM
+submodules. Initial setup needs access to GitHub, GitLab and PyPI. See
+[QEMU's build-system documentation](https://www.qemu.org/docs/master/devel/build-system.html)
+for the configure/Meson/Ninja workflow.
+
+### 2. Install the tested ARM cross compiler
+
+The guest compatibility libraries use **xPack GNU Arm Embedded GCC 13.3.1-1.1**.
+They are freestanding ARM soft-float builds, not host Linux libraries. On an
+x86-64 Linux host:
+
+```sh
+mkdir -p ../toolchain
+cd ../toolchain
+gh release download v13.3.1-1.1 \
+  --repo xpack-dev-tools/arm-none-eabi-gcc-xpack \
+  --pattern 'xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz*'
+sha256sum -c xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz.sha
+tar -xzf xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz
+export PATH="$PWD/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin:$PATH"
+cd ../qemu
+arm-none-eabi-gcc --version
+```
+
+The upstream [toolchain release](https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/tag/v13.3.1-1.1)
+also has Linux ARM64 assets; that host architecture has not been tested here.
+Alternatively pass `--arm-prefix /absolute/path/bin/arm-none-eabi-` to the
+builder. Do not substitute `arm-linux-gnueabihf-gcc`.
+
+### 3. Obtain the firmware and emulator bootstrap
+
+Copy your original `MHI2_ER_AU37x_P5089_MU1326 (A3).7z` onto the new computer.
+The archive used for validation has SHA-256:
+
+```text
+528817504220be40638e7fb08be0e9a20ef3051ab1ea292e9c2b9ecb49884bf9
+```
+
+**The update archive alone is insufficient for this boot harness.** It does
+not supply the captured BootROM handoff/BIT/BCT, complete initial NOR layout,
+or the native-formatted data-disk template used by this emulator. These are
+provided in the private [bootstrap-v1 release](https://github.com/iscle/qemu-mhi2/releases/tag/mhi2-bootstrap-v1),
+so you do not need files from the original developer's computer:
+
+```sh
+mkdir -p ../bootstrap
+cd ../bootstrap
+gh release download mhi2-bootstrap-v1 --repo iscle/qemu-mhi2 \
+  --pattern 'mhi2-bootstrap-v1.tar.zst' --pattern SHA256SUMS
+sha256sum -c SHA256SUMS
+tar --zstd -xf mhi2-bootstrap-v1.tar.zst
+cd ../qemu
+```
+
+The compressed bootstrap's SHA-256 is
+`4c4e8eaa5a693dcfe9ece461bca302549f6f66fc1de191ccc36af11a67e4186e`.
+It contains `nor.bin` (64 MiB), `iram.bin`, `emmc-template.raw` (4 GiB logical,
+sparse), and `bootstrap.json` with per-file hashes and provenance. The app
+partition is zero-filled. Audi app/kernel/Quickboot payloads are installed
+from **your archive**, not supplied by the template. The other data partitions
+retain the previously tested native QNX6 formatting. GNU tar preserves the
+sparse disk on extraction. This bootstrap is emulator-only, not a flash image.
+
+### 4. Build everything
+
+From the checkout, with the virtual environment active:
+
+```sh
+python tools/mhi2/build_audi.py \
+  --archive "/path/to/MHI2_ER_AU37x_P5089_MU1326 (A3).7z" \
+  --bootstrap "$PWD/../bootstrap/bootstrap-v1" \
+  --output "$PWD/../audi-build" \
+  --jobs 8
+```
+
+Replace only the archive path. The output directory must not exist; existing
+firmware, media and builds are never overwritten. If a build fails, inspect
+the error and retry with a new output directory. Use fewer jobs on hosts with
+limited RAM. The script checks bootstrap hashes, extracts the archive, builds
+`qemu-system-arm`, builds the EGL/GLES/encoder/PCM bridge, assembles Audi NOR
+and eMMC media, and extracts the 240-program local Kanzi shader cache. It copies
+`metainfo2.txt` into the output media for runtime version reporting.
+
+Outputs under `audi-build`:
+
+| Path | Purpose |
+| --- | --- |
+| `qemu/qemu-system-arm` | Emulator built from this checkout |
+| `bridge/` | Host graphics executable and ARM guest compatibility binaries |
+| `firmware/` | Extracted update, left unchanged |
+| `media/base/` | Quickboot/kernel/app installation before UI bridge replacement |
+| `media/main-ifs/` | Expanded main IFS and extracted regular files |
+| `media/ui/` | Matching NOR/IRAM/eMMC, metadata and local shader cache |
+| `build-manifest.json` | Source commit, compiler, archive and bootstrap provenance |
+| `run.sh` | Launcher using these newly built files |
+
+No firmware archive, raw disk or generated proprietary GLSL is committed to
+Git. The separate bootstrap release is required input data.
+
+### 5. Boot and check
+
+```sh
+bash ../audi-build/run.sh
+```
+
+The generated launcher remembers the Python environment and source checkout,
+and selects its own QEMU, host bridge, media and metadata. Keep the checkout
+and its virtual environment in place. It does not read `/home/iscle` paths.
+For a machine without a desktop window, use `--headless`; a working EGL driver
+is still required. Do not run two sessions at once: the emulator uses shared
+`/tmp/mhi2-*` transports protected by a session lock.
+
+Expect the native English Audi UI, then use Menu and the rotary controller.
+Logs are in `/tmp/mhi2-session.log`, `/tmp/mhi2-debug-console.log`,
+`/tmp/mhi2-glhost.log` and `/tmp/mhi2-rcc-peer.log`; completed runs are archived
+under `audi-build/media/runs/`. Each boot uses writable temporary snapshots.
+
+Optional checks, run after closing the emulator:
+
+```sh
+python tools/mhi2/check_firmware_profiles.py
+python tools/mhi2/check_kanzi_shaders.py
+MHI2_GLHOST="$PWD/../audi-build/bridge/mhi2-glhost" \
+  python tools/mhi2/glforward/check_client_indices.py
+../audi-build/bridge/mhi2-glhost --check-shaders
+```
+
+If EGL initialization fails, check the installed GPU driver and permissions on
+`/dev/dri/renderD*`. `LIBGL_ALWAYS_SOFTWARE=1` is available for diagnostic runs.
+If Qt reports an xcb plugin error, check the xcb/xkb packages above and run from
+a desktop terminal. A VA-API encoder probe failure falls back to software
+encoding; it does not mean the main UI is software-rendered.
+
+### Individual preparation tools and bootstrap provenance
+
+`build_audi.py` prints each command it runs. Its pipeline is `prepare.py`,
+`extract_main_ifs.py`, and `prepare_ui.py --bridge-dir <build>/bridge`, after
+compiling the bridge with `MHI2_BUILD_LIBRARIES_ONLY=1` and
+`MHI2_BUILD_DIR=<build>/bridge`. This avoids the older VW-specific media builder.
+The builder installs identical compressed main IFS copies in NOR and the app's
+`/img_restore`, adds the diagnostic shell/audio endpoint, and replaces the
+EGL/GLES/encoder libraries. The Audi Java/EAL HMI remains unchanged.
+
+`export_bootstrap.py` records how the versioned asset was produced from the
+previously tested emulator captures. It reads the original NOR, IRAM and
+formatted disk, creates separate output files, removes the app partition
+contents, and records source/output SHA-256 hashes. It is for regenerating the
+bootstrap from those original inputs; it is **not** an archive-only substitute
+for them. The download above is the supported input on a separate computer.
 
 ## Compatibility changes
 
