@@ -106,6 +106,9 @@ struct SDHCIState {
     bool wp_inverted;
     /* Indicate that SDMA transfer is paused due to hitting the boundary */
     bool sdma_boundary_paused;
+    /* Optional board-level card detect / write protect wiring. */
+    qemu_irq card_inserted;
+    qemu_irq card_readonly;
 };
 typedef struct SDHCIState SDHCIState;
 
