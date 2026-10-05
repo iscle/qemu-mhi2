@@ -1,0 +1,24 @@
+Private MHI2 experiment: HU SD readers
+
+The existing IF_SD index 0 remains the eMMC on Tegra SDMMC4. Optional IF_SD
+indices 1 and 2 attach ordinary SD cards to SDMMC1 and SDMMC3. Example:
+
+  -drive if=sd,index=1,id=reader1,format=raw,file=example.raw,snapshot=on
+  -drive if=sd,index=2,id=reader2,format=raw,file=example2.raw,snapshot=on
+
+Use an SD-compatible card capacity (the test image is 512 MiB). Empty default
+drive backends are treated as absent cards. The QNX stock drivers identify
+these readers as sda and sdb. Observed K5126 driver parameters select card
+detect D3/D4, write protect V2/V3, and reset V6/V7. The board wires SDHCI card
+presence to active-low GPIO D3/D4 and write protect to V2/V3. SDHCI's optional
+card-inserted/card-readonly outputs leave unwired machines unchanged.
+
+QMP eject and blockdev-change-medium update those pins through the existing
+SD bus notifications. No guest filesystem alias, pre-staged script or firmware
+patch is used to make the SD bundle visible. K5126 mounted both FAT volumes
+through its original devb-mmcsd-tegra3 driver and detected runtime removal.
+
+Validation: SDHCI register qtests on raspi2b and xilinx-zynq-a9, Zynq SDMA
+read-boundary continuation, plus live K5126 SD management via the Pico's
+authenticated USB-Ethernet path. This is a private experiment, not an upstream
+QEMU contribution or evidence of Pico W electrical timing on physical hardware.

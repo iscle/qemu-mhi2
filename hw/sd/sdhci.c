@@ -271,6 +271,8 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
 {
     SDHCIState *s = (SDHCIState *)dev;
 
+    qemu_set_irq(s->card_inserted, level);
+
     trace_sdhci_set_inserted(level ? "insert" : "eject");
     if ((s->norintsts & SDHC_NIS_REMOVE) && level) {
         /* Give target some time to notice card ejection */
@@ -304,6 +306,8 @@ static void sdhci_set_sdio_irq(DeviceState *dev, bool level)
 static void sdhci_set_readonly(DeviceState *dev, bool level)
 {
     SDHCIState *s = (SDHCIState *)dev;
+
+    qemu_set_irq(s->card_readonly, level);
 
     if (s->wp_inverted) {
         level = !level;
@@ -1530,6 +1534,8 @@ static void sdhci_init_readonly_registers(SDHCIState *s, Error **errp)
 
 void sdhci_initfn(SDHCIState *s)
 {
+    qdev_init_gpio_out_named(DEVICE(s), &s->card_inserted, "card-inserted", 1);
+    qdev_init_gpio_out_named(DEVICE(s), &s->card_readonly, "card-readonly", 1);
     qbus_init(&s->sdbus, sizeof(s->sdbus), TYPE_SDHCI_BUS, DEVICE(s), "sd-bus");
 
     s->insert_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,

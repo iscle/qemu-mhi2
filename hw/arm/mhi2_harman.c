@@ -361,6 +361,26 @@ static void mhi2_harman_init(MachineState *machine)
     qdev_realize_and_unref(emmc, qdev_get_child_bus(soc->sdmmc[3], "sd-bus"),
                            &error_fatal);
 
+    /* Removable readers: stock QNX identifies SDMMC1/3 with CD D3/D4 and
+     * WP V2/V3. IF_SD index 0 remains the eMMC for existing launchers. */
+    for (int slot = 0; slot < 2; slot++) {
+        DeviceState *host = soc->sdmmc[slot ? 2 : 0];
+        DriveInfo *card_di = drive_get(IF_SD, slot + 1, 0);
+
+        qdev_connect_gpio_out_named(host, "card-inserted", 0,
+            qemu_irq_invert(qdev_get_gpio_in(DEVICE(&soc->gpio),
+                                            TEGRA30_GPIO_NR(3, 3 + slot))));
+        qdev_connect_gpio_out_named(host, "card-readonly", 0,
+            qdev_get_gpio_in(DEVICE(&soc->gpio), TEGRA30_GPIO_NR(21, 2 + slot)));
+        if (card_di && blk_bs(blk_by_legacy_dinfo(card_di))) {
+            DeviceState *card = qdev_new(TYPE_SD_CARD);
+
+            qdev_prop_set_drive(card, "drive", blk_by_legacy_dinfo(card_di));
+            qdev_realize_and_unref(card, qdev_get_child_bus(host, "sd-bus"),
+                                  &error_fatal);
+        }
+    }
+
     uint8_t *nor;
     size_t nor_size;
     if (!g_file_get_contents(machine->firmware, (gchar **) &nor, (gsize *) &nor_size, NULL)) {
