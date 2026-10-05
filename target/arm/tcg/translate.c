@@ -1863,6 +1863,13 @@ static void do_coproc_insn(DisasContext *s, int cpnum, int is64,
         break;
     case ARM_CP_NOP:
         return;
+    case ARM_CP_BARRIER:
+        /* Legacy CP15 encodings have the same ordering requirements as
+         * the ARMv7 DMB/DSB instructions. In particular, QNX 6.5 uses these
+         * around SMP kernel locks; treating them as NOP breaks MTTCG on
+         * weakly ordered hosts. Match trans_DSB() below. */
+        tcg_gen_mb(TCG_MO_ALL | TCG_BAR_SC);
+        return;
     case ARM_CP_WFI:
         if (isread) {
             unallocated_encoding(s);

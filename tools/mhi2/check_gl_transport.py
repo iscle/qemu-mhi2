@@ -16,7 +16,7 @@ host=os.open(str(pipe_path)+'.in',os.O_RDWR|os.O_NONBLOCK)
 tx=os.open(str(pipe_path)+'.out',os.O_RDWR|os.O_NONBLOCK)
 p=subprocess.Popen([str(qemu),'-M','mhi2-harman,iram='+str(media/'iram.bin'),
     '-bios',str(media/'nor.bin'),'-display','none','-serial','null','-monitor','none',
-    '-S','-qtest','stdio','-chardev',f'pipe,id=glbridge,path={pipe_path}'],
+    '-accel','qtest','-qtest','stdio','-chardev',f'pipe,id=glbridge,path={pipe_path}'],
     stdin=subprocess.PIPE,stdout=subprocess.PIPE,
     stderr=open("/tmp/mhi2-gl-transport-check.log","w"),bufsize=0,env=dict(os.environ,TMPDIR=str(media/'tmp')))
 pending=bytearray()
@@ -72,7 +72,43 @@ try:
     assert bytes.fromhex(result.decode().removeprefix('0x'))==payload
     write(base+36,len(payload))
     assert read(base+32)==0
-    print('PASS: bulk graphics RX ordering, bounded acknowledgements, empty reads and lock')
+    # A stalled renderer must not hold QEMU's global lock. Fill beyond the
+    # host pipe capacity without reading it, then run an unrelated DMA timer.
+    large=bytes(range(256))*4096
+    for off in range(0,len(large),65536):
+        part=large[off:off+65536]
+        q(f'write {bulk+off:#x} {len(part)} 0x{part.hex()}')
+    write(base+28,len(large))
+    q(f'write {bulk:#x} 4 0xdeadbeef')  # queued TX must own a copy
+    write(0x6000a000,1<<31)
+    write(0x70080000,0x80070000)
+    write(0x70080210,1)
+    write(0x70080300,0xc0001207)
+    write(0x6000b010,0x81000000)
+    write(0x6000b018,0x7008000c)
+    write(0x6000b000,0xd800001c)
+    q('clock_step 1000000')
+    assert read(0x6000b004)&(1<<30), 'Blocked renderer stalled audio DMA'
+    sent=bytearray()
+    while len(sent)<len(large):
+        assert select.select([tx],[],[],5)[0],len(sent)
+        sent.extend(os.read(tx,len(large)-len(sent)))
+    assert bytes(sent)==large, 'Queued graphics data changed with staging RAM'
+    write(base+16,0)
+    q(f'write {bulk:#x} 4 0x00010203')
+    for _ in range(17):
+        assert read(base+16)==0
+        write(base+28,len(large))
+        write(base+16,0)
+    assert read(base+16)==1, 'Queue accepted a lock without reserving record space'
+    remaining=17*len(large)
+    while remaining:
+        assert select.select([tx],[],[],5)[0],remaining
+        part=os.read(tx,min(remaining,len(large)))
+        remaining-=len(part)
+    assert read(base+16)==0, 'Backpressure left the guest lock held'
+    write(base+16,0)
+    print('PASS: bulk graphics ordering, bounded acknowledgements, lock, queued TX ownership, audio DMA progress under renderer backpressure')
 finally:
     os.close(host);os.close(tx);p.terminate()
     try:p.wait(timeout=5)

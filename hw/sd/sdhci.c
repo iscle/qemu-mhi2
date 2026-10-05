@@ -220,7 +220,14 @@ static uint8_t sdhci_slotint(SDHCIState *s)
 /* Return true if IRQ was pending and delivered */
 static bool sdhci_update_irq(SDHCIState *s)
 {
-    bool pending = sdhci_slotint(s);
+    bool pending;
+
+    if (s->sdio_irq && (s->norintstsen & SDHC_NISEN_CARDINT)) {
+        s->norintsts |= SDHC_NIS_CARDINT;
+    } else {
+        s->norintsts &= ~SDHC_NIS_CARDINT;
+    }
+    pending = sdhci_slotint(s);
 
     qemu_set_irq(s->irq, pending);
 
@@ -285,6 +292,13 @@ static void sdhci_set_inserted(DeviceState *dev, bool level)
         }
         sdhci_update_irq(s);
     }
+}
+
+static void sdhci_set_sdio_irq(DeviceState *dev, bool level)
+{
+    SDHCIState *s = (SDHCIState *)dev;
+    s->sdio_irq = level;
+    sdhci_update_irq(s);
 }
 
 static void sdhci_set_readonly(DeviceState *dev, bool level)
@@ -1769,6 +1783,7 @@ static void sdhci_bus_class_init(ObjectClass *klass, const void *data)
 {
     SDBusClass *sbc = SD_BUS_CLASS(klass);
 
+    sbc->set_irq = sdhci_set_sdio_irq;
     sbc->set_inserted = sdhci_set_inserted;
     sbc->set_readonly = sdhci_set_readonly;
 }

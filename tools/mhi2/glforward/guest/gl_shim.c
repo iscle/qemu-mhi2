@@ -1,161 +1,4 @@
-/* Experimental QNX GLES bridge, adapted from the workspace GL-forward prototype. */
-extern long write(int,const void *,unsigned long);
-
-/* GL-forward guest shim. Records: little-endian opcode, payload length, payload.
- * Transport: optional QEMU MMIO service at 0x5f000000. */
-typedef unsigned int   u32;
-typedef int            i32;
-void glUniform2iv(i32,i32,const i32 *);
-void glUniform3iv(i32,i32,const i32 *);
-void glUniform4iv(i32,i32,const i32 *);
-
-/* ---- libc / libsocket (resolved by ldqnx at load) ---- */
-extern char *getenv(const char *);
-extern int   atoi(const char *);
-extern unsigned long strlen(const char *);
-extern void *mmap_device_memory(void *, unsigned, int, int, unsigned long long);
-extern int usleep(unsigned);
-extern int getpid(void);
-static volatile unsigned char *bridge;
-static unsigned char *bulk;
-static unsigned bulk_size;
-extern void *memcpy(void *,const void *,unsigned long);
-static int g_fd = -1;
-static u32 g_id;
-extern int pthread_key_create(unsigned *, void (*)(void *));
-extern void *pthread_getspecific(unsigned);
-extern int pthread_setspecific(unsigned, const void *);
-extern void *malloc(unsigned long);
-extern void *realloc(void *, unsigned long);
-extern void free(void *);
-extern void abort(void);
-static unsigned record_key;
-static volatile unsigned record_key_state;
-struct Record { unsigned char *data; unsigned size, used, capacity, reply; };
-static void release_record(void *p)
-{ struct Record *r=p; if(r){free(r->data);free(r);} }
-static struct Record *current_record(void)
-{
-    if (record_key_state != 2) {
-        if (__sync_bool_compare_and_swap(&record_key_state,0,1)) {
-            if(pthread_key_create(&record_key,release_record))abort();
-            __sync_synchronize();record_key_state=2;
-        } else while(record_key_state!=2)usleep(1000);
-    }
-    struct Record *r=pthread_getspecific(record_key);
-    if(!r){r=malloc(sizeof(*r));if(!r)abort();
-        r->data=0;r->capacity=r->used=r->size=r->reply=0;
-        if(pthread_setspecific(record_key,r))abort();}
-    return r;
-}
-static void unlock_record(void)
-{ __asm__ volatile("dmb sy" ::: "memory"); *(volatile u32 *)(bridge+16)=0; }
-static int gl_conn(void)
-{
-    if (!bridge) {
-        /* QNX PROT_READ | PROT_WRITE | PROT_NOCACHE. */
-        bridge = mmap_device_memory(0, 12288, 0xb00, 0, 0x5f000000ULL);
-        if (bridge == (void *)-1) { bridge = 0; return -1; }
-        if (*(volatile u32 *)bridge != 0x474c4252) { bridge = 0; return -1; }
-        if (*(volatile u32 *)(bridge+24) == 1024*1024) {
-            bulk = mmap_device_memory(0, 2*1024*1024, 0xb00, 0, 0x5e000000ULL);
-            if (bulk == (void *)-1) bulk=0;
-            if (bulk) bulk_size=1024*1024;
-        }
-        g_fd = 1;
-    }
-    return g_fd;
-}
-static void send_all(const void *p, unsigned long n)
-{
-    const unsigned char *c = p;
-    if (gl_conn() < 0) return;
-    while (n) {
-        if (bulk) {
-            unsigned chunk=n>bulk_size?bulk_size:n;
-            memcpy(bulk,c,chunk);
-            __asm__ volatile("dmb sy" ::: "memory");
-            *(volatile u32 *)(bridge+28)=chunk;
-            c+=chunk;n-=chunk;
-            continue;
-        }
-        unsigned chunk = n > 4096 ? 4096 : n;
-        unsigned i=0;
-        for(;i+4<=chunk;i+=4){u32 v=c[i]|((u32)c[i+1]<<8)|((u32)c[i+2]<<16)|((u32)c[i+3]<<24);
-            *(volatile u32 *)(bridge+0x1000+i)=v;}
-        for(;i<chunk;i++)bridge[0x1000+i]=c[i];
-        __asm__ volatile("dmb sy" ::: "memory");
-        *(volatile u32 *)(bridge+4) = chunk;
-        c += chunk; n -= chunk;
-    }
-}
-static int recv_bytes(void *p, unsigned long n,int release)
-{
-    unsigned char *c = p;
-    if (gl_conn() < 0) return -1;
-    while (n) {
-        unsigned tries = 0, available;
-        while (!(available=*(volatile u32 *)(bridge+(bulk?32:8)))) {
-            if (++tries > 10000) { unlock_record(); return -1; }
-            usleep(1000);
-        }
-        unsigned chunk=available<n?available:n, i=0;
-        if (bulk) {
-            memcpy(c,bulk+bulk_size,chunk);
-            __asm__ volatile("dmb sy" ::: "memory");
-            *(volatile u32 *)(bridge+36)=chunk;
-            c+=chunk;n-=chunk;
-            continue;
-        }
-        for(;i+4<=chunk;i+=4){u32 v=*(volatile u32 *)(bridge+0x2000+i);
-            for(unsigned j=0;j<4;j++)c[i+j]=v>>(8*j);}
-        for(;i<chunk;i++)c[i]=bridge[0x2000+i];
-        __asm__ volatile("dmb sy" ::: "memory");
-        *(volatile u32 *)(bridge+20)=chunk;c+=chunk;n-=chunk;
-    }
-    if(release)unlock_record();
-    return 0;
-}
-
-static int recv_all(void *p,unsigned long n){return recv_bytes(p,n,1);}
-
-/* Build each complete command in thread-local storage before claiming MMIO.
- * Native clients can render from multiple threads and load both EGL/GLES DSOs. */
-static void commit_record(struct Record *r)
-{
-    if(gl_conn()<0)return;
-    while(*(volatile u32 *)(bridge+16))usleep(1000);
-    send_all(r->data,r->size);
-    if(!r->reply)unlock_record();
-}
-static void rec(u32 op,u32 total)
-{
-    struct Record *r=current_record();
-    if(total>16*1024*1024)abort();
-    unsigned size=20+total;
-    if(size>r->capacity){r->data=realloc(r->data,size);if(!r->data)abort();r->capacity=size;}
-    u32 *h=(u32 *)r->data;
-    h[0]=119;h[1]=4;h[2]=getpid();h[3]=op;h[4]=total;
-    r->size=size;r->used=20;r->reply=(op>=100&&op<=109)||op==120||op==121||op==123||op==124||op==126||op==127;
-    if(!total)commit_record(r);
-}
-static void record_part(const void *p,unsigned n)
-{
-    if(!n)return;
-    struct Record *r=current_record();
-    if(n>r->size-r->used)abort();
-    memcpy(r->data+r->used,p,n);
-    r->used+=n;
-    if(r->used==r->size)commit_record(r);
-}
-#define PART(p, n) record_part((p), (n))
-
-/* simple all-int record */
-static void emit_iv(u32 op, const i32 *v, u32 n)
-{
-    rec(op, n * 4);
-    PART(v, n * 4);
-}
+#include "bridge_transport.h"
 
 static void native_register_api(u32 api);
 void NvEglRegClientApi(unsigned api, void *unused)
@@ -270,7 +113,7 @@ u32 eglSwapBuffers(void *dpy, void *surf) { (void)dpy; native_window_swap(surf);
 u32 eglSwapInterval(void *dpy, i32 n) { (void)dpy;(void)n; return 1; }
 i32 eglGetError(void) {i32 e=egl_error;egl_error=0x3000;return e;}
 u32 eglTerminate(void *dpy) { (void)dpy; return 1; }
-u32 eglDestroySurface(void *dpy, void *s) { (void)dpy;(void)s; return 1; }
+u32 eglDestroySurface(void *dpy, void *s) { (void)dpy;native_window_destroy(s);return 1; }
 u32 eglDestroyContext(void *dpy, void *c) { (void)dpy;(void)c; return 1; }
 u32 eglReleaseThread(void) { return 1; }
 u32 eglBindAPI(u32 api) {if(api!=0x30a0){egl_error=0x300c;return 0;}bound_api=api;return 1;}
@@ -332,7 +175,7 @@ void glGenBuffers(i32 n, u32 *b)
     u32 cnt = (u32)n; PART(&cnt, 4);
     for (i32 i = 0; i < n; i++) { b[i] = __sync_add_and_fetch(&g_id,1); PART(&b[i], 4); }
 }
-void glBindBuffer(u32 target, u32 id) { u32 p[2] = { target, id }; emit_iv(16, (i32 *)p, 2); }
+void glBindBuffer(u32 target, u32 id) { struct Record *r=current_record();if(target==0x8892)r->array_buffer=id;if(target==0x8893)r->element_buffer=id; u32 p[2] = { target, id }; emit_iv(16, (i32 *)p, 2); }
 void glBufferData(u32 target, i32 size, const void *data, u32 usage)
 {
     u32 sz = size < 0 ? 0 : (u32)size;
@@ -347,16 +190,36 @@ void glBufferSubData(u32 target, i32 offset, i32 size, const void *data)
     u32 h[3] = { target, (u32)offset, sz };
     rec(18, 12 + dn); PART(h, 12); if (dn) PART(data, dn);
 }
-void glDeleteBuffers(i32 n, const u32 *b) { (void)n;(void)b; }
+static void delete_objects(u32 kind, i32 count, const u32 *ids)
+{
+    if (count <= 0 || !ids) return;
+    u32 header[2] = {kind, (u32)count};
+    rec(130, 8 + (u32)count * 4); PART(header, 8); PART(ids, (u32)count * 4);
+}
+void glDeleteBuffers(i32 n, const u32 *ids)
+{
+    struct Record *r = current_record();
+    for (i32 i = 0; ids && i < n; i++) {
+        if (r->array_buffer == ids[i]) r->array_buffer = 0;
+        if (r->element_buffer == ids[i]) r->element_buffer = 0;
+        for (unsigned a = 0; a < 16; a++)
+            if (r->attribs[a].buffer == ids[i]) {r->attribs[a].buffer = 0; r->attribs[a].pointer = 0;}
+    }
+    delete_objects(1, n, ids);
+}
 
 /* ---------------- vertex attribs ---------------- */
 void glVertexAttribPointer(u32 index, i32 size, u32 type, u32 norm, i32 stride, const void *ptr)
 {
+    if(index>=16)return;
+    struct Record *r=current_record();struct ClientAttrib *a=&r->attribs[index];
+    a->size=size;a->type=type;a->norm=norm;a->stride=stride;a->pointer=ptr;a->buffer=r->array_buffer;
+    if(!a->buffer)return; /* Guest pointers are copied at draw time. */
     u32 p[6] = { index, (u32)size, type, norm ? 1u : 0u, (u32)stride, (u32)(unsigned long)ptr };
     emit_iv(19, (i32 *)p, 6);
 }
-void glEnableVertexAttribArray(u32 index) { emit_iv(20, (i32 *)&index, 1); }
-void glDisableVertexAttribArray(u32 index) { emit_iv(21, (i32 *)&index, 1); }
+void glEnableVertexAttribArray(u32 index) { if(index<16)current_record()->attribs[index].enabled=1; emit_iv(20, (i32 *)&index, 1); }
+void glDisableVertexAttribArray(u32 index) { if(index<16)current_record()->attribs[index].enabled=0; emit_iv(21, (i32 *)&index, 1); }
 
 /* ---------------- uniforms ---------------- */
 static void uni_vec(u32 op, i32 loc, i32 count, u32 per, const float *v)
@@ -382,9 +245,35 @@ void glUniform1f(i32 loc, float v) { float p[2]; ((i32 *)p)[0] = loc; p[1] = v; 
 void glUniform1i(i32 loc, i32 v) { i32 p[2] = { loc, v }; emit_iv(30, p, 2); }
 
 /* ---------------- draws ---------------- */
-void glDrawArrays(u32 mode, i32 first, i32 count) { i32 p[3] = { (i32)mode, first, count }; emit_iv(31, p, 3); }
+static unsigned scalar_bytes(u32 type)
+{ return type==0x1400||type==0x1401?1:type==0x1402||type==0x1403?2:4; }
+static void upload_client_arrays(unsigned vertices)
+{
+    struct Record *r=current_record();
+    for(unsigned i=0;i<16;i++){
+        struct ClientAttrib *a=&r->attribs[i];
+        if(!a->enabled||a->buffer||!vertices)continue;
+        unsigned element=a->size*scalar_bytes(a->type),stride=a->stride?a->stride:element;
+        if(vertices>1000000 || stride>4096)abort();
+        unsigned bytes=(vertices-1)*stride+element;
+        u32 h[6]={i,a->size,a->type,a->norm,a->stride,bytes};
+        rec(128,24+bytes);PART(h,24);PART(a->pointer,bytes);
+    }
+}
+void glDrawArrays(u32 mode, i32 first, i32 count)
+{ if(first<0||count<=0)return;upload_client_arrays(first+count);i32 p[3]={(i32)mode,first,count};emit_iv(31,p,3); }
 void glDrawElements(u32 mode, i32 count, u32 type, const void *indices)
-{ u32 p[4] = { mode, (u32)count, type, (u32)(unsigned long)indices }; emit_iv(32, (i32 *)p, 4); }
+{
+    if(count<=0)return;
+    struct Record *r=current_record();
+    if(!r->element_buffer){
+        unsigned n=scalar_bytes(type),maximum=0;
+        const unsigned char *b=indices;
+        for(i32 i=0;i<count;i++){u32 v=0;for(unsigned j=0;j<n;j++)v|=(u32)b[i*n+j]<<(8*j);if(v>maximum)maximum=v;}
+        upload_client_arrays(maximum+1);
+        u32 h[4]={mode,(u32)count,type,(u32)count*n};rec(129,16+h[3]);PART(h,16);PART(indices,h[3]);
+    }else{u32 p[4]={mode,(u32)count,type,(u32)(unsigned long)indices};emit_iv(32,(i32 *)p,4);}
+}
 
 /* ---------------- pipeline state ---------------- */
 void glEnable(u32 cap) { emit_iv(33, (i32 *)&cap, 1); }
@@ -480,10 +369,7 @@ void glGetFloatv(u32 pname,float *p) {
  if(p)for(unsigned i=0;i<n;i++)p[i]=v[i];
 }
 
-/* QNX system logger stubs: some demos/HMI binaries import slogf and it is not
- * exported by this rootfs's libc.so.3 -- satisfy it via our (NEEDED) shim. */
-int slogf(void) { return 0; }
-int vslogf(void) { return 0; }
+#include "qnx_logging.h"
 int slog2f(void) { return 0; }
 int slog2c(void) { return 0; }
 int slog2_register(void) { return 0; }
@@ -509,10 +395,10 @@ int glCopyTexImage2D(void) { static int seen; if(!seen){seen=1;const char msg[]=
 int glCopyTexSubImage2D(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glCopyTexSubImage2D\n";write(2,msg,sizeof(msg)-1);} return 0; }
 int glCopyTexSubImage3DOES(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glCopyTexSubImage3DOES\n";write(2,msg,sizeof(msg)-1);} return 0; }
 int glDeleteFencesNV(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeleteFencesNV\n";write(2,msg,sizeof(msg)-1);} return 0; }
-int glDeleteFramebuffers(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeleteFramebuffers\n";write(2,msg,sizeof(msg)-1);} return 0; }
+void glDeleteFramebuffers(i32 n, const u32 *ids) { delete_objects(2, n, ids); }
 int glDeletePerfMonitorsAMD(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeletePerfMonitorsAMD\n";write(2,msg,sizeof(msg)-1);} return 0; }
-int glDeleteRenderbuffers(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeleteRenderbuffers\n";write(2,msg,sizeof(msg)-1);} return 0; }
-int glDeleteTextures(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeleteTextures\n";write(2,msg,sizeof(msg)-1);} return 0; }
+void glDeleteRenderbuffers(i32 n, const u32 *ids) { delete_objects(3, n, ids); }
+void glDeleteTextures(i32 n, const u32 *ids) { delete_objects(0, n, ids); }
 int glDeleteVertexArraysOES(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDeleteVertexArraysOES\n";write(2,msg,sizeof(msg)-1);} return 0; }
 void glDepthRangef(float near,float far){float v[2]={near,far};rec(85,8);PART(v,8);}
 int glDisableDriverControlQCOM(void) { static int seen; if(!seen){seen=1;const char msg[]="glbridge: unsupported glDisableDriverControlQCOM\n";write(2,msg,sizeof(msg)-1);} return 0; }

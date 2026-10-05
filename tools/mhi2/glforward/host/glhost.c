@@ -51,6 +51,9 @@ static GLuint *gmap = default_gmap;        /* guest object id -> real GL object 
  * state and keeping shader/program metadata isolated between guest contexts. */
 struct BlendMetadata {
     uint8_t shader[MAXOBJ], program[MAXOBJ];
+    void *client_arrays[16];
+    unsigned client_array_bytes[16];
+    struct MenuTexture *menu;
     uint32_t fragment[MAXOBJ], active_program;
 };
 static struct BlendMetadata default_blend, *blend = &default_blend;
@@ -92,6 +95,13 @@ static int32_t i32(const uint8_t *p, int off) { int32_t v; memcpy(&v, p + off, 4
 static uint32_t u32(const uint8_t *p, int off) { uint32_t v; memcpy(&v, p + off, 4); return v; }
 
 #include "encoder.h"
+#include "video_decoder.h"
+#include "menu_texture.h"
+
+static unsigned char *display_rgba;
+
+static const char *frame_path(void)
+{ const char *p=getenv("MHI2_GL_FRAME");return p&&*p?p:"/tmp/glhost_frame.ppm"; }
 
 static void dump_frame(const char *path)
 {
@@ -100,6 +110,11 @@ static void dump_frame(const char *path)
     unsigned char *rgba = malloc(n * 4);
     if (!rgba) return;
     glReadPixels(0, 0, win_w, win_h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    if (!strcmp(path,frame_path())) {
+        display_rgba=realloc(display_rgba,n*4);
+        if(display_rgba)memcpy(display_rgba,rgba,n*4);
+        video_composite(rgba,win_w,win_h);
+    }
     char temporary[4096];
     snprintf(temporary, sizeof(temporary), "%s.tmp", path);
     FILE *f = fopen(temporary, "wb");
@@ -112,6 +127,40 @@ static void dump_frame(const char *path)
         }
         if (fclose(f) == 0) rename(temporary, path);
     }
+    free(rgba);
+}
+
+/* Decoder callbacks only retain images. Publication occurs on the bridge thread. */
+static void video_display_changed(void)
+{
+    const char *cluster_path=getenv("MHI2_CLUSTER_VIDEO_FRAME");
+    if(cluster_path && *cluster_path){
+        bool active=false;
+        for(unsigned i=0;i<4;i++){
+            struct VideoDecoder *v=&video_decoders[i];
+            if(v->used&&v->target&&!v->hidden)active=true;
+            if(!v->used||!v->target||v->hidden||!v->rgba||v->published_frames==v->frames)continue;
+            char tmp[4096];snprintf(tmp,sizeof(tmp),"%s.tmp",cluster_path);
+            FILE *f=fopen(tmp,"wb");
+            /* source is validated by video_attributes, and defaults to the
+             * whole frame. Publish the negotiated viewport at native size. */
+            int *s=v->source;
+            if(f){fprintf(f,"P6\n%d %d\n255\n",s[2],s[3]);
+                for(int y=0;y<s[3];y++)for(int x=0;x<s[2];x++)
+                    fwrite(v->rgba+((size_t)(y+s[1])*v->width+x+s[0])*4,1,3,f);
+                if(!fclose(f)&&!rename(tmp,cluster_path))v->published_frames=v->frames;}
+        }
+        if(!active)unlink(cluster_path);
+    }
+    if(!display_rgba||!win_w||!win_h)return;
+    size_t bytes=(size_t)win_w*win_h*4;
+    uint8_t *rgba=malloc(bytes);if(!rgba)return;
+    memcpy(rgba,display_rgba,bytes);video_composite(rgba,win_w,win_h);
+    char tmp[4096];snprintf(tmp,sizeof(tmp),"%s.tmp",frame_path());
+    FILE *f=fopen(tmp,"wb");
+    if(f){fprintf(f,"P6\n%d %d\n255\n",win_w,win_h);
+        for(int y=win_h-1;y>=0;y--)for(int x=0;x<win_w;x++)fwrite(rgba+((size_t)y*win_w+x)*4,1,3,f);
+        if(!fclose(f))rename(tmp,frame_path());}
     free(rgba);
 }
 
@@ -133,7 +182,7 @@ static void ensure_window(int w, int h)
     if (w <= 0 || w > 8192) w = DEFAULT_W;
     if (h <= 0 || h > 8192) h = DEFAULT_H;
 
-    display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL);
     EGLint major, minor, count;
     const EGLint attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 8,
@@ -157,7 +206,7 @@ static void ensure_window(int w, int h)
     glViewport(0, 0, w, h);
     glClearColor(0.05f, 0.05f, 0.10f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    dump_frame("/tmp/glhost_frame.ppm");
+    dump_frame(frame_path());
     eglSwapBuffers(display, surface);
 }
 
@@ -190,6 +239,8 @@ static void select_client(uint32_t pid)
     blend=clients[i].blend;
     current_pid=pid;
 }
+
+#include "native_frames.h"
 
 static void pump_events(void) {}
 
@@ -278,6 +329,17 @@ static int valid_record(uint32_t op,uint32_t len,const uint8_t *p)
         [109]=5,
         [119]=5
     };
+    if(op==134)return (len==12 || (len==16 && u32(p,12)<=1)) && u32(p,4)>0 && u32(p,4)<=2048 && u32(p,8)>0 && u32(p,8)<=2048;
+    if(op==135)return len>8 && len<=VIDEO_MAX_PACKET+8 && u32(p,4)==len-8;
+    if(op==136)return len==68;
+    if(op==137)return len==4;
+    if(op==131)return len==28 && i32(p,8)>0 && i32(p,8)<=2048 &&
+        i32(p,12)>0 && i32(p,12)<=2048 && u32(p,16)==GL_RGBA && u32(p,20)==GL_UNSIGNED_BYTE;
+    if(op==132)return len==12 && u32(p,4)>0 && u32(p,4)<=2048 && u32(p,8)>0 && u32(p,8)<=2048;
+    if(op==133)return len==4;
+    if(op==128)return len>=24 && u32(p,0)<16 && u32(p,20)==len-24;
+    if(op==130)return len>=8 && u32(p,0)<=3 && (uint64_t)u32(p,4)*4==len-8;
+    if(op==129)return len>=16 && u32(p,12)==len-16 && (uint64_t)u32(p,4)*(u32(p,8)==GL_UNSIGNED_BYTE?1:u32(p,8)==GL_UNSIGNED_SHORT?2:4)==len-16;
     if(op==127)return len>=24 && u32(p,4)>0 && u32(p,4)<=2048 && u32(p,8)>0 && u32(p,8)<=2048 &&
         !(u32(p,4)&1) && !(u32(p,8)&1) && u32(p,12)>0 && u32(p,12)<=60 &&
         u32(p,16)>=64000 && u32(p,16)<=20000000 && u32(p,20)<=1 && (uint64_t)u32(p,4)*u32(p,8)*4==len-24;
@@ -343,9 +405,19 @@ static void serve(int cfd)
         /* Encoder traffic has no GL state. Polling must not flush another
          * client's renderer by repeatedly making the encoder owner's context
          * current. Owner selection takes effect lazily for graphics commands. */
-        if(op!=119 && op!=122 && op!=126 && op!=127)select_client(request_pid);
+        if(op!=119 && op!=122 && op!=126 && op!=127 && !(op>=134&&op<=137))select_client(request_pid);
 
         switch (op) {
+        case 134: case 135: case 136: case 137: {
+            uint32_t status=0;
+            if(op==134){status=video_open(request_pid,p);
+                if(!status)video_find(request_pid,u32(p,0))->target=len==16?u32(p,12):0;}
+            if(op==135)status=video_decode(request_pid,p);
+            if(op==136)status=video_attributes(request_pid,p);
+            if(op==137)video_close(request_pid,u32(p,0));
+            if(write(STDOUT_FILENO,&status,4)!=4)return;
+            break;
+        }
         case 119: request_pid=u32(p,0); break;
         case 125: primary_display_pid=current_pid;break;
         case 122: encoder_close(request_pid,u32(p,0));break;
@@ -372,7 +444,13 @@ static void serve(int cfd)
                 if(n<0&&errno==EINTR)continue;if(n<=0){free(data);return;}off+=n;}
             free(data);break;
         }
-        case 120: {
+        case 132: {
+            uint32_t hit=native_frame_upload(u32(p,0),u32(p,4),u32(p,8));
+            if(write(STDOUT_FILENO,&hit,4)!=4)return;
+            break;
+        }
+        case 133: native_frame_remove(u32(p,0));break;
+        case 120: case 131: {
             size_t size=(size_t)u32(p,8)*u32(p,12)*4;
             unsigned char *pixels=calloc(1,size);if(!pixels)return;
             GLint alignment;glGetIntegerv(GL_PACK_ALIGNMENT,&alignment);
@@ -383,16 +461,19 @@ static void serve(int cfd)
             while(done<size){ssize_t n=write(STDOUT_FILENO,pixels+done,size-done);
                 if(n<0&&errno==EINTR)continue;
                 if(n<=0){free(pixels);return;}done+=n;}
-            free(pixels);break;
+            if(op==131)native_frame_store(u32(p,24),u32(p,8),u32(p,12),pixels);
+            else free(pixels);
+            break;
         }
         case 1:  ensure_window(len >= 8 ? i32(p, 0) : 0, len >= 8 ? i32(p, 4) : 0); break;
         case 2:  ensure_window(0, 0); glViewport(i32(p,0), i32(p,4), i32(p,8), i32(p,12)); break;
         case 3:  ensure_window(0, 0); { float c[4]; memcpy(c, p, 16);
                  glClearColor(c[0], c[1], c[2], c[3]); } break;
-        case 4:  ensure_window(0, 0); glClear(u32(p, 0)); break;
+        case 4:  ensure_window(0, 0); menu_texture_reset_draw(); glClear(u32(p, 0)); break;
         case 5:  ensure_window(0, 0);
+                 menu_texture_reset_draw();
                  if(!primary_display_pid || current_pid==primary_display_pid)
-                     dump_frame("/tmp/glhost_frame.ppm");
+                     dump_frame(frame_path());
                  if(dump_clients){char path[128];snprintf(path,sizeof(path),"/tmp/mhi2-client-%u.ppm",current_pid);dump_frame(path);}
                  eglSwapBuffers(display, surface);
                  if (frames < 3 || (frames % 120) == 0)
@@ -462,13 +543,29 @@ static void serve(int cfd)
         case 29: { float v; memcpy(&v, p+4, 4); glUniform1f(i32(p,0), v); } break;
         case 30: glUniform1i(i32(p,0), i32(p,4)); break;
 
-        case 31: case 32: {
+        case 128: {
+            unsigned index=u32(p,0),bytes=u32(p,20);GLint binding;
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&binding);
+            void *data=realloc(blend->client_arrays[index],bytes);
+            if(!data && bytes)exit(1);blend->client_arrays[index]=data;
+            blend->client_array_bytes[index]=bytes;
+            memcpy(data,p+24,bytes);glBindBuffer(GL_ARRAY_BUFFER,0);
+            glVertexAttribPointer(index,i32(p,4),u32(p,8),u32(p,12),i32(p,16),data);
+            glBindBuffer(GL_ARRAY_BUFFER,binding);break;
+        }
+        case 31: case 32: case 129: {
+            GLuint menu_binding=menu_texture_begin_draw(op,p,len);
             unsigned mode=blend->program[blend->active_program];
             struct BlendState saved;
             begin_binary_blend(mode,&saved);
             if(op==31)glDrawArrays(u32(p,0),i32(p,4),i32(p,8));
-            else glDrawElements(u32(p,0),i32(p,4),u32(p,8),(const void *)(uintptr_t)u32(p,12));
-            end_binary_blend(mode,&saved);break;
+            else if(op==129){GLint binding;glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING,&binding);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,0);glDrawElements(u32(p,0),i32(p,4),u32(p,8),p+16);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,binding);
+            }else glDrawElements(u32(p,0),i32(p,4),u32(p,8),(const void *)(uintptr_t)u32(p,12));
+            end_binary_blend(mode,&saved);
+            if(menu_binding)glBindTexture(GL_TEXTURE_2D,menu_binding);
+            break;
         }
 
         case 33: glEnable(u32(p,0)); break;
@@ -482,12 +579,32 @@ static void serve(int cfd)
         case 42: { float w; memcpy(&w, p, 4); glLineWidth(w); } break;
         case 43: { float f[2]; memcpy(f, p, 8); glPolygonOffset(f[0], f[1]); } break;
 
+        case 130: { /* Delete texture/buffer/framebuffer/renderbuffer names. */
+            if (len < 8 || u32(p,4) > (len - 8) / 4) break;
+            unsigned kind = u32(p,0), count = u32(p,4);
+            if (kind > 3) break;
+            for (unsigned i = 0; i < count; i++) {
+                unsigned id = u32(p,8+4*i);
+                if (!id || id >= MAXOBJ || !gmap[id]) continue;
+                GLuint object = gmap[id];
+                switch (kind) {
+                case 0: menu_texture_deleted(object); glDeleteTextures(1, &object); break;
+                case 1: glDeleteBuffers(1, &object); break;
+                case 2: glDeleteFramebuffers(1, &object); break;
+                case 3: glDeleteRenderbuffers(1, &object); break;
+                }
+                gmap[id] = 0;
+            }
+            break;
+        }
+
         case 50: { uint32_t n = u32(p,0);
             for (uint32_t i = 0; i < n; i++) { GLuint t; glGenTextures(1, &t); gmap[u32(p,4+i*4)] = t; }
             } break;
         case 51: glBindTexture(u32(p,0), M(u32(p,4))); break;
         case 52: { /* glTexImage2D {target,level,ifmt,w,h,border,fmt,type,size,data} */
             uint32_t sz = u32(p,32);
+            if (menu_texture_upload(52,p,len)) break;
             glTexImage2D(u32(p,0), i32(p,4), i32(p,8), i32(p,12), i32(p,16), i32(p,20),
                          u32(p,24), u32(p,28), (sz && len >= 36 + sz) ? (p + 36) : NULL); } break;
         case 53: glTexParameteri(u32(p,0), u32(p,4), i32(p,8)); break;
@@ -495,6 +612,7 @@ static void serve(int cfd)
         case 55: glPixelStorei(u32(p,0), i32(p,4)); break;
         case 56: { /* glTexSubImage2D {target,level,x,y,w,h,fmt,type,size,data} */
             uint32_t sz = u32(p,32);
+            if (menu_texture_upload(56,p,len)) break;
             glTexSubImage2D(u32(p,0), i32(p,4), i32(p,8), i32(p,12), i32(p,16), i32(p,20),
                             u32(p,24), u32(p,28), (sz && len >= 36 + sz) ? (p + 36) : NULL); } break;
         case 57: glGenerateMipmap(u32(p,0)); break;
@@ -627,6 +745,7 @@ static void serve(int cfd)
 int main(int argc, char **argv)
 {
     signal(SIGPIPE,SIG_IGN);
+    menu_texture_init();
     if (argc == 2 && strcmp(argv[1], "--check-shaders") == 0) {
         ensure_window(DEFAULT_W, DEFAULT_H);
         int failed = 0;

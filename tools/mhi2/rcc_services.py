@@ -4,6 +4,7 @@ Wire IDs/layouts are recovered from the firmware's generated DSI serializers.
 Vehicle values describe an emulated parked car, not an actual vehicle identity.
 """
 import json
+import os
 import hashlib
 import re
 import struct
@@ -13,11 +14,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from rcc_persistence import Persistence, Reader
 from rcc_features import verify_data_signature, FEATURES
+from firmware_profile import common_metadata
 
-SCHEMA = json.loads(Path(__file__).with_name('dsi_schema.json').read_text())
+FIRMWARE = common_metadata()
+SCHEMA_FILE = ('dsi_schema_pog11_k5126.json'
+               if FIRMWARE.get('release') == 'MHI2_ER_POG11_K5126'
+               else 'dsi_schema.json')
+SCHEMA = json.loads(Path(__file__).with_name(SCHEMA_FILE).read_text())
 FORMATS = {'Int8':'b', 'UInt8':'B', 'Int16':'h', 'UInt16':'H',
            'Int32':'i', 'UInt32':'I', 'Int64':'q', 'UInt64':'Q',
-           'Float':'f', 'Double':'d', 'Bool':'?'}
+           'Float':'f', 'Double':'d', 'Bool':'?', 'Enum':'i'}
 
 
 def encode(kind, value=None):
@@ -62,7 +68,7 @@ def decode(kind, reader):
 def inventory():
     # Only MMX/RCC payloads in the booted firmware; optional archive components
     # (tuners, amplifiers, phones) are not asserted to be installed.
-    path = Path('/home/iscle/Downloads/mhi2-analysis/extracted/metainfo2.txt')
+    path = Path(os.environ.get('MHI2_FIRMWARE_META', '/home/iscle/Downloads/mhi2-analysis/extracted/metainfo2.txt'))
     devices = {}
     if not path.exists():return []
     sections={};current={}
@@ -93,6 +99,9 @@ def inventory():
 class Services:
     def __init__(self):
         self.definitions = {k:v for k,v in SCHEMA['services'].items() if (k.startswith('DSI') and k not in ('DSIPersistence','DSIKombiPictureServer')) or k in ('Attributes', 'FecManager')}
+        if SCHEMA_FILE == 'dsi_schema_pog11_k5126.json':
+            from native_spy import definitions
+            self.definitions.update(definitions(SCHEMA))
         self.definitions['VideoConnection'] = {
             'uuid':'45926ef4-737d-44b0-aacd-b24a0671e42d',
             'key':'12eb7d83-c894-59a6-8d27-23be768a579d',
@@ -104,7 +113,7 @@ class Services:
         # serializers, plus ILvds. Display brightness uses signed steps -5..5.
         self.definitions['DisplayPower'] = {
             'uuid':'92c39bd3-ca7c-4d76-957b-ba8b83eb0d20',
-            'key':'7900f601-13e0-5850-a98b-287e195bd326',
+            'key':os.environ.get('MHI2_DISPLAY_POWER_KEY','7900f601-13e0-5850-a98b-287e195bd326'),
             'calls':{'0':'getBrightness(uint32 display)', '2':'getPower(uint32 display)',
                      '4':'setBrightness(uint32 display, int8 value)',
                      '6':'setPower(uint32 display, int32 value)'},
@@ -125,6 +134,13 @@ class Services:
         for name, d in self.definitions.items():
             if name == 'DSIKeyPanel':
                 continue  # Its input-event reply channel is owned by Peer.
+            if (SCHEMA_FILE == 'dsi_schema_pog11_k5126.json' and
+                    name in ('DSIDataConnection', 'DSIDataConfiguration')):
+                # K5126's native MMX agent 316 publishes these. Registering
+                # RCC copies first prevents the real provider from joining
+                # the broker ("existing entry ... conflicting filter"). Keep
+                # the older release's companion model and wire handlers.
+                continue
             yield name, uuid.UUID(d['uuid']).bytes, uuid.UUID(d['key']).bytes, (1 if name in ('Attributes','VideoConnection','FecManager','DisplayPower','DisplayLvds') else 0)
             if name == 'DSIWavePlayer':
                 yield name, uuid.UUID(d['uuid']).bytes, uuid.UUID(d['key']).bytes, 1
@@ -137,6 +153,15 @@ class Services:
         return mid, b''.join(encode(t,v) for t,v in zip(spec['types'], values))
 
     def initial(self, name, spec):
+        if name.startswith('Spy'):
+            source = self.definitions[name]['initial_source']
+            vals = self.initial(source, spec)
+            # Native consumers compare validFlag == 1, not Java's 0x81.
+            vals[-1] = 0 if spec['name'] == 'updateClockGPSSyncData' else 1
+            if name == 'SpyCarVehicleStates' and spec['name'].endswith('ViewOptions'):
+                vals[0] = {f: {'state': 2} for f in
+                           ('vehicleSpeed', 'currentGear', 'automaticGearShiftTransMode')}
+            return vals
         method = spec['name']
         types = spec['types']
         vals = [None for t in types]
@@ -167,8 +192,20 @@ class Services:
                 vals[:2] = [0, 30] if method == 'updateVolumeRange' else [-9, 9]
             elif method == 'updateVolume':
                 vals[:3] = [0, 1, 15]
+        if name == 'DSIAMFMTuner':
+            if method == 'updateWavebandInfoList':
+                vals[0] = [dict(waveband=1, lowerLimit=87500, upperLimit=108000,
+                                stepWidth=100, multiplier=1000),
+                           dict(waveband=3, lowerLimit=531, upperLimit=1602,
+                                stepWidth=9, multiplier=1000)]
+            elif method == 'updateDetectedDevice': vals[0] = 3  # DEVICETYPE_RU
+            elif method == 'updateAvailability': vals[0] = 2  # DEVICESTATUS_READY
+            elif method == 'updateREGSwitchStatus': vals[0] = 2  # off
+            elif method in ('updateSelectedStation', 'updateSelectedStationHD'):
+                vals[0] = dict(frequency=88300, waveband=1)
+                if method.endswith('HD'): vals[1] = 0
         if name == 'DSISwdlDeviceInfo' and method == 'updateSummaryChanged':
-            vals[0] = 'MHI2_ER_VWG11_K3342'
+            vals[0] = FIRMWARE.get('release', 'MHI2_ER_VWG11_K3342')
         if name == 'DSIKOMOGfxStreamSink':
             vals[0]={'updateGfxState':1,'updateDataRate':2,'updateRequestSync':1}.get(method,0)
         if name == 'DSICarKombi':
@@ -217,6 +254,56 @@ class Services:
         signature = d['calls'].get(str(mid),'')
         method = signature.split('(')[0]
         print('DSI CALL',name,mid,signature,data[:80].hex(),flush=True)
+        if name == 'DSISound':
+            ranges = {'getMenuVolumeRange': ('menuVolumeRange', 2, 0, 30),
+                      'getMenuVolEntRange': ('menuVolEntRange', 1, 0, 30),
+                      'getInputGainOffsetRange': ('inputGainOffsetRange', 2, -9, 9),
+                      'getVolumeRange': ('volumeRange', 2, 0, 30)}
+            if method in ranges:
+                response, count, low, high = ranges[method]
+                if len(data) != count * 4: raise ValueError('Invalid sound range request')
+                values = list(struct.unpack('!' + 'i' * count, data)) + [low, high]
+                if method == 'getVolumeRange': values.append(1)
+                return [self.reply(name, response, values)]
+            match = re.fullmatch(r'(get|set|increase|decrease)(Volume|Balance|Bass|Treble|Fader|Middle|Subwoofer|InputGainOffset|SurroundLevel|NoiseCompensation)', method)
+            if match:
+                operation, field = match.groups()
+                if len(data) != (8 if operation == 'get' else 10):
+                    raise ValueError('Invalid sound control request')
+                source, terminal = struct.unpack('!ii', data[:8])
+                # Kept in the profile state, isolated by source and terminal.
+                channels = self.values.setdefault((name, 'updateChannels'), {})
+                key = (field, source, terminal)
+                value = channels.get(key, 15 if field == 'Volume' else 0)
+                if operation != 'get':
+                    amount, = struct.unpack('!h', data[8:])
+                    value = amount if operation == 'set' else value + amount * (1 if operation == 'increase' else -1)
+                    low, high = (0, 30) if field == 'Volume' else (-9, 9)
+                    value = max(low, min(high, value))
+                    channels[key] = value
+                update = 'update' + field
+                self.values[name, update] = [source, terminal, value]
+                return [self.reply(name, update, [source, terminal, value, 1])]
+        if name == 'DSIAMFMTuner':
+            if method in ('selectStation', 'selectFrequency'):
+                if len(data) != (12 if method == 'selectStation' else 4):
+                    raise ValueError('Invalid tuner frequency request')
+                frequency, = struct.unpack('!i', data[:4])
+                band = 1 if 87500 <= frequency <= 108000 else 3 if 531 <= frequency <= 1602 else 0
+                if not band:
+                    return [self.reply(name, method + 'Status', [4])]
+                station = dict(frequency=frequency, waveband=band)
+                self.values[name, 'updateSelectedStation'] = [station]
+                self.values[name, 'updateSelectedStationHD'] = [station, 0]
+                return [self.reply(name, 'updateSelectedStation', [station, 1]),
+                        self.reply(name, 'updateSelectedStationHD', [station, 0, 1]),
+                        self.reply(name, method + 'Status', [2])]
+            if method == 'switchLinkingDeviceUsage':
+                if len(data) != 4: raise ValueError('Invalid tuner linking state')
+                value, = struct.unpack('!i', data)
+                if value not in (1, 2): raise ValueError('Invalid tuner linking state')
+                self.values[name, 'updateLinkingUsageStatus'] = [value]
+                return [self.reply(name, 'updateLinkingUsageStatus', [value, 1])]
         if name == 'DisplayPower':
             size = {0:4, 2:4, 4:5, 6:8}.get(mid)
             if size is None or len(data) != size: raise ValueError('Invalid display power request')

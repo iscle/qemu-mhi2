@@ -39,6 +39,9 @@
 #ifdef CONFIG_PPOLL
 #include <poll.h>
 #endif
+#ifdef __APPLE__
+#include <sys/select.h>
+#endif
 
 #ifdef CONFIG_PRCTL_PR_SET_TIMERSLACK
 #include <sys/prctl.h>
@@ -342,6 +345,51 @@ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
         ts.tv_nsec = timeout % 1000000000LL;
         return ppoll((struct pollfd *)fds, nfds, &ts, NULL);
     }
+#elif defined(__APPLE__)
+    /* Darwin has pselect(), but not ppoll(). GLib's millisecond timeout
+     * otherwise rounds every sub-millisecond device deadline up to 1 ms.
+     * Use pselect only to wait, then let GLib translate readiness/error bits
+     * exactly as before. Keep the poll fallback for descriptors/events that
+     * cannot be represented in an fd_set. */
+    fd_set readfds, writefds, exceptfds;
+    int maxfd = -1, ret;
+    struct timespec ts;
+
+    if (timeout <= 0) {
+        return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+    }
+    FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
+    FD_ZERO(&exceptfds);
+    for (guint i = 0; i < nfds; i++) {
+        int fd = fds[i].fd;
+        if (fd < 0) {
+            continue;
+        }
+        if (fd >= FD_SETSIZE ||
+            !(fds[i].events & (G_IO_IN | G_IO_OUT | G_IO_PRI)) ||
+            (fds[i].events & ~(G_IO_IN | G_IO_OUT | G_IO_PRI |
+                               G_IO_ERR | G_IO_HUP | G_IO_NVAL))) {
+            return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
+        }
+        if (fds[i].events & G_IO_IN) { FD_SET(fd, &readfds); }
+        if (fds[i].events & G_IO_OUT) { FD_SET(fd, &writefds); }
+        if (fds[i].events & G_IO_PRI) { FD_SET(fd, &exceptfds); }
+        maxfd = MAX(maxfd, fd);
+    }
+    /* Includes already-ready descriptors and POLLNVAL before pselect can
+     * report EBADF. A concurrent close is rechecked below as well. */
+    ret = g_poll(fds, nfds, 0);
+    if (ret) {
+        return ret;
+    }
+    ts.tv_sec = MIN(timeout / NANOSECONDS_PER_SECOND, INT32_MAX);
+    ts.tv_nsec = timeout % NANOSECONDS_PER_SECOND;
+    ret = pselect(maxfd + 1, &readfds, &writefds, &exceptfds, &ts, NULL);
+    if (ret > 0 || (ret < 0 && errno == EBADF)) {
+        return g_poll(fds, nfds, 0);
+    }
+    return ret;
 #else
     return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
 #endif

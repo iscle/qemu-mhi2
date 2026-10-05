@@ -34,6 +34,8 @@
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
 #include "system/qtest.h"
+#include "hw/core/qdev-clock.h"
+#include "qemu/main-loop.h"
 
 #ifndef A9_GTIMER_ERR_DEBUG
 #define A9_GTIMER_ERR_DEBUG 0
@@ -50,7 +52,8 @@
 
 static inline int a9_gtimer_get_current_cpu(A9GTimerState *s)
 {
-    if (qtest_enabled()) {
+    /* Diagnostic system-bus accesses have no executing CPU. */
+    if (qtest_enabled() || !current_cpu) {
         return 0;
     }
 
@@ -74,10 +77,43 @@ static A9GTimerUpdate a9_gtimer_get_update(A9GTimerState *s)
     A9GTimerUpdate ret;
 
     ret.now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    ret.new = s->ref_counter +
+    ret.new = !(s->control & R_CONTROL_TIMER_ENABLE) ? s->counter :
+              s->ref_counter +
               muldiv64(ret.now - s->cpu_ref_time, s->frequency,
                        NANOSECONDS_PER_SECOND) / a9_gtimer_get_prescale(s);
     return ret;
+}
+
+/* Writers hold the BQL. Readers of the free-running counter need no device
+ * side effects or global lock, like the HPET counter's seqlock fast path. */
+static void a9_gtimer_publish_counter(A9GTimerState *s)
+{
+    bool enabled = s->control & R_CONTROL_TIMER_ENABLE;
+    seqlock_write_begin(&s->counter_version);
+    s->counter_snapshot.base = enabled ? s->ref_counter : s->counter;
+    s->counter_snapshot.time = s->cpu_ref_time;
+    s->counter_snapshot.frequency = enabled ? s->frequency : 0;
+    s->counter_snapshot.divisor = a9_gtimer_get_prescale(s);
+    seqlock_write_end(&s->counter_version);
+}
+
+static uint64_t a9_gtimer_counter_read(void *opaque, hwaddr addr, unsigned size)
+{
+    A9GTimerState *s = opaque;
+    uint64_t value;
+    unsigned version;
+    do {
+        version = seqlock_read_begin(&s->counter_version);
+        value = s->counter_snapshot.base;
+        if (s->counter_snapshot.frequency) {
+            value += muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                              s->counter_snapshot.time,
+                              s->counter_snapshot.frequency,
+                              NANOSECONDS_PER_SECOND) /
+                     s->counter_snapshot.divisor;
+        }
+    } while (seqlock_read_retry(&s->counter_version, version));
+    return extract64(value, addr == R_COUNTER_HI ? 32 : 0, 32);
 }
 
 static void a9_gtimer_update(A9GTimerState *s, bool sync)
@@ -116,7 +152,7 @@ static void a9_gtimer_update(A9GTimerState *s, bool sync)
     }
 
     timer_del(s->timer);
-    if (next_cdiff) {
+    if (next_cdiff && s->frequency) {
         DB_PRINT("scheduling qemu_timer to fire again in %"
                  PRIx64 " cycles\n", next_cdiff);
         uint64_t delay = muldiv64(next_cdiff * a9_gtimer_get_prescale(s),
@@ -132,6 +168,7 @@ static void a9_gtimer_update(A9GTimerState *s, bool sync)
         s->cpu_ref_time = update.now;
         s->ref_counter = s->counter;
     }
+    a9_gtimer_publish_counter(s);
 }
 
 static void a9_gtimer_update_no_sync(void *opaque)
@@ -139,6 +176,31 @@ static void a9_gtimer_update_no_sync(void *opaque)
     A9GTimerState *s = A9_GTIMER(opaque);
 
     a9_gtimer_update(s, false);
+}
+
+static void a9_gtimer_clock_update(void *opaque, ClockEvent event)
+{
+    A9GTimerState *s = opaque;
+
+    if (event == ClockPreUpdate) {
+        if (s->timer) {
+            a9_gtimer_update(s, true);
+        }
+    } else {
+        s->frequency = clock_get_hz(s->clk);
+        if (s->timer) {
+            a9_gtimer_update(s, false);
+        }
+    }
+}
+
+static void a9_gtimer_init(Object *obj)
+{
+    A9GTimerState *s = A9_GTIMER(obj);
+    seqlock_init(&s->counter_version);
+
+    s->clk = qdev_init_clock_in(DEVICE(obj), "clk", a9_gtimer_clock_update,
+                                s, ClockPreUpdate | ClockUpdate);
 }
 
 static uint64_t a9_gtimer_read(void *opaque, hwaddr addr, unsigned size)
@@ -206,6 +268,7 @@ static void a9_gtimer_write(void *opaque, hwaddr addr, uint64_t value,
             return;
         }
         s->counter = deposit64(s->counter, shift, 32, value);
+        a9_gtimer_publish_counter(s);
         return;
     case R_CONTROL:
         a9_gtimer_update(s, (value ^ s->control) & R_CONTROL_NEEDS_SYNC);
@@ -280,12 +343,40 @@ static const MemoryRegionOps a9_gtimer_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+static void a9_gtimer_counter_write(void *opaque, hwaddr addr,
+                                    uint64_t value, unsigned size)
+{
+    A9GTimerState *s = opaque;
+    BQL_LOCK_GUARD();
+    a9_gtimer_write(&s->per_cpu[0], addr, value, size);
+}
+
+static const MemoryRegionOps a9_gtimer_counter_ops = {
+    .read = a9_gtimer_counter_read,
+    .write = a9_gtimer_counter_write,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static void a9_gtimer_counter_region(A9GTimerState *s, MemoryRegion *parent,
+                                     MemoryRegion *counter)
+{
+    if (s->fast_counter) {
+        memory_region_init_io(counter, OBJECT(s), &a9_gtimer_counter_ops, s,
+                              "a9gtimer counter", 8);
+        memory_region_enable_lockless_io(counter);
+        memory_region_add_subregion(parent, 0, counter);
+    }
+}
+
 static void a9_gtimer_reset(DeviceState *dev)
 {
     A9GTimerState *s = A9_GTIMER(dev);
     int i;
 
     s->counter = 0;
+    s->ref_counter = 0;
+    s->cpu_ref_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->control = 0;
 
     for (i = 0; i < s->num_cpu; i++) {
@@ -305,7 +396,9 @@ static void a9_gtimer_realize(DeviceState *dev, Error **errp)
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     int i;
 
-    if (!s->frequency) {
+    if (clock_has_source(s->clk)) {
+        s->frequency = clock_get_hz(s->clk);
+    } else if (!s->frequency) {
         error_setg(errp, "a9gtimer frequency must be nonzero");
         return;
     }
@@ -318,6 +411,7 @@ static void a9_gtimer_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_io(&s->iomem, OBJECT(dev), &a9_gtimer_this_ops, s,
                           "a9gtimer shared", 0x20);
+    a9_gtimer_counter_region(s, &s->iomem, &s->counter_iomem);
     sysbus_init_mmio(sbd, &s->iomem);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, a9_gtimer_update_no_sync, s);
 
@@ -328,6 +422,7 @@ static void a9_gtimer_realize(DeviceState *dev, Error **errp)
         sysbus_init_irq(sbd, &gtb->irq);
         memory_region_init_io(&gtb->iomem, OBJECT(dev), &a9_gtimer_ops, gtb,
                               "a9gtimer per cpu", 0x20);
+        a9_gtimer_counter_region(s, &gtb->iomem, &gtb->counter_iomem);
         sysbus_init_mmio(sbd, &gtb->iomem);
     }
 }
@@ -362,10 +457,38 @@ static const VMStateDescription vmstate_a9_gtimer_control = {
     }
 };
 
+static bool a9_gtimer_clock_needed(void *opaque)
+{
+    return clock_has_source(A9_GTIMER(opaque)->clk);
+}
+
+static const VMStateDescription vmstate_a9_gtimer_clock = {
+    .name = "arm.cortex-a9-global-timer.clock",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = a9_gtimer_clock_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_CLOCK(clk, A9GTimerState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int a9_gtimer_post_load(void *opaque, int version_id)
+{
+    A9GTimerState *s = opaque;
+    if (clock_has_source(s->clk)) {
+        s->frequency = clock_get_hz(s->clk);
+        a9_gtimer_update(s, false);
+    }
+    a9_gtimer_publish_counter(s);
+    return 0;
+}
+
 static const VMStateDescription vmstate_a9_gtimer = {
     .name = "arm.cortex-a9-global-timer",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = a9_gtimer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_TIMER_PTR(timer, A9GTimerState),
         VMSTATE_UINT64(counter, A9GTimerState),
@@ -378,6 +501,7 @@ static const VMStateDescription vmstate_a9_gtimer = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_a9_gtimer_control,
+        &vmstate_a9_gtimer_clock,
         NULL
     }
 };
@@ -385,6 +509,7 @@ static const VMStateDescription vmstate_a9_gtimer = {
 static const Property a9_gtimer_properties[] = {
     DEFINE_PROP_UINT32("num-cpu", A9GTimerState, num_cpu, 0),
     DEFINE_PROP_UINT32("frequency", A9GTimerState, frequency, 100000000),
+    DEFINE_PROP_BOOL("counter-read-fastpath", A9GTimerState, fast_counter, false),
 };
 
 static void a9_gtimer_class_init(ObjectClass *klass, const void *data)
@@ -401,6 +526,7 @@ static const TypeInfo a9_gtimer_info = {
     .name          = TYPE_A9_GTIMER,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(A9GTimerState),
+    .instance_init = a9_gtimer_init,
     .class_init    = a9_gtimer_class_init,
 };
 

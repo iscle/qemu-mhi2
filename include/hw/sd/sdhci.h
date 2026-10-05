@@ -58,6 +58,7 @@ struct SDHCIState {
     uint16_t trnmod;       /* Transfer Mode Setting Register */
     uint16_t cmdreg;       /* Command Register */
     uint32_t rspreg[4];    /* Response Registers 0-3 */
+    bool sdio_irq;         /* Level on the attached SDIO interrupt line */
     uint32_t prnsts;       /* Present State Register */
     uint8_t  hostctl1;     /* Host Control Register */
     uint8_t  pwrcon;       /* Power control Register */

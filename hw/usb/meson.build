@@ -35,6 +35,7 @@ system_ss.add(when: 'CONFIG_XLNX_VERSAL', if_true: files('xlnx-versal-usb2-ctrl-
 system_ss.add(when: 'CONFIG_XLNX_USB_SUBSYS', if_true: files('xlnx-usb-subsystem.c'))
 
 # emulated usb devices
+system_ss.add(when: 'CONFIG_TEGRA30', if_true: files('dev-android-auto.c', 'dev-mhi2-hfc.c', 'dev-mhi2-pico.c'))
 system_ss.add(when: 'CONFIG_USB_HUB', if_true: files('dev-hub.c'))
 system_ss.add(when: 'CONFIG_USB_HID', if_true: files('dev-hid.c'))
 system_ss.add(when: 'CONFIG_USB_TABLET_WACOM', if_true: files('dev-wacom.c'))

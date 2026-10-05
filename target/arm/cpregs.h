@@ -55,6 +55,8 @@ enum {
     ARM_CP_GCSPOPCX              = 0x000c,
     ARM_CP_GCSSS1                = 0x000d,
     ARM_CP_GCSSS2                = 0x000e,
+    /* Special: AArch32 CP15 DMB/DSB memory-ordering operation. */
+    ARM_CP_BARRIER               = 0x000f,
 
     /* Flag: reads produce resetvalue; writes ignored. */
     ARM_CP_CONST                 = 1 << 4,
