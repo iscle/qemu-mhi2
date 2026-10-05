@@ -2714,11 +2714,9 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
         break;
 
     case 25:  /* CMD25:  WRITE_MULTIPLE_BLOCK */
-        /*
-         * Only read one byte at a time. We will be called again with the
-         * remaining.
-         */
-        length = 1;
+        /* Consume the remainder of this block in one call. The bus retries
+         * any suffix, preserving per-block address/protection checks. */
+        length = MIN(length, sd->blk_len - sd->data_offset);
 
         if (sd->data_offset == 0) {
             /* Start of the block - let's check the address is valid */
@@ -2733,7 +2731,8 @@ static size_t sd_write_data(SDState *sd, const void *buf, size_t length)
                 }
             }
         }
-        sd->data[sd->data_offset++] = value[0];
+        memcpy(sd->data + sd->data_offset, value, length);
+        sd->data_offset += length;
         if (sd->data_offset >= sd->blk_len) {
             /* TODO: Check CRC before committing */
             sd->state = sd_programming_state;
@@ -2870,16 +2869,12 @@ static size_t sd_read_data(SDState *sd, void *buf, size_t length)
         break;
 
     case 18:  /* CMD18:  READ_MULTIPLE_BLOCK */
-        /*
-         * We will only read one byte at a time. We will be called again with
-         * the remaining buffer.
-         */
-        length = 1;
+        length = MIN(length, io_len - sd->data_offset);
 
         if (sd->data_offset == 0) {
             if (!address_in_range(sd, "READ_MULTIPLE_BLOCK",
                                   sd->data_start, io_len)) {
-                *value = dummy_byte;
+                memset(value, dummy_byte, length);
                 return length;
             }
             partition_access = sd->ext_csd[EXT_CSD_PART_CONFIG]
@@ -2890,7 +2885,8 @@ static size_t sd_read_data(SDState *sd, void *buf, size_t length)
                 sd_blk_read(sd, sd->data_start, io_len);
             }
         }
-        *value = sd->data[sd->data_offset++];
+        memcpy(value, sd->data + sd->data_offset, length);
+        sd->data_offset += length;
 
         if (sd->data_offset >= io_len) {
             sd->data_start += io_len;
@@ -3310,7 +3306,7 @@ static void emmc_class_init(ObjectClass *klass, const void *data)
 static const TypeInfo sd_types[] = {
     {
         .name           = TYPE_SDMMC_COMMON,
-        .parent         = TYPE_DEVICE,
+        .parent         = TYPE_SD_DEVICE,
         .abstract       = true,
         .instance_size  = sizeof(SDState),
         .class_size     = sizeof(SDCardClass),

@@ -18,6 +18,9 @@
 #include "system/block-backend.h"
 
 #define GL_BULK_BYTES (1 * MiB)
+/* Existing bridge clients limit one locked record to 16 MiB plus its header. */
+#define GL_MAX_RECORD (16 * MiB + 20)
+#define GL_TX_BYTES (2 * GL_MAX_RECORD)
 
 typedef struct MHI2MachineState {
     MachineState parent_obj;
@@ -31,11 +34,84 @@ typedef struct MHI2MachineState {
     uint8_t *gl_bulk_tx, *gl_rx;
     unsigned gl_rx_count;
     bool gl_locked;
+    uint8_t gl_pending[GL_TX_BYTES];
+    unsigned gl_tx_head, gl_tx_count;
+    guint gl_watch;
 } MHI2MachineState;
 
 /* Optional experimental GLES transport, enabled by -chardev ...,id=glbridge.
  * This aperture is a host service, not a Tegra hardware device.
  */
+static gboolean gl_writable(void *unused, GIOCondition condition, void *opaque);
+
+static void gl_drain(MHI2MachineState *s)
+{
+    unsigned budget = 256 * KiB;
+
+    while (s->gl_tx_count && budget && qemu_chr_fe_backend_open(&s->gl_chr)) {
+        unsigned n = MIN(budget, MIN(s->gl_tx_count,
+                                    GL_TX_BYTES - s->gl_tx_head));
+        int written = qemu_chr_fe_write(&s->gl_chr,
+                                       s->gl_pending + s->gl_tx_head, n);
+        if (written <= 0) {
+            break;
+        }
+        s->gl_tx_head = (s->gl_tx_head + written) % GL_TX_BYTES;
+        s->gl_tx_count -= written;
+        budget -= written;
+    }
+    if (s->gl_tx_count && !s->gl_watch &&
+        qemu_chr_fe_backend_open(&s->gl_chr)) {
+        s->gl_watch = qemu_chr_fe_add_watch(&s->gl_chr, G_IO_OUT | G_IO_HUP,
+                                           gl_writable, s);
+    }
+}
+
+static gboolean gl_writable(void *unused, GIOCondition condition, void *opaque)
+{
+    MHI2MachineState *s = opaque;
+    s->gl_watch = 0;
+    if (!(condition & G_IO_HUP)) {
+        gl_drain(s);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void gl_queue(MHI2MachineState *s, const uint8_t *data, unsigned length)
+{
+    if (length > GL_TX_BYTES - s->gl_tx_count) {
+        error_report("glbridge: TX exceeds reserved record capacity");
+        return;
+    }
+    unsigned tail = (s->gl_tx_head + s->gl_tx_count) % GL_TX_BYTES;
+    unsigned first = MIN(length, GL_TX_BYTES - tail);
+    memcpy(s->gl_pending + tail, data, first);
+    memcpy(s->gl_pending, data + first, length - first);
+    s->gl_tx_count += length;
+    gl_drain(s);
+}
+
+static void gl_clear_tx(MHI2MachineState *s)
+{
+    if (s->gl_watch) {
+        g_source_remove(s->gl_watch);
+        s->gl_watch = 0;
+    }
+    s->gl_tx_head = s->gl_tx_count = 0;
+}
+
+static void gl_event(void *opaque, QEMUChrEvent event)
+{
+    MHI2MachineState *s = opaque;
+    if (event == CHR_EVENT_OPENED) {
+        gl_drain(s);
+    } else if (event == CHR_EVENT_CLOSED) {
+        gl_clear_tx(s);
+        s->gl_rx_count = 0;
+        s->gl_locked = false;
+    }
+}
+
 static int gl_can_receive(void *opaque)
 {
     MHI2MachineState *s = opaque;
@@ -54,8 +130,12 @@ static uint64_t gl_read(void *opaque, hwaddr addr, unsigned size)
         return 0x474c4252;
     }
     if (addr == 16) {
-        bool held = s->gl_locked;
-        s->gl_locked = true;
+        /* Apply backpressure before accepting a record, without sleeping
+         * under the BQL. The existing guest lock retry yields its CPU. */
+        bool held = s->gl_locked || s->gl_tx_count > GL_TX_BYTES - GL_MAX_RECORD;
+        if (!held) {
+            s->gl_locked = true;
+        }
         return held;
     }
     if (addr == 8) {
@@ -97,9 +177,9 @@ static void gl_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             s->gl_tx[addr - 0x1000 + i] = value >> (i * 8);
         }
     } else if (addr == 4 && value <= sizeof(s->gl_tx)) {
-        qemu_chr_fe_write_all(&s->gl_chr, s->gl_tx, value);
+        gl_queue(s, s->gl_tx, value);
     } else if (addr == 28 && value <= GL_BULK_BYTES) {
-        qemu_chr_fe_write_all(&s->gl_chr, s->gl_bulk_tx, value);
+        gl_queue(s, s->gl_bulk_tx, value);
     }
 }
 static const MemoryRegionOps gl_ops = {
@@ -146,6 +226,7 @@ static void mhi2_reset(void *opaque)
 
     s->gl_locked = false;
     s->gl_rx_count = 0;
+    gl_clear_tx(s);
 
     for (int i = 0; i < TEGRA30_NUM_CPUS; i++) {
         cpu_reset(CPU(&s->soc->cpus[i]));
@@ -155,6 +236,10 @@ static void mhi2_reset(void *opaque)
     /* IOC normal-power indication: Quickboot samples GPIO CC5 for lp=. */
     qemu_set_irq(qdev_get_gpio_in(DEVICE(&s->soc->gpio),
                                  TEGRA30_GPIO_NR(28, 5)), 1);
+    /* devg-nvgpio maps the active-low USB overcurrent input to C6.
+     * A powered virtual connector with no electrical fault leaves it high. */
+    qemu_set_irq(qdev_get_gpio_in(DEVICE(&s->soc->gpio),
+                                 TEGRA30_GPIO_NR(2, 6)), 1);
     cpu_set_pc(boot_cpu, 0x480e0000);
 }
 
@@ -194,7 +279,7 @@ static void mhi2_harman_init(MachineState *machine)
         ms->gl_rx = ms->gl_bulk_tx + GL_BULK_BYTES;
         qemu_chr_fe_init(&ms->gl_chr, glchr, &error_fatal);
         qemu_chr_fe_set_handlers(&ms->gl_chr, gl_can_receive, gl_receive,
-                                NULL, NULL, ms, NULL, true);
+                                gl_event, NULL, ms, NULL, true);
         memory_region_init_io(&ms->gl_mmio, OBJECT(machine), &gl_ops, ms,
                               "experimental-glbridge", 0x3000);
         memory_region_add_subregion(get_system_memory(), 0x5f000000,
@@ -257,6 +342,8 @@ static void mhi2_harman_init(MachineState *machine)
      */
     I2CSlave *ioc_cfg = i2c_slave_new("tegra30-i2c-dbg", 0x4c);
     qdev_prop_set_uint8(DEVICE(ioc_cfg), "fill", 0x00);
+    /* devg-nvtmon accesses the local/remote diode sensor at DVC 0x4c. */
+    qdev_prop_set_bit(DEVICE(ioc_cfg), "temperature-sensor", true);
     i2c_slave_realize_and_unref(ioc_cfg, soc->i2c[4].bus, &error_fatal);
 
     /*

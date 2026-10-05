@@ -1,9 +1,11 @@
 from pathlib import Path
 import re,json
 import argparse
-parser=argparse.ArgumentParser(description='Recover K3342 wire metadata from CFR output')
+parser=argparse.ArgumentParser(description='Recover firmware wire metadata from CFR output')
 parser.add_argument('decompiled',type=Path)
-root=parser.parse_args().decompiled
+parser.add_argument('--output',type=Path,default=Path(__file__).with_name('dsi_schema.json'))
+args=parser.parse_args()
+root=args.decompiled
 out={'services':{},'structs':{}}
 for p in root.rglob('*Serializer.java'):
  s=p.read_text(); name=p.stem[:-10]
@@ -36,5 +38,5 @@ for p in root.rglob('*Proxy.java'):
                     for mid,signature in d['calls'].items()
                     if signature.split('(')[0].upper() in requests}
  out['services'][name]=d
-Path(__file__).with_name('dsi_schema.json').write_text(json.dumps(out,indent=2)+'\n')
+args.output.write_text(json.dumps(out,indent=2)+'\n')
 print({k:(len(v['calls']),len(v['replies'])) for k,v in out['services'].items()},len(out['structs']))

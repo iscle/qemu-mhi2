@@ -24,7 +24,9 @@
 #define A9GTIMER_H
 
 #include "hw/core/sysbus.h"
+#include "hw/core/clock.h"
 #include "qom/object.h"
+#include "qemu/seqlock.h"
 
 #define A9_GTIMER_MAX_CPUS 4
 
@@ -66,6 +68,7 @@ struct A9GTimerPerCPU {
     uint32_t inc;
 
     MemoryRegion iomem;
+    MemoryRegion counter_iomem;
     qemu_irq irq; /* PPI interrupts */
 };
 
@@ -75,9 +78,17 @@ struct A9GTimerState {
     /*< public >*/
 
     MemoryRegion iomem;
+    MemoryRegion counter_iomem;
     /* static props */
     uint32_t num_cpu;
     uint32_t frequency;
+    Clock *clk;
+    bool fast_counter;
+    QemuSeqLock counter_version;
+    struct {
+        uint64_t base, time;
+        uint32_t frequency, divisor;
+    } counter_snapshot;
 
     QEMUTimer *timer;
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Display experimental GLES frames and send production RCC keypanel events."""
 import json
+import argparse
 import os
 import sys
 import time
@@ -8,11 +9,18 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QMessageBox
+from firmware_profile import common_metadata, select_profile
 
 # Firmware org.dsi.ifc.keypanel.Constants; RCC peer selects ABT keyboard 13.
 LEFT_KEYS = [('RADIO', 15), ('MEDIA', 1), ('PHONE', 3), ('VOICE', 50)]
 RIGHT_KEYS = [('NAV', 4), ('TRAFFIC', 5), ('CAR', 6), ('MENU', 78)]
+# Porsche PCM 4 controls. K5126's active key mapping opens Home on MENU=78;
+# the generic keypanel HOME=116 is ignored. Layout: MY18 PCM quick reference.
+PORSCHE_KEYS = [(('TUNER', 15), ('SOURCE', 103)),
+                (('MEDIA', 1), ('PHONE', 3)),
+                (('NAV', 4), ('CAR', 6)),
+                (('MAP', 104), ('HOME', 78))]
 
 
 class Panel(QWidget):
@@ -132,24 +140,38 @@ def control_column(keys, knob_text, knob_code, panel):
 
 
 class ClusterWindow(QWidget):
-    def __init__(self, parent, send):
+    def __init__(self, parent, send, porsche=False):
         super().__init__(parent, Qt.Window)
-        self.setWindowTitle('Virtual Cockpit — MOST video')
+        self.source=os.environ.get('MHI2_CLUSTER_SOURCE','MOST video')
+        self.setWindowTitle(('Porsche cluster — ' if porsche else 'Virtual Cockpit — ')+self.source)
         layout=QVBoxLayout(self)
-        self.screen=QLabel('Waiting for firmware video over MOST')
+        self.screen=QLabel('Waiting for '+self.source)
         self.screen.setAlignment(Qt.AlignCenter)
-        self.screen.setMinimumSize(800,400)
+        if porsche:
+            self.screen.setFixedSize(408,448)
+        else:
+            self.screen.setMinimumSize(800,400)
         layout.addWidget(self.screen)
+        self.status=QLabel('No video received')
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        if porsche:
+            note=QLabel('Porsche map viewport · 408 × 448\nPhysical 718 output remains unverified.')
+            note.setWordWrap(True)
+            note.setMaximumWidth(408)
+            layout.addWidget(note)
         self.timer=QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
         self.stamp=None
         self.send=send
-        self.requested=0
+        self.requested=float('-inf')
+        self.auto_request=not porsche and 'MHI2_CLUSTER_SOURCE' not in os.environ
+        self.path=Path(os.environ.get('MHI2_CLUSTER_FRAME','/tmp/mhi2-cluster.ppm'))
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.requested=0
+        self.requested=float('-inf')
         self.refresh()
 
     def request_stream(self):
@@ -158,13 +180,14 @@ class ClusterWindow(QWidget):
         self.requested=time.monotonic()
 
     def refresh(self):
-        path=Path('/tmp/mhi2-cluster.ppm')
+        path=self.path
         fresh=False
         try:
             info=path.stat()
             fresh=time.time()-info.st_mtime<10
+            self.status.setText(('Receiving '+self.source) if fresh else 'Video paused — last received frame')
             stamp=info.st_mtime_ns
-            if self.isVisible() and not fresh and time.monotonic()-self.requested>15:
+            if self.auto_request and self.isVisible() and not fresh and time.monotonic()-self.requested>15:
                 self.request_stream()
             if stamp==self.stamp:return
             frame=QImage.fromData(path.read_bytes(),'PPM')
@@ -172,13 +195,49 @@ class ClusterWindow(QWidget):
             self.screen.setPixmap(QPixmap.fromImage(frame).scaled(self.screen.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
             self.stamp=stamp
         except OSError:
-            if self.isVisible() and time.monotonic()-self.requested>15:
+            self.status.setText('No video received')
+            if self.stamp is not None:
+                self.screen.setText('Waiting for '+self.source)
+                self.stamp=None
+            if self.auto_request and self.isVisible() and time.monotonic()-self.requested>15:
                 self.request_stream()
 
 
-def create_window():
+def porsche_controls(panel):
+    controls = QVBoxLayout()
+    transport = QHBoxLayout()
+    for label, code in [('◀◀', 10), ('▶▶', 14), ('OPT', 106), ('BACK', 13)]:
+        if label == 'OPT':
+            transport.addStretch()
+        button = QPushButton(label)
+        button.setObjectName({10: 'previous', 14: 'next', 106: 'opt', 13: 'back'}[code])
+        button.setFixedSize(92, 32)
+        connect_key(button, code, panel)
+        transport.addWidget(button)
+    controls.addLayout(transport)
+    row = QHBoxLayout()
+    row.addWidget(RotaryButton('POWER\nVOLUME', 17, panel))
+    row.addStretch()
+    for keys in PORSCHE_KEYS:
+        column = QVBoxLayout()
+        for label, code in keys:
+            button = QPushButton(label)
+            button.setObjectName(label.lower())
+            button.setFixedSize(130, 40)
+            connect_key(button, code, panel)
+            column.addWidget(button)
+        row.addLayout(column)
+    row.addStretch()
+    row.addWidget(RotaryButton('SELECT\nTUNE', 16, panel))
+    controls.addLayout(row)
+    return controls
+
+
+def create_window(profile=None):
+    profile = select_profile() if profile is None else profile
+    porsche = profile['brand'] == 'porsche'
     window = QWidget()
-    window.setWindowTitle('Volkswagen MHI2')
+    window.setWindowTitle(profile['title'])
     window.setStyleSheet('''
         QWidget { background: #202124; color: #eeeeee; }
         QPushButton { background: #34363a; border: 1px solid #65676b;
@@ -188,28 +247,60 @@ def create_window():
         QPushButton#knob { border: 4px solid #a3a6aa; border-radius: 43px; }
         QLabel { color: #bfc2c7; font-size: 12px; }
     ''')
+    if porsche:
+        window.setStyleSheet(window.styleSheet() + '''
+            QWidget { background: #191919; }
+            QPushButton { background: #282828; border-radius: 2px; }
+            QPushButton:pressed { background: #9e4612; border-color: #f18b35; }
+            QLabel#brand { color: #eeeeee; font-size: 17px; letter-spacing: 5px; }
+        ''')
     layout = QVBoxLayout(window)
-    status = QLabel('Touch the screen or use the side buttons. Scroll over a knob to turn it.')
+    if porsche:
+        brand = QLabel('PORSCHE')
+        brand.setObjectName('brand')
+        brand.setAlignment(Qt.AlignCenter)
+        layout.addWidget(brand)
+    status = QLabel('Touch the screen or use the buttons. Scroll over a knob to turn it.')
     panel = Panel(status)
     fascia = QHBoxLayout()
     fascia.setSpacing(14)
-    fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
+    if not porsche:
+        fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
     fascia.addWidget(panel)
-    fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
+    if not porsche:
+        fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
     layout.addLayout(fascia)
+    if porsche:
+        layout.addLayout(porsche_controls(panel))
     footer = QHBoxLayout()
     back = QPushButton('BACK')
     back.setFixedSize(100, 32)
     back.setToolTip('Additional back control')
     connect_key(back, 13, panel)
-    footer.addWidget(back)
+    if not porsche:
+        footer.addWidget(back)
     footer.addStretch()
-    cluster=ClusterWindow(window,panel.send)
+    settings = QPushButton('Configuration')
+    settings.setFixedSize(150, 32)
+    def configure():
+        from config_dialog import ConfigDialog
+        try:
+            dialog = ConfigDialog(window)
+            if dialog.exec():
+                status.setText('Configuration saved. Applies on the next emulator start.')
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(window, 'Configuration unavailable', str(exc))
+    settings.clicked.connect(configure)
+    footer.addWidget(settings)
+    cluster=ClusterWindow(window,panel.send,porsche=porsche)
     window.cluster=cluster
-    cluster_button=QPushButton("Virtual Cockpit")
+    cluster_button=QPushButton("Cluster display" if porsche else "Virtual Cockpit")
+    cluster_button.setObjectName('cluster_display')
     cluster_button.setFixedSize(150,32)
     cluster_button.clicked.connect(cluster.show)
     footer.addWidget(cluster_button)
+    if profile['release']:
+        footer.addWidget(QLabel(profile['release']))
     layout.addLayout(footer)
     layout.addWidget(status)
     window.setFixedSize(window.sizeHint())
@@ -217,10 +308,18 @@ def create_window():
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = create_window()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--firmware-meta', type=Path)
+    parser.add_argument('--brand', choices=('auto', 'porsche', 'volkswagen'), default='auto')
+    args, qt_args = parser.parse_known_args()
+    if args.firmware_meta:
+        os.environ['MHI2_FIRMWARE_META'] = str(args.firmware_meta)
+    app = QApplication([sys.argv[0]] + qt_args)
+    window = create_window(select_profile(common_metadata(args.firmware_meta), args.brand))
     window.setAttribute(Qt.WA_DeleteOnClose)
     window.show()
+    if os.environ.get('MHI2_SHOW_CLUSTER') == '1':
+        window.cluster.show()
     return app.exec()
 
 

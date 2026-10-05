@@ -82,7 +82,8 @@ def main():
                 if decoder is None:
                     decoder=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','warning',
                         '-threads','1','-flags','low_delay',
-                        '-probesize','4096','-analyzeduration','100000','-f','mpegts','-i','pipe:0',
+                        '-probesize','65536','-analyzeduration','100000','-fpsprobesize','0',
+                        '-f','mpegts','-i','pipe:0',
                         '-an','-fps_mode','passthrough','-f','image2','-update','1','-atomic_writing','1',
                         '-y',str(args.output)],stdin=subprocess.PIPE)
                 decoder.stdin.write(ts);decoder.stdin.flush()

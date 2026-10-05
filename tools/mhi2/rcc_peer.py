@@ -46,6 +46,7 @@ class Peer:
         self.flows = {}
         self.cluster_requested = False
         self.services = Services()
+        self.feature_states = state_vector()  # Configuration applies at startup.
         self.next_connect = time.monotonic() + 5
         self.local_port = 40000 + int(time.monotonic()) % 20000
         self.audio = AudioEndpoint()
@@ -334,7 +335,7 @@ class Peer:
                 proxy, stub = struct.unpack_from('!HH', msg, 1)
                 flow['native_stub'] = stub
                 self.comm(key, flow, b'\x07'+struct.pack('!H', stub))
-                self.comm(key, flow, b'\x06'+struct.pack('!HH', stub, 1)+state_vector())
+                self.comm(key, flow, b'\x06'+struct.pack('!HH', stub, 1)+self.feature_states)
                 print('SIMULATED RCC: feature states delivered to native MMX FEC service', flush=True)
             elif kind == 4 and flow.get('active'):
                 proxy, stub = struct.unpack_from('!HH', msg, 1)

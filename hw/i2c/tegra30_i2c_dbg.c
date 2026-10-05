@@ -28,6 +28,7 @@ struct Tegra30I2CDbgState {
     bool addr_received;
     /* Byte returned for registers that were never written. */
     uint8_t fill;
+    bool temperature_sensor;
 };
 
 static void tegra30_i2c_dbg_reset(DeviceState *dev)
@@ -35,6 +36,13 @@ static void tegra30_i2c_dbg_reset(DeviceState *dev)
     Tegra30I2CDbgState *s = TEGRA30_I2C_DBG(dev);
 
     memset(s->store, s->fill, sizeof(s->store));
+    if (s->temperature_sensor) {
+        s->store[3] = 0; /* standard range until configuration write */
+        s->store[4] = 8;
+        s->store[5] = s->store[7] = 127;
+        s->store[0xfe] = 0x41;
+        s->store[0xff] = 0x57;
+    }
     s->ptr = 0;
     s->addr_received = false;
 }
@@ -61,6 +69,11 @@ static uint8_t tegra30_i2c_dbg_recv(I2CSlave *i2c)
 {
     Tegra30I2CDbgState *s = TEGRA30_I2C_DBG(i2c);
     uint8_t val = s->store[s->ptr];
+    /* NCT1008-compatible local/remote diode readings. K5126 adds 8 C to
+     * the remote value, so 32 C represents a 40 C emulated SoC. */
+    if (s->temperature_sensor && s->ptr <= 1) {
+        val = (s->ptr ? 32 : 25) + ((s->store[3] & 4) ? 64 : 0);
+    }
 
     qemu_log_mask(LOG_UNIMP, "%s[0x%02x]: read  reg 0x%02x => 0x%02x\n",
                   TYPE_TEGRA30_I2C_DBG, i2c->address, s->ptr, val);
@@ -78,13 +91,16 @@ static int tegra30_i2c_dbg_send(I2CSlave *i2c, uint8_t data)
     } else {
         qemu_log_mask(LOG_UNIMP, "%s[0x%02x]: write reg 0x%02x <= 0x%02x\n",
                       TYPE_TEGRA30_I2C_DBG, i2c->address, s->ptr, data);
-        s->store[s->ptr++] = data;
+        uint8_t reg = s->ptr++;
+        if (s->temperature_sensor && reg >= 9 && reg <= 15) reg -= 6;
+        if (!s->temperature_sensor || reg > 2) s->store[reg] = data;
     }
     return 0;
 }
 
 static const Property tegra30_i2c_dbg_props[] = {
     DEFINE_PROP_UINT8("fill", Tegra30I2CDbgState, fill, 0),
+    DEFINE_PROP_BOOL("temperature-sensor", Tegra30I2CDbgState, temperature_sensor, false),
 };
 
 static const VMStateDescription tegra30_i2c_dbg_vmstate = {

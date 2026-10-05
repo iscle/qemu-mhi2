@@ -19,6 +19,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Tegra30APBDMAState, TEGRA30_APBDMA)
 #define ONCE (1u << 27)
 #define PONG (1u << 28)
 #define DIR (1u << 28)
+#define HALT (1u << 29)
 
 typedef struct DMAChannel {
     Tegra30APBDMAState *owner;
@@ -27,6 +28,8 @@ typedef struct DMAChannel {
     uint32_t r[8];
     uint32_t active_ptr;
     unsigned index;
+    unsigned trace_count;
+    int64_t remaining_ns;
 } DMAChannel;
 
 struct Tegra30APBDMAState {
@@ -40,6 +43,18 @@ struct Tegra30APBDMAState {
     DMAChannel channel[32];
 };
 
+static void dma_trace(DMAChannel *c, const char *event, unsigned reg,
+                      uint32_t value)
+{
+    if (getenv("MHI2_DMA_TRACE") && c->trace_count++ < 3000) {
+        fprintf(stderr, "apbdma: t=%" PRId64 " ch=%u %s reg=%u value=%08x "
+                "csr=%08x sta=%08x ptr=%08x active=%08x apb=%08x seq=%08x/%08x\n",
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), c->index, event, reg,
+                value, c->r[0], c->r[1], c->r[4], c->active_ptr, c->r[6],
+                c->r[5], c->r[7]);
+    }
+}
+
 static void dma_irq(DMAChannel *c)
 {
     qemu_set_irq(c->irq, !!((c->r[1] & EOC) && (c->r[0] & EOC) &&
@@ -51,20 +66,67 @@ static bool dma_running(DMAChannel *c)
     return (c->owner->global[0] & EN) && (c->r[0] & EN) && !(c->r[3] & EN);
 }
 
+static bool dma_request(DMAChannel *c)
+{
+    Tegra30APBDMAState *s = c->owner;
+    uint32_t apb = c->r[6];
+    bool tx = c->r[0] & DIR;
+    unsigned fifo;
+
+    if (apb < 0x70080000 || apb >= 0x70080080 ||
+        (apb & 31) != (tx ? 0x0c : 0x10)) {
+        return false;
+    }
+    fifo = (apb - 0x70080000) / 32;
+    /* APBIF and the external RCC's I2S0 link must both be enabled. The
+     * XBAR routes APBIF transmitters (bits 0..3) and I2S0 (bit 4). */
+    if (!(s->ahub_regs[fifo * 8] & (tx ? BIT(31) : BIT(30))) ||
+        !(s->ahub_regs[0x300 / 4] & (tx ? BIT(31) : BIT(30))) ||
+        (s->ahub_regs[0x300 / 4] & BIT(28))) {
+        return false;
+    }
+    return tx ? s->ahub_regs[0x210 / 4] == BIT(fifo) :
+                s->ahub_regs[(0x200 + fifo * 4) / 4] == BIT(4);
+}
+
+static int64_t dma_remaining(DMAChannel *c)
+{
+    return timer_pending(c->timer) ?
+        MAX(0, timer_expire_time_ns(c->timer) -
+               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) : c->remaining_ns;
+}
+
 static void dma_schedule(DMAChannel *c)
 {
-    if (!dma_running(c)) {
+    if (!dma_running(c) || !dma_request(c)) {
+        c->remaining_ns = dma_remaining(c);
         timer_del(c->timer);
         c->r[1] &= ~EN;
+        if (c->r[3] & EN) {
+            c->r[1] |= HALT;
+        } else {
+            c->r[1] &= ~HALT;
+        }
         return;
     }
-    c->r[1] |= EN;
+    c->r[1] = (c->r[1] | EN) & ~HALT;
+    /* The emulated TDM producer is backpressured by the guest. Do not
+     * overwrite a latched half-buffer completion while TCG is servicing its
+     * interrupt; resume its sample clock when the guest acknowledges EOC. */
+    if (c->r[1] & EOC) {
+        timer_del(c->timer);
+        return;
+    }
     if (!timer_pending(c->timer)) {
         /* The attached MHI2 TDM link is 48 kHz, eight 32-bit slots/frame.
          * A continuous transfer interrupts at each half-buffer boundary. */
         unsigned bytes = (c->r[0] & 0xfffc) + 4;
+        if (!c->remaining_ns) {
+            c->remaining_ns = MAX(1000ULL, (uint64_t)bytes *
+                                  1000000000 / (48000 * 32));
+        }
         timer_mod(c->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  MAX(1000ULL, (uint64_t)bytes * 1000000000 / (48000 * 32)));
+                  c->remaining_ns);
     }
 }
 
@@ -94,7 +156,7 @@ static void dma_complete(void *opaque)
     uint32_t csr = c->r[0], apb = c->r[6];
     unsigned bytes = (csr & 0xfffc) + 4;
     uint8_t buffer[65536];
-    if (!dma_running(c)) {
+    if (!dma_running(c) || !dma_request(c)) {
         return;
     }
     /* Until an APB peripheral is attached, requests must remain pending.
@@ -141,12 +203,14 @@ static void dma_complete(void *opaque)
         }
     }
     c->r[1] |= EOC;
+    c->remaining_ns = 0;
+    dma_trace(c, "complete", 0, bytes);
     if (csr & ONCE) {
         c->r[0] &= ~EN;
         c->r[1] &= ~EN;
     } else {
         c->r[1] ^= PONG;
-        c->active_ptr = c->r[4] + ((c->r[1] & PONG) ? bytes : 0);
+        c->active_ptr = c->r[4] + (((c->r[1] & PONG) ^ ((csr & DIR) ? 0 : PONG)) ? bytes : 0);
     }
     dma_irq(c);
     dma_schedule(c);
@@ -168,7 +232,16 @@ static uint64_t dma_read(void *opaque, hwaddr off, unsigned size)
         return s->global[off / 4];
     }
     if (off >= 0x1000 && off < 0x1400) {
-        return s->channel[(off - 0x1000) / 32].r[(off & 31) / 4];
+        DMAChannel *c = &s->channel[(off - 0x1000) / 32];
+        unsigned reg = (off & 31) / 4;
+        if (reg == 1 && !(c->r[1] & EOC) && (c->r[0] & EN)) {
+            uint64_t ns = dma_remaining(c);
+            unsigned bytes = (c->r[0] & 0xfffc) + 4;
+            unsigned left = ns ? MIN(bytes, DIV_ROUND_UP(ns * 48000 * 32,
+                                                         1000000000ULL)) : bytes;
+            return (c->r[1] & ~0xfffcu) | ((MAX(left, 4) - 1) & 0xfffc);
+        }
+        return c->r[reg];
     }
     return 0;
 }
@@ -191,12 +264,16 @@ static void dma_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     } else if (off >= 0x1000 && off < 0x1400) {
         DMAChannel *c = &s->channel[(off - 0x1000) / 32];
         unsigned reg = (off & 31) / 4;
+        dma_trace(c, "write", reg, value);
         if (reg == 1) {
             c->r[1] &= ~(value & EOC);
         } else {
             if (reg == 0 && !(c->r[0] & EN) && (value & EN)) {
                 c->active_ptr = c->r[4];
-                c->r[1] &= ~PONG;
+                c->remaining_ns = 0;
+                /* The APB DMA ping/pong status is direction-dependent. Native
+                 * deva-nvaudio expects RX half=0 and TX half=1. */
+                c->r[1] = (c->r[1] & ~PONG) | ((value & DIR) ? 0 : PONG);
             }
             c->r[reg] = value;
         }
@@ -236,7 +313,23 @@ static void ahub_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             s->mic[(s->mic_read + s->mic_count++) % 8192] = value;
         }
     } else if (off < 0xe00) {
+        if (getenv("MHI2_DMA_TRACE")) {
+            fprintf(stderr, "ahub: t=%" PRId64 " write %03x=%08x\n",
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), (unsigned)off,
+                    (unsigned)value);
+        }
         s->ahub_regs[off / 4] = value;
+        if ((off < 0x80 && (off & 31) == 4)) {
+            /* APBIF FIFO clear is a self-clearing command. */
+            s->ahub_regs[off / 4] = 0;
+        } else if (off >= 0x300 && off < 0x800 && !(off & 255)) {
+            /* I2S reset completes immediately; no in-flight FIFO words are
+             * retained by this frame-oriented stream model. */
+            s->ahub_regs[off / 4] &= ~BIT(28);
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(s->channel); i++) {
+            dma_schedule(&s->channel[i]);
+        }
     }
 }
 static const MemoryRegionOps ahub_ops = {
@@ -255,6 +348,7 @@ static void dma_reset(DeviceState *dev)
         DMAChannel *c = &s->channel[i];
         memset(c->r, 0, sizeof(c->r));
         c->active_ptr = 0;
+        c->remaining_ns = 0;
         timer_del(c->timer);
         dma_irq(c);
     }
@@ -284,6 +378,23 @@ static void dma_finalize(Object *obj)
     }
 }
 
+static bool dma_paused_clock_needed(void *opaque)
+{
+    DMAChannel *c = opaque;
+    return c->remaining_ns != 0;
+}
+
+static const VMStateDescription vmstate_dma_paused_clock = {
+    .name = "tegra30-apbdma/channel/clock",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = dma_paused_clock_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT64(remaining_ns, DMAChannel),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_dma_channel = {
     .name = "tegra30-apbdma/channel",
     .version_id = 1,
@@ -293,6 +404,10 @@ static const VMStateDescription vmstate_dma_channel = {
         VMSTATE_UINT32(active_ptr, DMAChannel),
         VMSTATE_TIMER_PTR(timer, DMAChannel),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_dma_paused_clock,
+        NULL
     },
 };
 static int dma_post_load(void *opaque, int version_id)

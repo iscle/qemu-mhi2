@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Focused regression checks for the RCC wire protocol and simulated profile."""
+import os
+import tempfile
 import contextlib
 import io
 import json
@@ -8,7 +10,7 @@ import unittest
 import hashlib
 from unittest.mock import patch
 from pathlib import Path
-from rcc_services import Services, encode
+from rcc_services import Services, encode, SCHEMA_FILE
 from rcc_persistence import Persistence, Reader, array
 from rcc_peer import Peer, IP
 from most_sink import TransportStream
@@ -21,6 +23,69 @@ class Transport:
 
 
 class Checks(unittest.TestCase):
+    def test_native_provider_ownership(self):
+        registrations = {name for name, *_ in Services().registrations()}
+        for name in ('DSIDataConnection', 'DSIDataConfiguration'):
+            self.assertEqual(name in registrations,
+                             SCHEMA_FILE != 'dsi_schema_pog11_k5126.json')
+
+    def test_native_spy_contracts(self):
+        s = Services()
+        if SCHEMA_FILE != 'dsi_schema_pog11_k5126.json':
+            self.assertFalse(any(n.startswith('Spy') for n in s.definitions))
+            return
+        # Native K5126 factory: MID 5 is a single-attribute subscription,
+        # MID 14 is standstill, Bool occupies one byte, validFlag is Int32=1.
+        self.assertEqual(s.handle('SpyGeneralVehicleStates', 5, bytes.fromhex('00000016')),
+                         [(14, bytes.fromhex('ff00000001'))])
+        self.assertEqual(s.handle('SpyGeneralVehicleStates', 5, bytes.fromhex('00000004')),
+                         [(9, bytes.fromhex('0000000000000001'))])
+        self.assertEqual(s.reply('SpyCarTimeUnitsLanguage', 'updateClockDate',
+                                [{'year': 26, 'month': 10, 'day': 4}, 1]),
+                         (6, bytes.fromhex('00001a0a0400000001')))
+        for name, ids in [('SpyCarKombi', {38, 41}),
+                          ('SpyCarVehicleStates', {21, 22, 23, 24})]:
+            responses = s.handle(name, 3, b'')
+            self.assertEqual({mid for mid, data in responses}, ids)
+            self.assertTrue(all(data[-4:] == b'\0\0\0\1' for mid, data in responses))
+
+    def test_sound_channels_and_range_requests(self):
+        s = Services()
+        def call(method, data):
+            mid = next(int(k) for k,v in s.definitions['DSISound']['calls'].items()
+                       if v.startswith(method+'('))
+            return s.handle('DSISound', mid, data)
+        channel = struct.pack('!ii', 0x57, 1)
+        self.assertEqual(call('getMenuVolumeRange', channel),
+                         [s.reply('DSISound', 'menuVolumeRange', [0x57, 1, 0, 30])])
+        call('setVolume', channel + struct.pack('!h', 24))
+        self.assertEqual(call('getVolume', channel),
+                         [s.reply('DSISound', 'updateVolume', [0x57, 1, 24, 1])])
+        self.assertEqual(call('getVolume', struct.pack('!ii', 0x52, 1)),
+                         [s.reply('DSISound', 'updateVolume', [0x52, 1, 15, 1])])
+        call('increaseVolume', channel + struct.pack('!h', 100))
+        self.assertEqual(call('getVolume', channel),
+                         [s.reply('DSISound', 'updateVolume', [0x57, 1, 30, 1])])
+        with self.assertRaises(ValueError): call('getVolume', b'')
+
+    def test_all_initial_notifications_encode(self):
+        s = Services()
+        for name, definition in s.definitions.items():
+            for spec in definition['replies'].values():
+                if spec['name'].startswith('update'):
+                    with self.subTest(service=name, method=spec['name']):
+                        s.reply(name, spec['name'], s.initial(name, spec))
+
+    def test_tuner_has_bands_and_real_request_completion(self):
+        s = Services()
+        definition = s.definitions['DSIAMFMTuner']
+        spec = next(v for v in definition['replies'].values() if v['name'] == 'updateWavebandInfoList')
+        self.assertEqual([b['waveband'] for b in s.initial('DSIAMFMTuner', spec)[0]], [1, 3])
+        mid = next(int(k) for k,v in definition['calls'].items() if v.startswith('selectStation('))
+        result = s.handle('DSIAMFMTuner', mid, struct.pack('!iii', 88300, 0, 0))
+        self.assertEqual(result[-1], s.reply('DSIAMFMTuner', 'selectStationStatus', [2]))
+        self.assertEqual(s.values['DSIAMFMTuner', 'updateSelectedStation'][0]['frequency'], 88300)
+
     def test_native_startup_profile_record(self):
         p = Persistence()
         request = array([678364556])+array([21])
@@ -260,10 +325,14 @@ class Checks(unittest.TestCase):
         self.assertEqual(encode('OptionalInt32VarArray',[1,2]),b'\0'+struct.pack('!Iii',2,1,2))
 
     def test_subscriptions_and_inventory(self):
-        s=Services()
-        # Wire reply 186 is the K3342 BCViewOptions event.
+        with tempfile.TemporaryDirectory() as root:
+            metadata=Path(root)/'metainfo2.txt'
+            metadata.write_text('[MMX2\\qb-primary\\70\\default\\File]\nLink = "[MMX2\\qb-primary\\50\\default\\File]"\n[MMX2\\qb-primary\\50\\default\\File]\nVersion = "155"\n')
+            with patch.dict(os.environ, MHI2_FIRMWARE_META=str(metadata)):
+                s=Services()
+        # Wire event changed between VW K3342 and Porsche K5126.
         reply=s.handle('DSICarKombi',34,array([4]))
-        self.assertEqual(reply[0][0],186)
+        self.assertEqual(reply[0][0],207 if SCHEMA_FILE == 'dsi_schema_pog11_k5126.json' else 186)
         self.assertEqual(reply[0][1][-4:],struct.pack('!i',129))
         mmx=next(d for d in s.inventory if d['name']=='MMX2')
         self.assertTrue(all(m['hw']==70 for m in mmx['modules']))

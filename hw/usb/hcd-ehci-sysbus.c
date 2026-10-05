@@ -165,6 +165,20 @@ static uint64_t tegra30_usb_read(void *opaque, hwaddr addr, unsigned size)
         /* DCCPARAMS: host capable; the device controller is not modeled. */
         return BIT(8);
     }
+    if (addr == 0x1b4) {
+        /* HOSTPC1_DEVLC.PSPD, unlike PORTSC, occupies bits 26:25.
+         * QNX's has_hostpc driver reads this to select its transfer speed.
+         * See Linux include/linux/usb/ehci_def.h HOSTPC_PSPD. */
+        USBDevice *dev = s->parent.ehci.ports[0].dev;
+        value &= ~(3U << 25);
+        if (dev && dev->attached) {
+            if (dev->speed == USB_SPEED_HIGH) {
+                value |= 2U << 25;
+            } else if (dev->speed == USB_SPEED_LOW) {
+                value |= 1U << 25;
+            }
+        }
+    }
     if (addr == 0x400) {
         bool utmi = (value & BIT(12)) && !(value & BIT(11));
         bool hsic = (value & BIT(19)) && !(value & BIT(14));
@@ -182,6 +196,9 @@ static void tegra30_usb_write(void *opaque, hwaddr addr, uint64_t value,
     Tegra30EHCIState *s = opaque;
     if (addr == 0x124) {
         return;
+    }
+    if (addr == 0x1b4) {
+        value &= ~(3U << 25); /* Port speed is read-only. */
     }
     if (addr == 0x400) {
         value &= ~BIT(7);

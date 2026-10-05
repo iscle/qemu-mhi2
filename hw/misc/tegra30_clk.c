@@ -2,6 +2,7 @@
 #include "qemu/units.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -110,6 +111,72 @@ static void tegra30_clk_update_resets(Tegra30ClkState *s)
     }
 }
 
+static uint64_t tegra30_pll_rate(Tegra30ClkState *s, unsigned offset,
+                                uint64_t ref)
+{
+    uint32_t base = s->regs[offset / 4];
+    unsigned m = base & 31, n = (base >> 8) & 1023;
+    unsigned p = (base >> 20) & 7;
+
+    if (base & BIT(31)) {
+        return ref; /* bypass */
+    }
+    if (!(base & BIT(30)) || !m) {
+        return 0;
+    }
+    return ref * n / (m << p);
+}
+
+static void tegra30_clk_update_periph(Tegra30ClkState *s)
+{
+    static const unsigned osc_hz[16] = {
+        [0] = 13000000, [1] = 16800000, [4] = 19200000,
+        [5] = 38400000, [8] = 12000000, [9] = 48000000,
+        [12] = 26000000,
+    };
+    uint32_t osc = s->regs[0x50 / 4];
+    uint32_t policy = s->regs[0x368 / 4];
+    uint32_t divider = s->regs[0x36c / 4];
+    uint64_t rate = osc_hz[osc >> 28];
+    uint64_t ref = rate >> ((osc >> 26) & 3);
+    unsigned state = policy >> 28, shift;
+    unsigned source;
+
+    switch (state) {
+    case 1: shift = 0; break;
+    case 2: shift = 4; break;
+    case 4: shift = 8; break;
+    case 8: shift = 12; break;
+    default:
+        clock_update_hz(s->periphclk, 0);
+        return;
+    }
+    source = (policy >> shift) & 15;
+    switch (source) {
+    case 0: break; /* CLK_M */
+    case 1: rate = tegra30_pll_rate(s, 0x80, ref); break;
+    case 2: rate = 32768; break;
+    case 3: rate = tegra30_pll_rate(s, 0x90, ref); break;
+    case 4: case 5: case 6:
+        rate = tegra30_pll_rate(s, 0xa0, ref);
+        if (source != 4) {
+            unsigned out = s->regs[0xa8 / 4] >> (source == 5 ? 16 : 0);
+            rate = (out & 3) == 3 ? rate * 2 / (((out >> 8) & 255) + 2) : 0;
+        }
+        break;
+    case 8: rate = tegra30_pll_rate(s, 0xe0, ref); break;
+    default: rate = 0; break; /* reserved mux inputs */
+    }
+    /* PLLX bypasses the U7.1 divider. Other CCLKG parents use it. */
+    if (source != 8) {
+        rate = rate * 2 / (((divider >> 16) & 255) + 2);
+    }
+    if (policy & BIT(23)) {
+        rate /= 2; /* thermal slowdown */
+    }
+    clock_update_hz(s->periphclk, rate / 2);
+}
+
 static void tegra30_clk_write(void *opaque, hwaddr offset,
                                    uint64_t val, unsigned size)
 {
@@ -170,6 +237,7 @@ static void tegra30_clk_write(void *opaque, hwaddr offset,
     }
 
     s->regs[idx] = (uint32_t) val;
+    tegra30_clk_update_periph(s);
 }
 
 static const MemoryRegionOps tegra30_clk_ops = {
@@ -211,12 +279,15 @@ static void tegra30_clk_reset(DeviceState *dev)
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLU_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLU_BASE_0_RST;
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_PLLX_BASE_0)] = REG_CLK_RST_CONTROLLER_PLLX_BASE_0_RST;
     s->regs[REG_INDEX(REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0)] = REG_CLK_RST_CONTROLLER_CLK_ENB_U_SET_0_RST;
+    tegra30_clk_update_periph(s);
 }
 
 static void tegra30_clk_init(Object *obj)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
     Tegra30ClkState *s = TEGRA30_CLK(obj);
+
+    s->periphclk = qdev_init_clock_out(DEVICE(obj), "periphclk");
 
     /* Memory mapping */
     memory_region_init_io(&s->iomem, OBJECT(s), &tegra30_clk_ops, s,
@@ -225,10 +296,20 @@ static void tegra30_clk_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), s->i2c_reset, "i2c-reset", 5);
 }
 
+static int tegra30_clk_post_load(void *opaque, int version_id)
+{
+    Tegra30ClkState *s = opaque;
+
+    tegra30_clk_update_resets(s);
+    tegra30_clk_update_periph(s);
+    return 0;
+}
+
 static const VMStateDescription tegra30_clk_vmstate = {
     .name = "tegra30-clk",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = tegra30_clk_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(regs, Tegra30ClkState, TEGRA30_CLK_REGS_NUM),
         VMSTATE_END_OF_LIST()

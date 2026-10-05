@@ -27,6 +27,64 @@ def command(s):
 def read(address): return int(command(f'readl {address:#x}')[0], 16)
 def write(address, value): command(f'writel {address:#x} {value:#x}')
 try:
+    # CAR drives the A9 system timer. Check both board crystals, PLL/divider
+    # changes, gated clocks, and a comparator deadline after a rate change.
+    car, gt = 0x60006000, 0x50040200
+    write(gt+8, 0)
+    write(gt, 0); write(gt+4, 0)
+    write(car+0xe0, 0x40025806)  # PLLX: N=600, M=6, P=0
+    write(car+0x368, 0x20008888)
+    write(gt+8, 1)
+    def ticks(ns):
+        before = read(gt)
+        command(f'clock_step {ns}')
+        return (read(gt) - before) & 0xffffffff
+    assert abs(ticks(1000000) - 650000) <= 1, '13 MHz PLLX timer rate'
+    before = read(gt)
+    write(car+0x50, 0x800003f1)
+    assert read(gt) == before, 'Clock switch jumped the counter'
+    assert abs(ticks(1000000) - 600000) <= 1, '12 MHz PLLX timer rate'
+    write(car+0xe0, 0x40125806)
+    assert abs(ticks(1000000) - 300000) <= 1, 'PLLX post divider'
+    write(car+0xe0, 0x00125806)
+    assert ticks(1000000) == 0, 'Disabled PLL advanced the timer'
+    write(car+0xe0, 0x80000000)
+    assert abs(ticks(1000000) - 6000) <= 1, 'PLLX bypass'
+    write(car+0x20, 0x10000000)  # legacy CCLK alias, IDLE CLK_M
+    write(car+0x24, 2 << 16)    # U7.1 divide by two
+    assert abs(ticks(1000000) - 3000) <= 1, 'CCLKG source/divider'
+    write(gt+8, 0)
+    assert ticks(1000000) == 0, 'Disabled timer advanced'
+    write(gt, 0); write(gt+4, 0)
+    write(car+0x50, 0x3f1)
+    write(car+0xe0, 0x40025806)
+    write(car+0x368, 0x20008888)
+    write(gt+16, 649999)
+    write(gt+20, 0)
+    write(gt+8, 7)
+    command('clock_step 999000')
+    assert read(gt+12) == 0, 'Timer comparator fired early'
+    command('clock_step 1000')
+    assert read(gt+12) == 1, 'Timer comparator missed 1 ms deadline'
+    # The native OS uses a 649999-cycle interval, not a power of two.
+    # Delayed servicing must preserve the comparator's original phase.
+    write(gt+8, 0)
+    write(gt, 0); write(gt+4, 0)
+    write(gt+12, 1)
+    write(gt+16, 649999); write(gt+20, 0)
+    write(gt+24, 649999)
+    write(gt+8, 15)
+    for ns in (1000000, 4000000, 17300000, 1000000):
+        command(f'clock_step {ns}')
+        counter = read(gt)
+        compare = read(gt+16)
+        assert compare == (counter // 649999 + 1) * 649999, \
+            ('Non-power-of-two auto-increment lost phase', counter, compare)
+        assert read(gt+12) == 1
+        write(gt+12, 1)
+        assert read(gt+12) == 0, 'Timer acknowledgement reasserted a past tick'
+    write(gt+8, 0)
+    write(gt+12, 1)
     # Native TDM DMA must move data before asserting completion, and must
     # preserve pending status while interrupt masking or pausing a channel.
     dma, chan, bridge, ram = 0x6000a000, 0x6000b000, 0x70080e00, 0x81000000
@@ -36,6 +94,19 @@ try:
     write(chan+16, ram)
     write(chan+24, 0x7008000c)
     write(chan, 0xd800001c)
+    command('clock_step 1000000')
+    assert not read(chan+4) & (1 << 30), 'DMA ran with AHUB disabled'
+    assert read(chan+4) & 0xfffc == 28, 'Unstarted DMA residual count'
+    write(0x70080000, 0xc0070700)
+    write(0x70080200, 1 << 4)
+    write(0x70080210, 1)
+    command('clock_step 1000000')
+    assert not read(chan+4) & (1 << 30), 'DMA ran with I2S disabled'
+    write(0x70080004, 0xc0000000)
+    assert read(0x70080004) == 0, 'AHUB FIFO reset did not complete'
+    write(0x70080300, 0x10001207)
+    assert read(0x70080300) == 0x1207, 'I2S reset did not complete'
+    write(0x70080300, 0xc0001207)
     command('clock_step 1000000')
     assert read(chan+4) & (1 << 30), 'DMA completion missing'
     assert not read(chan) & (1 << 31), 'One-shot DMA remained enabled'
@@ -60,11 +131,29 @@ try:
     write(chan+4, 1 << 30)
     write(chan, 0xc000001c)
     command('clock_step 21000')
-    assert read(chan+4) & (1 << 28), 'First cyclic half not completed'
+    assert not read(chan+4) & (1 << 28), 'RX first cyclic half has wrong direction polarity'
+    command('clock_step 1000000')
+    assert not read(chan+4) & (1 << 28), 'Unacknowledged half-buffer was overwritten'
     write(chan+4, 1 << 30)
     command('clock_step 21000')
-    assert not read(chan+4) & (1 << 28), 'Second cyclic half not completed'
+    assert read(chan+4) & (1 << 28), 'RX second cyclic half has wrong direction polarity'
     write(chan, 0)
+    # A mid-transfer pause freezes the residual count and resumes the
+    # remaining samples; it must not restart a whole buffer period.
+    write(chan+4, 1 << 30)
+    write(chan+16, ram)
+    write(chan+24, 0x7008000c)
+    write(chan, 0xd80003fc)
+    command('clock_step 333333')
+    residual = read(chan+4) & 0xfffc
+    assert 508 <= residual <= 512, f'Incorrect DMA residual: {residual}'
+    write(chan+12, 1 << 31)
+    assert read(chan+4) & (1 << 29), 'Pause did not halt the channel'
+    command('clock_step 1000000')
+    assert read(chan+4) & 0xfffc == residual, 'Paused residual advanced'
+    write(chan+12, 0)
+    command('clock_step 334000')
+    assert read(chan+4) & (1 << 30), 'Resume restarted the buffer clock'
     # Audio uses PPCS IOVA addresses, including transfers across page edges.
     mc = 0x7000f000
     write(0x90000000, 0xf0090001)
@@ -123,6 +212,6 @@ try:
         assert crc == frame[15]
         write(bus+0x28, 16)
         assert not read(bus+0x70) & ((1 << 23) | (1 << 25))
-    print('PASS: TDM DMA data/interrupt/pause/cyclic checks, three USB PHY clock/reset sequences, MC flush, ten IOC receive cycles')
+    print('PASS: CAR/system timer rates and continuity, TDM DMA data/interrupt/pause/cyclic checks, three USB PHY clock/reset sequences, MC flush, ten IOC receive cycles')
 finally:
     p.terminate(); p.wait(timeout=5)

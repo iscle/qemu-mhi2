@@ -4,6 +4,7 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "hw/core/qdev.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
@@ -156,8 +157,10 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     object_property_set_int(OBJECT(&s->a9mpcore), "num-cpu", TEGRA30_NUM_CPUS,
                             &error_fatal);
     object_property_set_int(OBJECT(&s->a9mpcore), "num-irq", 192, &error_fatal);
-    /* Quickboot configures PLLX/CPU to 1.2 GHz; PERIPHCLK is CPU/2. */
-    qdev_prop_set_uint32(DEVICE(&s->a9mpcore.gtimer), "frequency", 600000000);
+    /* The private peripheral clock follows CAR, including crystal selection. */
+    qdev_prop_set_bit(DEVICE(&s->a9mpcore.gtimer), "counter-read-fastpath", true);
+    qdev_connect_clock_in(DEVICE(&s->a9mpcore.gtimer), "clk",
+                          qdev_get_clock_out(DEVICE(&s->clk), "periphclk"));
     sysbus_realize(SYS_BUS_DEVICE(&s->a9mpcore), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->a9mpcore), 0, 0x50040000);
     static const unsigned timer_irq[6] = { 0, 1, 41, 42, 121, 122 };
@@ -291,6 +294,13 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
          */
         sysbus_connect_irq(SYS_BUS_DEVICE(s->sdmmc[i]), 0,
                            qdev_get_gpio_in(DEVICE(&s->a9mpcore), sdmmc_irq[i]));
+    }
+
+    /* The soldered Marvell combo chip occupies SDMMC2. */
+    {
+        DeviceState *wifi = qdev_new("mv8787-sdio");
+        qdev_realize_and_unref(wifi, qdev_get_child_bus(s->sdmmc[1], "sd-bus"),
+                               &error_fatal);
     }
 
     /* Native audio DMA and the attached MHI2 TDM endpoint. */

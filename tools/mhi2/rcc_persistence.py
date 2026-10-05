@@ -25,8 +25,46 @@ class Reader:
 
 
 class Persistence:
-    def __init__(self):
+    def __init__(self, config=None, metadata=None):
         self.values=json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
+        from firmware_profile import common_metadata
+        metadata = common_metadata() if metadata is None else metadata
+        if metadata.get('release') == 'MHI2_ER_POG11_K5126':
+            from emulator_config import load, validate
+            config = load() if config is None else validate(config)
+            self.configure_porsche(config)
+        for key, field in [('30:1966084', 'release'), ('30:1966083', 'MUVersion')]:
+            if metadata.get(field):
+                self.values[key] = dict(type='string', value=metadata[field])
+        if metadata.get('release'):
+            # Native GAL ignores train blobs shorter than 21 bytes, then
+            # trims whitespace (onIdentificationMuTrainChanged, 0x18d81c).
+            self.values['46924065:401'] = dict(
+                type='blob', value=metadata['release'].encode().ljust(32, b' ').hex())
+
+    def configure_porsche(self, config):
+        # K5126 smartphone_integrator: coding callback 0x193968 and
+        # adaptation callback 0x19377c. USB mode other than 3 forcibly clears
+        # the port mask (0x193448), independently of the FEC permission.
+        coding = bytearray.fromhex(self.values['28180695:1']['value'])
+        adaptation = bytearray.fromhex(self.values['28442848:100']['value'])
+        # GAL CCodingProvider::onCodingChanged (0x18de98) reads the brand
+        # from byte 0's low nibble; its enum printer (0x14e398) maps 7 to
+        # PORSCHE. Do not inherit VW identity from the generic fixture.
+        coding[0] = (coding[0] & 0xf0) | 7
+        coding[19] = (coding[19] & 0x3f) | 0xc0
+        adaptation[30] |= 1  # First modeled smartphone USB port.
+        for index, mask, feature in [(43, 0x80, '00060900'),
+                                     (51, 0x01, '00060800'),
+                                     (51, 0x60, '00060300'),
+                                     (43, 0x40, '00060b00'),
+                                     (70, 0x04, '00060b00')]:
+            # Preserve unrelated vehicle adaptation bits. Select MirrorLink's
+            # existing bit when enabled, or its first mode for a blank fixture.
+            selected = (adaptation[index] & mask) or (mask & -mask)
+            adaptation[index] = (adaptation[index] & ~mask) | (selected if config['features'][feature] else 0)
+        self.values['28180695:1']['value'] = coding.hex()
+        self.values['28442848:100']['value'] = adaptation.hex()
 
     def handle(self,mid,data):
         if mid==9:return []

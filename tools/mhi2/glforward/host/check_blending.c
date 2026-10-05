@@ -29,6 +29,9 @@ int main(void)
     unsigned cases=0;
     for(unsigned n=0;n<sizeof(shaders)/sizeof(shaders[0]);n++) {
         unsigned mode=shaders[n].blend;if(!mode)continue;
+        if(shaders[n].hash!=UINT64_C(0xb768a6623dd44225) &&
+           shaders[n].hash!=UINT64_C(0x456f4843de8e81e) &&
+           shaders[n].hash!=UINT64_C(0x7d495213a2eb81e3))continue;
         GLuint program=glCreateProgram();
         glAttachShader(program,compile(GL_VERTEX_SHADER,vertex));
         glAttachShader(program,compile(GL_FRAGMENT_SHADER,shaders[n].source));

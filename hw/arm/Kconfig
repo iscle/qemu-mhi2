@@ -722,6 +722,8 @@ config TEGRA30
     default y
     depends on TCG && ARM
     select USB_EHCI_SYSBUS
+    select IDE_BUS
+    select IDE_DEV
     select TEGRA30_APB_MISC
     select TEGRA30_CLK
     select TEGRA30_PMC

@@ -58,9 +58,13 @@ def verify_data_signature(digest, signature):
     return pow(integer, 3, DATA_MODULUS).to_bytes(128, 'big') == expected
 
 
-def state_vector():
+def state_vector(config=None):
     # asi.fec.SFecState[]: optional array, optional struct, uint32 fsid/index,
     # enum EFecState.ePermissionGranted=1. No signature-verification response.
+    # EFecState from the K5126 ROM: eNoPermission=0, ePermissionGranted=1.
+    # Keep indices stable even when a feature is disabled.
+    from emulator_config import load, validate
+    config = load() if config is None else validate(config)
     return struct.pack('!BI', 0, len(FEATURES)) + b''.join(
-        struct.pack('!BIIi', 0, feature, index, 1)
+        struct.pack('!BIIi', 0, feature, index, int(config['features'][f'{feature:08x}']))
         for index, feature in enumerate(FEATURES))

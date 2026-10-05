@@ -81,8 +81,11 @@ typedef struct {
 } SDRequest;
 
 
+#define TYPE_SD_DEVICE "sd-device"
+
 #define TYPE_SD_CARD "sd-card"
 OBJECT_DECLARE_TYPE(SDState, SDCardClass, SD_CARD)
+DECLARE_OBJ_CHECKERS(SDState, SDCardClass, SD_DEVICE, TYPE_SD_DEVICE)
 
 #define TYPE_SD_CARD_SPI "sd-card-spi"
 DECLARE_INSTANCE_CHECKER(SDState, SD_CARD_SPI, TYPE_SD_CARD_SPI)
@@ -162,11 +165,13 @@ struct SDBusClass {
      */
     void (*set_inserted)(DeviceState *dev, bool inserted);
     void (*set_readonly)(DeviceState *dev, bool readonly);
+    void (*set_irq)(DeviceState *dev, bool level);
 };
 
 /* Functions to be used by qdevified callers (working via
  * an SDBus rather than directly with SDState)
  */
+void sdbus_set_irq(SDBus *sdbus, bool level);
 void sdbus_set_voltage(SDBus *sdbus, uint16_t millivolts);
 uint8_t sdbus_get_dat_lines(SDBus *sdbus);
 bool sdbus_get_cmd_line(SDBus *sdbus);
