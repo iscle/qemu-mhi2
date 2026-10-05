@@ -1,0 +1,25 @@
+NvSS API acceleration for the private Porsche K5126 QEMU experiment
+
+nvss_redirect.c is linked only into the separate libEGL-pico.so fixture.
+It is not part of the Pico firmware or the native head-unit payload.
+The workspace image builder puts that EGL library in disposable QEMU media;
+the original SI, GAL, libautoreceiver and libnvss_video files are unchanged.
+
+When NvSS is already a dependency, EGL's DT_INIT checks all six original
+function prologues before redirecting their private process pages. Explicit
+library lookup matters on QNX: RTLD_DEFAULT may resolve GAL's undefined NvSS
+symbols to its nonzero PLT addresses instead of the library definitions.
+RTLD_NOLOAD avoids loading the video stack into unrelated EGL applications.
+
+The redirected functions implement the native NvSS ABI using the emulator's
+graphics transport and macOS VideoToolbox. Output 1 routes to the 800x480
+center display; output 0 routes to the separate cluster frame sink. The
+cluster's modeled surface is 448x448; the native payload requests a 408x448
+viewport. Host decoder ownership remains per guest process and video ID.
+
+This tests the Pico deployment and its native API call path without adding
+emulator hooks to the Pico payload. It does not execute Tegra decoder/GPU
+commands, validate native composition/visibility ownership, or validate the
+LVDS-to-MOST transport and physical cluster. The original-library QEMU mode
+remains available for hardware emulation work. Neither mode proves P5250 ABI
+compatibility or physical RP2040 USB/Wi-Fi timing.

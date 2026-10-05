@@ -2,7 +2,7 @@
  * macOS VideoToolbox owns the hardware decoder. No guest GPU commands run. */
 #include "bridge_transport.h"
 extern void *memset(void *,int,unsigned long);
-struct Video { u32 id,width,height,configured; unsigned char attrs[64]; };
+struct Video { u32 id,width,height,configured,target; unsigned char attrs[64]; };
 static u32 next_video;
 static u32 video_request(u32 op,const void *data,u32 size)
 {
@@ -19,7 +19,9 @@ u32 NvSSVideoOpen(struct Video **out,const u32 *config)
     struct Video *v=malloc(sizeof(*v));if(!v)return 0x80000001;
     memset(v,0,sizeof(*v));v->id=__sync_add_and_fetch(&next_video,1);
     /* Physical display dimensions returned by the original NvMedia query. */
-    ((u32 *)v->attrs)[0]=800;((u32 *)v->attrs)[1]=480;
+    v->target=config[0]==0; /* NvSS 0=LVDS cluster, 1=HDMI center. */
+    ((u32 *)v->attrs)[0]=v->target?448:800;
+    ((u32 *)v->attrs)[1]=v->target?448:480;
     ((u32 *)v->attrs)[12]=0x3f800000;
     ((u32 *)v->attrs)[13]=0x3f800000;
     ((u32 *)v->attrs)[14]=0x3f800000;
@@ -28,11 +30,12 @@ u32 NvSSVideoOpen(struct Video **out,const u32 *config)
 u32 NvSSVideoStreamConfigure(struct Video *v,const u32 *p)
 {
     if(!v||!p||!p[0]||!p[1]||p[0]>2048||p[1]>2048)return 0x80000005;
-    u32 args[3]={v->id,p[0],p[1]};
+    u32 args[4]={v->id,p[0],p[1],v->target};
     u32 result=video_request(134,args,sizeof(args));if(result)return result;
     v->width=p[0];v->height=p[1];v->configured=1;
     ((u32 *)v->attrs)[5]=p[0];((u32 *)v->attrs)[6]=p[1];
-    ((u32 *)v->attrs)[9]=800;((u32 *)v->attrs)[10]=480;
+    ((u32 *)v->attrs)[9]=((u32 *)v->attrs)[0];
+    ((u32 *)v->attrs)[10]=((u32 *)v->attrs)[1];
     return 0;
 }
 u32 NvSSVideoSetAttribs(struct Video *v,const unsigned char *a)
