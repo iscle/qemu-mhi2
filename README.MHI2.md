@@ -4,6 +4,11 @@ This is the custom MHI2 QEMU tree with its available source history, including t
 RCC/IOC services, host graphics/audio bridges, MOST virtual cockpit transport,
 accelerated encoding, and the additional Tegra3 clock/timer changes used by Linux.
 
+The primary branch is `main`. It combines the Porsche/VW `mhi2-quickboot`
+and Audi `mhi2-audi-a3` histories without squashing either branch. Both old
+branch tips remain available as archive tags. See
+[consolidation and validation](tools/mhi2/CONSOLIDATION.md).
+
 Start with [the emulator documentation](tools/mhi2/README.md).
 The Linux payload build and emulator media are in
 [iscle/mhi2-linux-port](https://github.com/iscle/mhi2-linux-port).

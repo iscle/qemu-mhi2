@@ -1,4 +1,4 @@
-"""K3342 ESO service models for the local, simulated vehicle.
+"""MHI2 ESO service models for the local, simulated vehicle.
 
 Wire IDs/layouts are recovered from the firmware's generated DSI serializers.
 Vehicle values describe an emulated parked car, not an actual vehicle identity.
@@ -68,9 +68,10 @@ def decode(kind, reader):
 def inventory():
     # Only MMX/RCC payloads in the booted firmware; optional archive components
     # (tuners, amplifiers, phones) are not asserted to be installed.
-    path = Path(os.environ.get('MHI2_FIRMWARE_META', '/home/iscle/Downloads/mhi2-analysis/extracted/metainfo2.txt'))
+    from firmware_profile import current
+    path = Path(current()['metadata'])
     devices = {}
-    if not path.exists():return []
+    if not path.is_file():return []
     sections={};current={}
     for line in path.read_text().splitlines():
         if line.startswith('['):
@@ -205,7 +206,8 @@ class Services:
                 vals[0] = dict(frequency=88300, waveband=1)
                 if method.endswith('HD'): vals[1] = 0
         if name == 'DSISwdlDeviceInfo' and method == 'updateSummaryChanged':
-            vals[0] = FIRMWARE.get('release', 'MHI2_ER_VWG11_K3342')
+            from firmware_profile import current
+            vals[0] = current()['train']
         if name == 'DSIKOMOGfxStreamSink':
             vals[0]={'updateGfxState':1,'updateDataRate':2,'updateRequestSync':1}.get(method,0)
         if name == 'DSICarKombi':

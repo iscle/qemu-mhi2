@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from emulator_config import defaults, load, save, validate
-from firmware_profile import common_metadata, select_profile
+from firmware_profile import common_metadata, select_profile, current, configure
 from rcc_features import FEATURES, state_vector
 from usb_transport import USBTransport
 from rcc_persistence import Persistence
@@ -47,6 +47,37 @@ class Checks(unittest.TestCase):
         self.assertEqual(select_profile({'release': 'MHI2_ER_VWG11_K3342'})['brand'], 'volkswagen')
         self.assertEqual(select_profile({})['brand'], 'volkswagen')
         self.assertEqual(select_profile({'release': 'MHI2_ER_AUG22_P3663'})['brand'], 'generic')
+        self.assertEqual(select_profile({'release': 'MHI2_ER_AU37x_P5089'})['brand'], 'audi')
+
+    def test_metadata_aliases_select_porsche_services_and_controls(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'metainfo2.txt'
+            path.write_text('[common]\nrelease = "MHI2_ER_POG11_K5126"\n')
+            for variable in ('MHI2_FIRMWARE_META', 'MHI2_METADATA'):
+                with patch.dict(os.environ, {variable: str(path)}, clear=True):
+                    profile = current()
+                    self.assertEqual(profile['brand'], 'porsche')
+                    self.assertEqual(profile['keyboard'], 13)
+                    self.assertEqual(profile['metadata'], str(path))
+                    self.assertEqual(profile['train'], 'MHI2_ER_POG11_K5126')
+
+    def test_media_profile_switch_replaces_old_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            old = root / 'old.txt'
+            old.write_text('[common]\nrelease = "MHI2_ER_POG11_K5126"\n')
+            (root / 'metainfo2.txt').write_text('[common]\nrelease = "MHI2_ER_AU37x_P5089"\n')
+            manifest = root / 'ui-manifest.json'
+            manifest.write_text(json.dumps({'firmware_train': 'MHI2_ER_AU37x_P5089',
+                                            'metadata': 'metainfo2.txt'}))
+            with patch.dict(os.environ, {'MHI2_FIRMWARE_META': str(old)}, clear=True):
+                profile = configure('audi-a3', root)
+                self.assertEqual(profile['brand'], 'audi')
+                self.assertEqual(profile['train'], 'MHI2_ER_AU37x_P5089')
+                self.assertEqual(os.environ['MHI2_OSCILLATOR_12MHZ'], '1')
+                self.assertEqual(os.environ['MHI2_FIRMWARE_META'], os.environ['MHI2_METADATA'])
+                with self.assertRaisesRegex(ValueError, 'does not match'):
+                    configure('vw', root)
 
     def test_feature_persistence_and_wire_states(self):
         config = defaults()

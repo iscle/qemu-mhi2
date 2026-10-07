@@ -1,0 +1,4 @@
+cryptography==43.0.3
+PySide6==6.10.2
+meson==1.12.0
+pycotap==1.3.1
