@@ -23,21 +23,44 @@ class Checks(unittest.TestCase):
             run.return_value.stderr = b'Unsupported encoding profile'
             with self.assertRaises(RuntimeError): configure_encoder(env)
 
-    def test_auto_probes_next_device_and_software_skips_probe(self):
+    def test_auto_probes_next_device_and_software_skips_hardware(self):
         env = dict(os.environ)
         env.pop('MHI2_VAAPI_DEVICE', None)
         env['MHI2_ENCODER'] = 'auto'
-        with patch('encoder_backend.Path.glob', return_value=[Path('/dev/dri/renderD129'), Path('/dev/dri/renderD128')]), patch('encoder_backend.subprocess.run') as run:
+        with patch('encoder_backend.sys.platform', 'linux'), patch('encoder_backend.Path.glob', return_value=[Path('/dev/dri/renderD129'), Path('/dev/dri/renderD128')]), patch('encoder_backend.subprocess.run') as run:
             run.side_effect = [subprocess.CompletedProcess([], 1, stderr=b'unsupported'),
                                subprocess.CompletedProcess([], 0, stderr=b'')]
             self.assertIn('/dev/dri/renderD129', configure_encoder(env))
             self.assertEqual(env['MHI2_VAAPI_DEVICE'], '/dev/dri/renderD129')
             self.assertEqual(run.call_count, 2)
             env['MHI2_ENCODER'] = 'software'
+            run.side_effect = None
+            run.return_value = subprocess.CompletedProcess([], 0, stderr=b'')
             run.reset_mock()
             self.assertIn('software', configure_encoder(env))
             self.assertNotIn('MHI2_VAAPI_DEVICE', env)
-            run.assert_not_called()
+            self.assertEqual(env['MHI2_ENCODER_CODEC'], 'libx264')
+            self.assertNotIn('-vaapi_device', run.call_args.args[0])
+
+    def test_mac_acceleration_and_software_fallback(self):
+        env = {'MHI2_ENCODER': 'auto'}
+        with patch('encoder_backend.sys.platform', 'darwin'), patch('encoder_backend.subprocess.run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stderr=b'')
+            self.assertIn('hardware', configure_encoder(env))
+            self.assertEqual(env['MHI2_ENCODER_CODEC'], 'h264_videotoolbox')
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index('-allow_sw')+1], '0')
+            self.assertNotIn('-vaapi_device', args)
+            run.side_effect = [subprocess.CompletedProcess([], 1, stderr=b'no GPU'),
+                               subprocess.CompletedProcess([], 0, stderr=b'')]
+            self.assertIn('software', configure_encoder(env))
+            self.assertEqual(env['MHI2_ENCODER_CODEC'], 'libx264')
+            env['MHI2_ENCODER'] = 'hardware'
+            run.side_effect = None
+            run.return_value = subprocess.CompletedProcess([], 1, stderr=b'no GPU')
+            with self.assertRaises(RuntimeError):
+                configure_encoder(env)
+            self.assertNotIn('MHI2_ENCODER_CODEC', env)
 
     def test_guest_cadence_and_read_bounds(self):
         source = Path(__file__).resolve().parent/'glforward/tests/encoder_cadence.c'
@@ -51,7 +74,7 @@ class Checks(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='mhi2-encoder-check-') as tmp:
             tmp = Path(tmp);exe = tmp/'encoder-test'
             subprocess.run(['cc', '-O2', '-pthread', str(root/'glforward/tests/encoder_async.c'), '-o', str(exe)], check=True)
-            env = dict(os.environ);env.pop('MHI2_VAAPI_DEVICE', None)
+            env = dict(os.environ, MHI2_ENCODER='software');env.pop('MHI2_VAAPI_DEVICE', None);configure_encoder(env)
             stream = tmp/'video.ts'
             subprocess.run([str(exe), 'real', str(stream)], env=env, check=True, timeout=15)
             transport = TransportStream();self.assertEqual(transport.extract(stream.read_bytes()), stream.read_bytes())

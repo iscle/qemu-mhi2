@@ -12,7 +12,8 @@ symbols to its nonzero PLT addresses instead of the library definitions.
 RTLD_NOLOAD avoids loading the video stack into unrelated EGL applications.
 
 The redirected functions implement the native NvSS ABI using the emulator's
-graphics transport and macOS VideoToolbox. Output 1 routes to the 800x480
+graphics transport and the shared FFmpeg backend (VA-API on Linux,
+VideoToolbox on macOS, or explicit/logged software fallback). Output 1 routes to the 800x480
 center display; output 0 routes to the separate cluster frame sink. The
 cluster's modeled surface is 448x448; the native payload requests a 408x448
 viewport. Host decoder ownership remains per guest process and video ID.

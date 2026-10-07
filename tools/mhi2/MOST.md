@@ -1,3 +1,7 @@
+Current Linux/macOS host codec selection and shared video-plane tests are
+specified in [HOST_PARITY.md](HOST_PARITY.md). The VA-API/software measurements
+below describe the earlier implementation and remain historical evidence.
+
 # Virtual Cockpit video over the RCC MOST interface
 
 Start with the existing command:

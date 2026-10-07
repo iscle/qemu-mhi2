@@ -14,6 +14,7 @@ import shutil
 import struct
 import subprocess
 
+from sparse_copy import copy_sparse
 import qnx6_image
 
 
@@ -110,7 +111,7 @@ def install_disk(input_disk, output_disk, image, package):
     for index, (sector, ebr) in enumerate(entries[:-1]):
         following = entries[index+1][0]
         struct.pack_into('<II', ebr, 470, following-extended, disk_size//512-following)
-    subprocess.run(['cp', '--reflink=auto', '--sparse=always', str(input_disk), str(output_disk)], check=True)
+    copy_sparse(input_disk, output_disk)
     with output_disk.open('r+b') as disk, image.open('rb') as source:
         disk.truncate(disk_size)
         disk.seek(0); disk.write(mbr)
