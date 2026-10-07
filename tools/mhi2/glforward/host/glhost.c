@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 /*
- * glhost - Linux host renderer for the MIB2 GL-forward shim.
+ * glhost - Linux/macOS host renderer for the MIB2 GL-forward shim.
  *
  * Experimental QNX GLES/EGL forwarding over stdin/stdout, backed by a Mesa
  * surfaceless EGL pbuffer. Guest records use [u32 opcode][u32 length][payload].
@@ -12,7 +12,6 @@
  *   7-14 shaders/programs  15-18 buffers  19-21 vertex attribs  22-30 uniforms
  *   31-32 draws  33-43 pipeline state  50-58 textures  100/101 sync getters
  */
-#include <SDL2/SDL.h>
 #include <GLES2/gl2.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>

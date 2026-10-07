@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import struct
+from sparse_copy import copy_sparse
 import subprocess
 import sys
 import zlib
@@ -113,8 +114,7 @@ def main():
     (args.output / 'nor.bin').write_bytes(nor)
     (args.output / 'iram.bin').write_bytes((args.base / 'iram.bin').read_bytes())
     disk = args.output / 'emmc.raw'
-    subprocess.run(['cp', '--reflink=auto', '--sparse=always',
-                    str(args.formatted_disk), str(disk)], check=True)
+    copy_sparse(args.formatted_disk, disk)
     with disk.open('r+b') as out:
         mbr = out.read(512)
         start, sectors = struct.unpack_from('<II', mbr, 454)

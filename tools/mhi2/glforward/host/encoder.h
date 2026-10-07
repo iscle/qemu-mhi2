@@ -32,11 +32,32 @@ static void encoder_child_stop(pid_t child,int input,int output)
     while(waitpid(child,NULL,WNOHANG)==0&&encoder_now()<deadline)usleep(1000);
     if(waitpid(child,NULL,WNOHANG)==0){kill(child,SIGKILL);waitpid(child,NULL,0);}
 }
+/* Darwin has no pipe2. CLOEXEC_DEFAULT below also closes descriptors
+ * created by another encoder thread between pipe() and fcntl(). */
+static int encoder_pipe(int fd[2])
+{
+#ifdef __APPLE__
+    if (pipe(fd)) {
+        return -1;
+    }
+    if (fcntl(fd[0], F_SETFD, FD_CLOEXEC) < 0 ||
+        fcntl(fd[1], F_SETFD, FD_CLOEXEC) < 0) {
+        int saved_errno = errno;
+        close(fd[0]);
+        close(fd[1]);
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+#else
+    return pipe2(fd, O_CLOEXEC);
+#endif
+}
 static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
 {
     int in[2],out[2];
-    if(pipe2(in,O_CLOEXEC))return -1;
-    if(pipe2(out,O_CLOEXEC)){close(in[0]);close(in[1]);return -1;}
+    if(encoder_pipe(in))return -1;
+    if(encoder_pipe(out)){close(in[0]);close(in[1]);return -1;}
     char dimensions[32],frequency[16],bitrate[24];
     snprintf(dimensions,sizeof(dimensions),"%ux%u",a[1],a[2]);
     snprintf(frequency,sizeof(frequency),"%u",a[3]);snprintf(bitrate,sizeof(bitrate),"%u",a[4]);
@@ -66,7 +87,13 @@ static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
     posix_spawn_file_actions_adddup2(&actions,in[0],STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions,out[1],STDOUT_FILENO);
     posix_spawn_file_actions_addclose(&actions,in[1]);posix_spawn_file_actions_addclose(&actions,out[0]);
-    pid_t child=-1;int error=posix_spawnp(&child,"ffmpeg",&actions,NULL,args,environ);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+#ifdef __APPLE__
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#endif
+    pid_t child=-1;int error=posix_spawnp(&child,"ffmpeg",&actions,&attr,args,environ);
+    posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);close(in[0]);close(out[1]);
     if(error){close(in[1]);close(out[0]);return -1;}
     fcntl(in[1],F_SETFL,O_NONBLOCK);fcntl(out[0],F_SETFL,O_NONBLOCK);

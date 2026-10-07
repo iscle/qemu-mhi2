@@ -9,6 +9,7 @@ import hashlib
 import json
 import struct
 from pathlib import Path
+from sparse_copy import copy_sparse
 from cryptography.hazmat.primitives.cmac import CMAC
 from cryptography.hazmat.primitives.ciphers import algorithms
 
@@ -98,9 +99,8 @@ def main():
     start, sectors = struct.unpack_from('<II',mbr,454)
     app = args.extracted/'MMX2/app/70/default/app.img'
     assert app.stat().st_size <= sectors*512
-    # Copy with reflinks/sparse preservation when supported, without touching source.
-    import subprocess
-    subprocess.run(['cp','--reflink=auto','--sparse=always',str(args.base_emmc),str(args.output/'emmc.raw')],check=True)
+    # Preserve sparse zero ranges without modifying the source disk.
+    copy_sparse(args.base_emmc, args.output/'emmc.raw')
     digest = hashlib.sha256()
     with app.open('rb') as src, (args.output/'emmc.raw').open('r+b') as dst:
         # The supplied experimental disk labels app as type 178; fstab expects 177.

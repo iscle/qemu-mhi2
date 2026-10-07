@@ -4,7 +4,7 @@ cd "$(dirname "$0")/../../.."
 cc=${MHI2_ARM_CC:-arm-none-eabi-gcc}
 out=${MHI2_BUILD_DIR:-/tmp}
 mkdir -p "$out"
-out=$(realpath "$out")
+out=$(cd "$out" && pwd)
 work=$(mktemp -d /tmp/mhi2-audio-build.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 # Link-only ABI stubs. These are never installed in the guest; the executable
