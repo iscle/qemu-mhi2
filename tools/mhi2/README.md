@@ -9,6 +9,9 @@ It covers dependencies, the private bootstrap download, building from the
 original P5089 archive, and launching the native UI with rotary controls.
 The workspace-specific commands below describe the older VW setup.
 
+See [LSD diagnostic shells](DIAGNOSTIC_SHELLS.md) for the built-in COMM Doctor,
+Java Trace Terminal, and production trace-server configuration.
+
 ## Run the prepared K3342 firmware
 
 For the interactive UI, launch the prepared experimental media and viewer together:

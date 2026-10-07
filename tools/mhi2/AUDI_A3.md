@@ -215,6 +215,12 @@ contents, and records source/output SHA-256 hashes. It is for regenerating the
 bootstrap from those original inputs; it is **not** an archive-only substitute
 for them. The download above is the supported input on a separate computer.
 
+The portable builder was also checked from a fresh checkout using the
+downloaded `bootstrap-v1` asset and the original archive. It completed the
+QEMU/bridge/media build and the generated launcher reached the native English
+Audi radio screen. This validates the reproduction path on the tested Fedora
+host; the Ubuntu package example has not been tested in a separate VM.
+
 ## Compatibility changes
 
 * Audi's display driver needs the existing 12 MHz oscillator model. The launcher
