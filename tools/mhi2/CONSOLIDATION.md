@@ -1,13 +1,42 @@
-# Unified emulator branch
+# MHI2 history and validation
 
-`main` combines the complete histories of:
+## Official upstream base
 
-- `mhi2-quickboot`: `20c110b8af9a35722f5f916ccc09914891b9c216`
-- `mhi2-audi-a3`: `a61c6b0021fa857742f28eb6e43626d3319e0b5d`
+On 2026-10-07, `main` was reconstructed and rebased onto official QEMU master
+[`f9587d4045c67cd0d8d8bdcd5d0bb5b6b395b63c`](https://github.com/qemu/qemu/commit/f9587d4045c67cd0d8d8bdcd5d0bb5b6b395b63c).
+The previous tip was `c4c6bbda7cdf4ac19f117ea361946dcfb5cb42e2`.
 
-These tips are also retained as `archive/mhi2-quickboot-2026-10-07` and
-`archive/mhi2-audi-a3-2026-10-07` tags. Development continues on `main`.
-No commits are squashed or rewritten.
+The old graph contained an unrelated-root source snapshot and a reconciliation
+merge that made upstream QEMU 9.2 maintenance commits appear in the fork's
+changes. The replacement history starts from official upstream, carries only
+MHI2 changes, and has no fork merge commits. Existing linear MHI2 changes keep
+their authorship; the initial snapshot and Audi integration are represented by
+their actual MHI2 deltas. The old history remains in local backup refs and the
+previously published archive tags, not as an ancestor of the new `main`.
+
+Before rebasing, the reconstructed MHI2 tree was compared byte-for-byte with
+the old tip. Excluded changes were the vendored softfloat/testfloat/keycodemapdb
+snapshots and accidental deletions of upstream ROM/test submodule entries.
+There are no fork changes under `roms/`, `subprojects/`, or
+`tests/lcitool/libvirt-ci`; the build fetches the pinned dependencies separately.
+
+Existing clones should save local work before switching to the rewritten
+history. A fresh shallow clone or source ZIP is the simplest option. For a
+clean existing checkout with no local work to retain:
+
+```sh
+git fetch origin
+git switch main
+git reset --hard origin/main
+```
+
+## Earlier branch integration
+
+The combined implementation originated in the Porsche/VW `mhi2-quickboot`
+branch (`20c110b8af9a35722f5f916ccc09914891b9c216`) and Audi `mhi2-audi-a3`
+branch (`a61c6b0021fa857742f28eb6e43626d3319e0b5d`). Their historical tips
+remain available as `archive/mhi2-quickboot-2026-10-07` and
+`archive/mhi2-audi-a3-2026-10-07` tags. Those tags predate the history cleanup.
 
 ## Reconciled behavior
 

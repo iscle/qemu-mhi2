@@ -23,7 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+      - name: Extract source ZIP without Git metadata
+        run: |
+          git archive --format=zip --output="$RUNNER_TEMP/source.zip" HEAD
+          mkdir "$RUNNER_TEMP/source"
+          unzip -q "$RUNNER_TEMP/source.zip" -d "$RUNNER_TEMP/source"
+          test ! -e "$RUNNER_TEMP/source/.git"
       - name: Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -46,8 +52,10 @@ jobs:
           shasum -a 256 -c "$asset.sha"
           tar -xzf "$asset"
           echo "$PWD/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin" >> "$GITHUB_PATH"
-      - name: Full-history QEMU dependencies
+      - name: Pinned QEMU dependencies
         run: |
+          cd "$RUNNER_TEMP/source"
+          python3 tools/mhi2/check_source_build.py
           python3 - <<'PY'
           import sys
           from pathlib import Path
@@ -57,21 +65,23 @@ jobs:
           PY
       - name: Build QEMU
         run: |
-          mkdir ../build
-          cd ../build
-          "$GITHUB_WORKSPACE/configure" --target-list=arm-softmmu --disable-docs --disable-sdl --disable-gtk --disable-fuse --disable-rust --disable-werror --enable-libusb
+          mkdir "$RUNNER_TEMP/build"
+          cd "$RUNNER_TEMP/build"
+          "$RUNNER_TEMP/source/configure" --target-list=arm-softmmu --disable-docs --disable-sdl --disable-gtk --disable-fuse --disable-rust --disable-werror --enable-libusb
           ninja -j 3 qemu-system-arm
           ./qemu-system-arm -machine help | grep mhi2
       - name: Build host and guest bridges
         env:
           MHI2_BUILD_LIBRARIES_ONLY: '1'
         run: |
+          cd "$RUNNER_TEMP/source"
           export MHI2_BUILD_DIR="$RUNNER_TEMP/bridge"
           bash tools/mhi2/glforward/build_local.sh
       - name: Check portable image preparation and GLES protocol
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
+          cd "$RUNNER_TEMP/source"
           python3 tools/mhi2/check_sparse_copy.py
           python3 tools/mhi2/check_lzo_library.py
           python3 tools/mhi2/check_kanzi_shaders.py

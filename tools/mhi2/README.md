@@ -5,7 +5,7 @@ Upstream QEMU `81ce3a87737aa50716c42db8886082d12783e0a1` was merged into
 and firmware captures have not been modified.
 
 For a new computer, start with the [macOS setup and boot guide](../../README.md).
-It covers dependencies, the private bootstrap download, and separate build and
+It covers dependencies, the bootstrap download, and separate build and
 launch commands for Audi A3, Volkswagen and Porsche firmware.
 The workspace-specific commands below describe the older VW setup.
 

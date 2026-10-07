@@ -2,15 +2,13 @@
 
 Boot supported **Audi, Volkswagen and Porsche MHI2 firmware** on a Mac, with
 the original QNX user interface and emulated vehicle/companion services.
-This is a private, experimental QEMU fork. It does not require a head unit,
+This is an experimental QEMU fork. It does not require a head unit,
 Raspberry Pi Pico, QNX SDK or a separate Pico repository.
 
-## Before sharing this repository
+## Supported firmware
 
-Give your friend access to this **private GitHub repository**, including its
-release downloads. A repository link alone does not grant access. They also
-need their own supported firmware update archive; the repository does not
-include those archives or navigation maps.
+Supply your own supported firmware update archive; the repository does not
+include firmware updates or navigation maps.
 
 The supported profiles are specific firmware trains, not every update for a
 brand:
@@ -44,13 +42,14 @@ Install [Homebrew](https://brew.sh/) if it is not already available, then run:
 
 ```sh
 brew install git pkgconf ninja python glib pixman mesa lzo libusb sevenzip zstd \
-  ffmpeg sox gnu-tar gh
+  ffmpeg sox gnu-tar
 
 export MHI2_REPRO="$HOME/mhi2-repro"
 mkdir -p "$MHI2_REPRO"
-gh auth login
-gh auth setup-git
-git clone --branch main https://github.com/iscle/qemu-mhi2.git "$MHI2_REPRO/qemu"
+curl -fL https://github.com/iscle/qemu-mhi2/archive/refs/heads/main.zip \
+  -o "$MHI2_REPRO/qemu.zip"
+unzip -q "$MHI2_REPRO/qemu.zip" -d "$MHI2_REPRO"
+mv "$MHI2_REPRO/qemu-mhi2-main" "$MHI2_REPRO/qemu"
 cd "$MHI2_REPRO/qemu"
 "$(brew --prefix python)/bin/python3" -m venv .venv
 . .venv/bin/activate
@@ -58,10 +57,18 @@ python -m pip install -r tools/mhi2/requirements-audi.txt
 ```
 
 Despite its historical name, `requirements-audi.txt` supplies the Python
-requirements for all three profiles. Use Python 3.11 or newer. Clone with full
-history; do not use `--depth` or download only a source ZIP. The builder checks
-vendored dependencies against their pinned upstream revisions. First-time
-setup needs internet access for GitHub, GitLab and Python packages.
+requirements for all three profiles. Use Python 3.11 or newer. **Code → Download
+ZIP**, the ZIP command above, and Git clones (including shallow clones) are all
+supported. If you prefer Git, replace the download/unzip/move commands with:
+
+```sh
+git clone --depth 1 --branch main https://github.com/iscle/qemu-mhi2.git "$MHI2_REPRO/qemu"
+```
+
+The ZIP contains source, so it still needs to be compiled. Git is used only to
+fetch pinned third-party build dependencies; your QEMU directory needs no
+`.git` metadata or history. First-time setup needs internet access to GitHub,
+GitLab and Python packages.
 
 Install the ARM compiler used for the guest graphics libraries:
 
@@ -70,8 +77,9 @@ mkdir -p "$MHI2_REPRO/toolchain"
 cd "$MHI2_REPRO/toolchain"
 case "$(uname -m)" in arm64) arch=arm64;; x86_64) arch=x64;; esac
 asset="xpack-arm-none-eabi-gcc-13.3.1-1.1-darwin-$arch.tar.gz"
-gh release download v13.3.1-1.1 --repo xpack-dev-tools/arm-none-eabi-gcc-xpack \
-  --pattern "$asset*"
+release="https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/download/v13.3.1-1.1"
+curl -fLO "$release/$asset"
+curl -fLO "$release/$asset.sha"
 shasum -a 256 -c "$asset.sha"
 tar -xzf "$asset"
 export PATH="$MHI2_REPRO/toolchain/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin:$PATH"
@@ -93,8 +101,9 @@ need the captured boot handoff and formatted disk template from the
 ```sh
 mkdir -p "$MHI2_REPRO/bootstrap"
 cd "$MHI2_REPRO/bootstrap"
-gh release download mhi2-bootstrap-v1 --repo iscle/qemu-mhi2 \
-  --pattern mhi2-bootstrap-v1.tar.zst --pattern SHA256SUMS
+release="https://github.com/iscle/qemu-mhi2/releases/download/mhi2-bootstrap-v1"
+curl -fLO "$release/mhi2-bootstrap-v1.tar.zst"
+curl -fLO "$release/SHA256SUMS"
 shasum -a 256 -c SHA256SUMS
 gtar --zstd -xf mhi2-bootstrap-v1.tar.zst
 cd "$MHI2_REPRO/qemu"
@@ -212,8 +221,6 @@ images onto a real head unit.
 
 ## Troubleshooting
 
-- **GitHub says not found / release download fails:** confirm the signed-in
-  account has access to this private repo. Run `gh auth status`.
 - **Wrong firmware train:** use the exact train in the table; renaming an
   archive or editing its manifest does not make it compatible.
 - **Output already exists:** choose a new `--output` path. A failed build is
@@ -230,5 +237,14 @@ images onto a real head unit.
   before starting another firmware profile.
 
 For advanced details see the [Audi reproduction guide](tools/mhi2/AUDI_A3.md),
-[emulator internals](tools/mhi2/README.md), [private-fork notes](README.MHI2.md)
+[emulator internals](tools/mhi2/README.md), [fork notes](README.MHI2.md)
 and the original [upstream QEMU README](README.rst).
+
+## Source and licensing
+
+The fork is based on [official QEMU](https://github.com/qemu/qemu). MHI2-specific
+changes are experimental and include AI-assisted work; they are not intended
+as upstream QEMU submissions. QEMU and third-party source retain their existing
+copyright and license notices; see [COPYING](COPYING) and [COPYING.LIB](COPYING.LIB).
+Firmware and captured bootstrap data are separate from the emulator source;
+the source license does not grant rights to redistribute those assets.

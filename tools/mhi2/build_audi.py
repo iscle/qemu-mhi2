@@ -27,52 +27,54 @@ def run(command, **kwargs):
 
 
 def build_dependencies(cache):
-    """Fetch the pinned C build dependencies without Meson's shallow clones."""
+    """Materialize only the pinned dependencies needed by arm-softmmu.
+
+    Source ZIPs have no Git index and do not contain submodules. Fetch each
+    dependency independently, then copy its pinned tree and QEMU's Meson overlay.
+    Existing source files must match; never silently overwrite local edits.
+    """
+    cache.mkdir(parents=True, exist_ok=True)
     for name in ('keycodemapdb', 'berkeley-softfloat-3', 'berkeley-testfloat-3'):
         wrap = configparser.ConfigParser()
         wrap.read(REPO/'subprojects'/(name+'.wrap'))
         spec = wrap['wrap-git']
-        destination = REPO/'subprojects'/name
-        vendored = destination.exists() and not (destination/'.git').exists()
-        vendored_source = destination
-        if vendored:
-            destination = cache/name
-            cache.mkdir(parents=True, exist_ok=True)
-        if not destination.exists():
-            run(['git', 'clone', spec['url'], destination])
-            run(['git', '-C', destination, 'checkout', '--detach', spec['revision']])
-        shallow = subprocess.check_output(['git', '-C', str(destination),
-                                           'rev-parse', '--is-shallow-repository'], text=True).strip()
-        if shallow == 'true':
-            run(['git', '-C', destination, 'fetch', '--unshallow'])
-        revision = subprocess.check_output(['git', '-C', str(destination), 'rev-parse', 'HEAD'], text=True).strip()
+        checkout = cache/name
+        if not checkout.exists():
+            run(['git', 'init', checkout])
+            run(['git', '-C', checkout, 'remote', 'add', 'origin', spec['url']])
+            run(['git', '-C', checkout, 'fetch', '--depth=1', 'origin', spec['revision']])
+            run(['git', '-C', checkout, 'checkout', '--detach', 'FETCH_HEAD'])
+        revision = subprocess.check_output(
+            ['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
         if revision != spec['revision']:
-            raise ValueError('Build dependency revision mismatch: '+str(destination))
+            raise ValueError('Build dependency revision mismatch: '+str(checkout))
+        if subprocess.check_output(['git', '-C', str(checkout), 'status', '--porcelain']):
+            raise ValueError('Build dependency cache has local changes: '+str(checkout))
+        files = subprocess.check_output(
+            ['git', '-C', str(checkout), 'ls-files', '-z']).decode().split('\0')
+        sources = {relative: checkout/relative for relative in filter(None, files)}
         if spec.get('patch_directory'):
             overlay = REPO/'subprojects/packagefiles'/spec['patch_directory']
-            for source in overlay.rglob('*'):
-                if source.is_file():
-                    target = destination/source.relative_to(overlay)
-                    if not target.exists():
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copyfile(source, target)
-        if vendored:
-            # This private branch includes dependency snapshots. Verify every
-            # tracked snapshot file against the pinned full-history checkout,
-            # including QEMU's build overlays, without changing source files.
-            tracked = subprocess.check_output(
-                ['git', '-C', str(REPO), 'ls-files', '-z', '--',
-                 str(vendored_source.relative_to(REPO))]).decode().split('\0')
-            if not any(tracked):
-                raise ValueError('Untracked dependency directory: '+str(vendored_source))
-            for filename in filter(None, tracked):
-                original = REPO/filename
-                relative = original.relative_to(vendored_source)
-                if relative.name == '.meson-subproject-wrap-hash.txt':
-                    continue
-                expected = destination/relative
-                if not expected.is_file() or original.read_bytes() != expected.read_bytes():
-                    raise ValueError('Vendored dependency differs from pinned source: '+filename)
+            sources.update({str(p.relative_to(overlay)): p
+                            for p in overlay.rglob('*') if p.is_file()})
+        destination = REPO/'subprojects'/name
+        for relative, source in sources.items():
+            target = destination/relative
+            if target.exists() and target.read_bytes() != source.read_bytes():
+                raise ValueError('Dependency differs from pinned source: '+str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                shutil.copy2(source, target)
+
+
+def source_revision():
+    """Read provenance without mistaking a ZIP's enclosing repo for QEMU."""
+    if (REPO/'.git').exists():
+        return subprocess.check_output(
+            ['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+    archive = SCRIPTS/'source-version.txt'
+    value = archive.read_text().strip() if archive.is_file() else ''
+    return value if len(value) == 40 and all(c in '0123456789abcdef' for c in value) else None
 
 
 def main():
@@ -156,7 +158,7 @@ def main():
     launcher.chmod(0o755)
     with args.archive.open('rb') as stream:
         archive_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
-    report = {'source_commit': subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
+    report = {'source_commit': source_revision(),
               'firmware_profile': args.firmware, 'firmware_train': expected,
               'archive_sha256': archive_hash, 'bootstrap': manifest,
               'python': sys.version, 'arm_compiler': subprocess.check_output([args.arm_prefix+'gcc', '--version'], text=True).splitlines()[0]}

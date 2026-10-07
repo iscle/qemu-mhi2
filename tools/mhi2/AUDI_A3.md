@@ -44,14 +44,14 @@ hardware video and a Porsche QNX boot have been validated locally on Apple
 Silicon macOS; see [host validation](HOST_PARITY.md#validation). Full Audi boot
 on macOS remains unverified. GitHub refused to start the portable-build jobs
 because of the account billing/spending limit. Reserve about 25 GB
-for a full-history checkout, extracted firmware, build outputs and sparse disk
+for a source tree, extracted firmware, build outputs and sparse disk
 images. More space is needed if the destination filesystem does not preserve
 sparse files. No QNX SDK, Ghidra, Pico SDK, Pico firmware, separate Pico
 checkout or physical Pico device is required. The optional `usb-mhi2-pico`
 test fixture uses an in-tree ASIX protocol implementation; ordinary head-unit
 boot does not instantiate it.
 
-### 1. Install dependencies and clone the private branch
+### 1. Install dependencies and download the source
 
 On Ubuntu 24.04:
 
@@ -86,25 +86,21 @@ installing Mesa alone is not a claim of GPU acceleration on every Mac.
 On either host:
 
 ```sh
-gh auth login
-gh auth setup-git
 mkdir -p "$HOME/mhi2-repro"
 cd "$HOME/mhi2-repro"
-git clone --branch main https://github.com/iscle/qemu-mhi2.git qemu
+git clone --depth 1 --branch main https://github.com/iscle/qemu-mhi2.git qemu
 cd qemu
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r tools/mhi2/requirements-audi.txt
 ```
 
-This is a full-history clone. The build script also clones QEMU's three pinned
-C build dependencies with full history and applies their Meson build overlays.
-For dependency snapshots already included in this private branch, it keeps
-the full histories under `audi-build/dependencies/` and verifies the snapshot
-files against the pinned upstream sources. It disables optional Rust devices. There is no need to build all the ROM
-submodules. Initial setup needs access to GitHub, GitLab and PyPI. See
-[QEMU's build-system documentation](https://www.qemu.org/docs/master/devel/build-system.html)
-for the configure/Meson/Ninja workflow.
+Source ZIPs and shallow clones are also supported; see the
+[macOS guide](../../README.md) for ZIP instructions. The builder fetches three
+pinned C dependencies and applies QEMU's Meson overlays. The dependencies are
+not vendored into this repository. Optional Rust devices are disabled, and
+there is no need to build the ROM submodules. Initial setup needs access to
+GitHub, GitLab and PyPI.
 
 ### 2. Install the tested ARM cross compiler
 
@@ -145,7 +141,7 @@ The archive used for validation has SHA-256:
 **The update archive alone is insufficient for this boot harness.** It does
 not supply the captured BootROM handoff/BIT/BCT, complete initial NOR layout,
 or the native-formatted data-disk template used by this emulator. These are
-provided in the private [bootstrap-v1 release](https://github.com/iscle/qemu-mhi2/releases/tag/mhi2-bootstrap-v1),
+provided in the [bootstrap-v1 release](https://github.com/iscle/qemu-mhi2/releases/tag/mhi2-bootstrap-v1),
 so you do not need files from the original developer's computer:
 
 ```sh
