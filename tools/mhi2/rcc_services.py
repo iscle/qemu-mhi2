@@ -112,9 +112,12 @@ class Services:
             'replies':{},'attrs':{}}
         # Original libasimmxdisplayproxy.so: IPower UUID/key and method
         # serializers, plus ILvds. Display brightness uses signed steps -5..5.
+        power_key = ('0bfa6630-3507-5427-be78-4c68f807cc18'
+                     if FIRMWARE.get('release') == 'MHI2_ER_POG11_K5126'
+                     else '7900f601-13e0-5850-a98b-287e195bd326')
         self.definitions['DisplayPower'] = {
             'uuid':'92c39bd3-ca7c-4d76-957b-ba8b83eb0d20',
-            'key':os.environ.get('MHI2_DISPLAY_POWER_KEY','7900f601-13e0-5850-a98b-287e195bd326'),
+            'key':os.environ.get('MHI2_DISPLAY_POWER_KEY', power_key),
             'calls':{'0':'getBrightness(uint32 display)', '2':'getPower(uint32 display)',
                      '4':'setBrightness(uint32 display, int8 value)',
                      '6':'setPower(uint32 display, int32 value)'},

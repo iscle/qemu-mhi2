@@ -1,5 +1,8 @@
 # Audi A3 MHI2 P5089
 
+For a fresh Mac, use the [macOS setup and boot guide](../../README.md), including
+its Audi A3 command. The workspace paths below are historical examples.
+
 The unified `main` branch includes the native Audi QNX HMI from
 `MHI2_ER_AU37x_P5089_MU1326 (A3).7z` alongside VW K3342. It uses the firmware's
 Quickboot 17.54, QNX kernel, app partition and unchanged Audi Java/EAL HMI.

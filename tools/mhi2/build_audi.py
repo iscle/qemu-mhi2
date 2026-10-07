@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build QEMU, bridge libraries and Audi A3 media in a new output directory."""
+"""Build QEMU, bridge libraries and selected MHI2 media in a new directory.
+
+This filename remains compatible with existing Audi callers. New users can use
+build_firmware.py with --firmware audi-a3, vw or porsche.
+"""
 import argparse
 import configparser
 import hashlib
@@ -11,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from lzo_library import load_lzo2
+from firmware_profile import PROFILES, common_metadata
 
 SCRIPTS = Path(__file__).resolve().parent
 REPO = SCRIPTS.parents[1]
@@ -72,6 +77,8 @@ def build_dependencies(cache):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--firmware', choices=PROFILES, default='audi-a3',
+                    help='Firmware profile (legacy default: audi-a3)')
     ap.add_argument('--archive', type=Path, required=True)
     ap.add_argument('--bootstrap', type=Path, required=True, help='Extracted bootstrap-v1 directory')
     ap.add_argument('--output', type=Path, required=True, help='New build directory outside the source checkout')
@@ -111,9 +118,11 @@ def main():
     args.output.mkdir(parents=True)
     firmware = args.output/'firmware'
     run([sevenzip, 'x', '-y', '-o'+str(firmware), args.archive], stdout=subprocess.DEVNULL)
-    metadata = (firmware/'metainfo2.txt').read_text()
-    if 'MHI2_ER_AU37x_P5089' not in metadata:
-        ap.error('Archive is not the supported Audi A3 P5089 update')
+    metadata = common_metadata(firmware/'metainfo2.txt')
+    expected = PROFILES[args.firmware]['train']
+    if metadata.get('release') != expected:
+        ap.error(f'Archive train {metadata.get("release")!r} does not match '
+                 f'{args.firmware}: expected {expected}')
     build_dependencies(args.output/'dependencies')
     build = args.output/'qemu'
     build.mkdir()
@@ -142,11 +151,13 @@ def main():
         'export QEMU_SYSTEM_ARM="$here/qemu/qemu-system-arm"\n'
         'export MHI2_GLHOST="$here/bridge/mhi2-glhost"\n'
         'export PATH='+shlex.quote(str(Path(sys.executable).parent))+':"$PATH"\n'
-        'exec bash '+shlex.quote(str(SCRIPTS/'run_audi_ui.sh'))+' --media "$here/media/ui" "$@"\n')
+        'exec bash '+shlex.quote(str(SCRIPTS/'run_ui.sh'))+
+        ' --firmware '+shlex.quote(args.firmware)+' --media "$here/media/ui" "$@"\n')
     launcher.chmod(0o755)
     with args.archive.open('rb') as stream:
         archive_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
     report = {'source_commit': subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
+              'firmware_profile': args.firmware, 'firmware_train': expected,
               'archive_sha256': archive_hash, 'bootstrap': manifest,
               'python': sys.version, 'arm_compiler': subprocess.check_output([args.arm_prefix+'gcc', '--version'], text=True).splitlines()[0]}
     (args.output/'build-manifest.json').write_text(json.dumps(report, indent=2)+'\n')

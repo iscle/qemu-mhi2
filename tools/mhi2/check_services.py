@@ -23,6 +23,17 @@ class Transport:
 
 
 class Checks(unittest.TestCase):
+    def test_display_power_firmware_key(self):
+        for train, expected in (
+                ('MHI2_ER_POG11_K5126', '0bfa6630-3507-5427-be78-4c68f807cc18'),
+                ('MHI2_ER_VWG11_K3342', '7900f601-13e0-5850-a98b-287e195bd326'),
+                ('MHI2_ER_AU37x_P5089', '7900f601-13e0-5850-a98b-287e195bd326')):
+            with self.subTest(train=train), patch('rcc_services.FIRMWARE', {'release': train}), \
+                    patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(Services().definitions['DisplayPower']['key'], expected)
+                with patch.dict(os.environ, {'MHI2_DISPLAY_POWER_KEY': 'explicit-key'}):
+                    self.assertEqual(Services().definitions['DisplayPower']['key'], 'explicit-key')
+
     def test_native_provider_ownership(self):
         registrations = {name for name, *_ in Services().registrations()}
         for name in ('DSIDataConnection', 'DSIDataConfiguration'):
