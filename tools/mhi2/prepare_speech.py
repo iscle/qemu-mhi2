@@ -7,6 +7,7 @@ preserving all other filesystems, including the navigation database.
 import argparse
 import configparser
 import fcntl
+import sys
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import shutil
 import struct
 import subprocess
 
+from sparse_copy import copy_sparse
 import qnx6_image
 
 
@@ -57,6 +59,8 @@ def copy_range(source, target, src_offset, dst_offset, size):
     # Reflink when supported. Both disks are independent; overlapping positions
     # in the output therefore cannot overwrite a later input filesystem.
     try:
+        if sys.platform != "linux":
+            raise OSError("Reflink range is Linux-only")
         fcntl.ioctl(target.fileno(), 0x4020940D,
                     struct.pack('qQQQ', source.fileno(), src_offset, size, dst_offset))
         return
@@ -107,8 +111,7 @@ def install(input_disk, output_disk, image):
             starts.append((sector, relative, count))
             sector = (sector+relative+count+2047)//2048*2048
         disk_size = max(input_disk.stat().st_size, sector*512)
-        subprocess.run(['cp', '--reflink=auto', '--sparse=always',
-                        str(input_disk), str(output_disk)], check=True)
+        copy_sparse(input_disk, output_disk)
         with output_disk.open('r+b') as target:
             target.truncate(disk_size)
             for index, ((old, _, old_count, ebr), (new, relative, count)) in enumerate(zip(entries, starts)):

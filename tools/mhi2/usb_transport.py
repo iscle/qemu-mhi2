@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from firmware_profile import common_metadata
 
@@ -32,7 +33,8 @@ class USBTransport:
         if usb['mode'] == 'host':
             return devices + ['-device', f'usb-host,id=phone,bus=usb-bus.0,port={phone_port},'
                     f'hostbus={usb["hostbus"]},hostport={usb["hostport"]}']
-        sdk = Path(os.environ.get('ANDROID_HOME', Path.home() / 'Library/Android/sdk'))
+        default_sdk = Path.home() / ('Library/Android/sdk' if sys.platform == 'darwin' else 'Android/Sdk')
+        sdk = Path(os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT') or default_sdk)
         self.adb = shutil.which('adb') or str(sdk / 'platform-tools/adb')
         connected_devices = self.adb_run('devices', selected=False).splitlines()[1:]
         avds = [line.split()[0] for line in connected_devices

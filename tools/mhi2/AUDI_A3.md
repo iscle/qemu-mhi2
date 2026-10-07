@@ -54,7 +54,9 @@ On Ubuntu 24.04:
 sudo apt update
 sudo apt install build-essential git pkg-config ninja-build python3-venv \
   python3-dev libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-  libffi-dev libegl-dev libgles-dev liblzo2-dev p7zip-full zstd ffmpeg \
+  libffi-dev libegl-dev libgles-dev liblzo2-dev libusb-1.0-0-dev \
+  libavcodec-dev libavutil-dev libswscale-dev p7zip-full zstd ffmpeg \
+  sox libsox-fmt-all pipewire-bin \
   libxcb-cursor0 libxkbcommon-x11-0 gh curl
 ```
 
@@ -62,18 +64,19 @@ On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and
 [Homebrew](https://brew.sh), then:
 
 ```sh
-brew install git pkgconf ninja python glib pixman mesa lzo sevenzip zstd \
-  ffmpeg gnu-tar gh
+brew install git pkgconf ninja python glib pixman mesa lzo libusb sevenzip zstd \
+  ffmpeg sox gnu-tar gh
 # Use GNU tar to preserve the sparse bootstrap image when extracting it.
 export PATH="$(brew --prefix gnu-tar)/libexec/gnubin:$PATH"
 ```
 
-The host bridge uses `pkg-config egl glesv2` on both hosts. On macOS it also
-links the SDK's VideoToolbox, CoreVideo, CoreMedia and CoreFoundation frameworks.
-Mesa's selected renderer determines GLES acceleration; installing Mesa alone
-is not a claim of GPU acceleration on every Mac. The native NvSS H.264 decoder
-currently requires macOS VideoToolbox hardware. Linux returns an explicit
-unsupported error for that decoder; ordinary GLES HMI rendering works there.
+The host bridge uses `pkg-config egl glesv2 libavcodec libavutil libswscale`
+on both hosts. FFmpeg supplies the platform video backend. Both hosts support
+native H.264 output to the center screen and cluster, crop/visibility controls,
+accelerated encoding and playback/microphone input. See the
+[host parity and validation notes](HOST_PARITY.md) for hardware selection,
+fallbacks and tests. Mesa's selected renderer determines GLES acceleration;
+installing Mesa alone is not a claim of GPU acceleration on every Mac.
 
 On either host:
 
@@ -255,8 +258,9 @@ Audi radio screen. This validates the reproduction path on the tested Fedora
 host; the Ubuntu package example has not been tested in a separate VM.
 The `MHI2 portable build` workflow builds QEMU, host/guest bridges and runs
 firmware-free protocol, shader and image-preparation checks on Ubuntu and
-macOS. It compiles the VideoToolbox check on macOS without requiring a hardware
-decoder on the runner. Actions must be enabled and the account billing limit
+macOS. It runs the same real H.264 frame/plane tests, encoder round trip and audio
+contract checks on both hosts; ordinary CI uses software codecs and does not
+require a physical GPU or microphone. Actions must be enabled and the account billing limit
 resolved before this workflow can validate the macOS path.
 
 ## Compatibility changes

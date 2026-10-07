@@ -1,7 +1,11 @@
 from pathlib import Path
 import ctypes,ctypes.util,json,struct,sys,subprocess,os
 from ifs_resource import add_file
-root=Path('/home/iscle/Downloads/mhi2-analysis/qemu')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from lzo_library import load_lzo2
+from sparse_copy import copy_sparse
+from qnx6_read import Qnx6
+root=Path(os.environ.get('MHI2_WORKSPACE', '/home/iscle/Downloads/mhi2-analysis/qemu'))
 raw=bytearray((root/'main-ifs/imagefs.bin').read_bytes())
 for entry in json.loads((root/'main-ifs/files.json').read_text()):
  name=entry['name']
@@ -9,7 +13,7 @@ for entry in json.loads((root/'main-ifs/files.json').read_text()):
   data=Path('/tmp/mhi2-'+name[4:]).read_bytes();off,n=entry['offset'],entry['size'];assert len(data)<=n
   raw[off:off+n]=data+bytes(n-len(data));print(name,len(data),n,flush=True)
 raw=add_file(raw,'sbin/mhi2-pcm-endpoint',Path('/tmp/mhi2-pcm-endpoint').read_bytes())
-lib=ctypes.CDLL(ctypes.util.find_library('lzo2'));work=ctypes.create_string_buffer(16*1024*1024)
+lib=load_lzo2();work=ctypes.create_string_buffer(16*1024*1024)
 block=2*1024*1024;out=bytearray(0x800);out[:8]=b'LZOZ'+struct.pack('<I',block)
 for i,off in enumerate(range(0,len(raw),block)):
  d=bytes(raw[off:off+block]);buf=ctypes.create_string_buffer(len(d)+len(d)//16+128);n=ctypes.c_size_t(len(buf))
@@ -35,8 +39,7 @@ if language_seed.exists():
  nor[0x3800000:0x4000000]=seed
 (root/'k3342-gl-debug-nor.bin').write_bytes(nor)
 disk=Path(os.environ.get('MHI2_EMMC',str(root/'emmc-gl.raw')))
-if not disk.exists():subprocess.run(['cp','--reflink=auto','--sparse=always',str(root/'emmc-full.raw'),str(disk)],check=True)
-sys.path.insert(0,'/home/iscle/Documents/mib_zr');from qnx6read import Qnx6
+if not disk.exists():copy_sparse(root/'emmc-full.raw', disk)
 fs=Qnx6(str(disk),2048*512);ino=1
 for name in ('img_restore','main_stage2.ifs.lzo'):ino=dict(fs.listdir(ino))[name]
 node=fs.inode(ino);print('file',ino,node['size'],'new',len(out),flush=True);assert len(out)<=node['size']

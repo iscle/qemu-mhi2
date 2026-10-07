@@ -205,7 +205,9 @@ Streams use 512-frame blocks at 48 kHz, signed 16-bit LE. The old queue bridge i
 retained as a fallback for builds without the mailbox. The guest service does not
 replace or patch the speech executable or library.
 
-`audio_host.py` connects those streams to PipeWire (`pw-play` / `pw-record`).
+`audio_host.py` connects those streams to PipeWire (`pw-play` / `pw-record`)
+on Linux, with a SoX fallback, or to SoX/CoreAudio on macOS. Install SoX with
+`brew install sox` on macOS. See [host parity](HOST_PARITY.md).
 Microphone capture starts only while the native microphone queue is active and
 stops after it becomes idle. The UDP endpoint at simulated RCC port 50000 is an
 emulator transport, not a recovered production audio protocol. Logs are in

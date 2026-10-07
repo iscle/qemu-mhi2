@@ -1,5 +1,5 @@
 /* Local QNX NvSS ABI adapter. Compressed H.264 crosses the graphics bridge;
- * macOS VideoToolbox owns the hardware decoder. No guest GPU commands run. */
+ * the host codec backend owns decoding. No guest GPU commands run. */
 #include "bridge_transport.h"
 extern void *memset(void *,int,unsigned long);
 struct Video { u32 id,width,height,configured,target; unsigned char attrs[64]; };

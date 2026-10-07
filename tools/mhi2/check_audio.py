@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from audio_host import AudioEndpoint
+from audio_host import AudioEndpoint, audio_command
 
 
 class Checks(unittest.TestCase):
@@ -37,7 +37,23 @@ class Checks(unittest.TestCase):
         player = Mock(); player.poll.return_value = None
         with patch.object(audio, 'start', return_value=player) as start, patch('audio_host.os.write'):
             audio.process(header+data)
-            start.assert_called_once_with('pw-play', playback=True)
+            start.assert_called_once_with(playback=True)
+
+    def test_host_audio_device_selection(self):
+        with patch('audio_host.sys.platform', 'darwin'):
+            for playback in (True, False):
+                args = audio_command(playback)
+                self.assertEqual(args[:2], ['sox', '-q'])
+                self.assertIn('coreaudio', args)
+                self.assertIn('48000', args)
+                self.assertIn('signed-integer', args)
+                self.assertEqual(args[-1], 'default' if playback else '-')
+        with patch('audio_host.sys.platform', 'linux'), patch('audio_host.shutil.which', return_value='/usr/bin/pw-play'):
+            self.assertEqual(audio_command(True)[0], 'pw-play')
+            self.assertEqual(audio_command(False)[0], 'pw-record')
+        with patch('audio_host.sys.platform', 'linux'), patch('audio_host.shutil.which', return_value=None):
+            self.assertEqual(audio_command(True)[-1], '-d')
+            self.assertEqual(audio_command(False)[2], '-d')
 
     def test_original_queue_layout(self):
         source = Path(__file__).with_name('audio')/'pcm_endpoint.c'

@@ -4,10 +4,23 @@ UDP protocol is local to this emulation, not the production RCC wire protocol.
 Microphone capture starts only while the native microphone queue is active.
 """
 import os
+import shutil
+import sys
 import struct
 import subprocess
 import time
 from pathlib import Path
+
+
+def audio_command(playback):
+    pipewire = 'pw-play' if playback else 'pw-record'
+    if sys.platform != 'darwin' and shutil.which(pipewire):
+        return [pipewire, '--raw', '--rate=48000', '--channels=1', '--format=s16', '-']
+    # SoX's CoreAudio backend selects the system default speaker/microphone.
+    # Linux builds of SoX use their default ALSA/PulseAudio device instead.
+    raw = ['-t', 'raw', '-r', '48000', '-c', '1', '-e', 'signed-integer', '-b', '16', '-L', '-']
+    device = ['-t', 'coreaudio', 'default'] if sys.platform == 'darwin' else ['-d']
+    return ['sox', '-q'] + (raw + device if playback else device + raw)
 
 
 class AudioEndpoint:
@@ -32,7 +45,7 @@ class AudioEndpoint:
             self.log.write(packet[12:])
             self.log.flush()
             if self.player is None and time.monotonic() >= self.retry["player"]:
-                self.player = self.start('pw-play', playback=True)
+                self.player = self.start(playback=True)
             if self.player and self.player.poll() is None:
                 try:
                     os.write(self.player.stdin.fileno(), packet[12:])
@@ -42,7 +55,7 @@ class AudioEndpoint:
         if kind == 2 and stream == 24 and len(packet) == 12:
             self.last_mic = time.monotonic()
             if self.recorder is None and self.last_mic >= self.retry["recorder"]:
-                self.recorder = self.start('pw-record', playback=False)
+                self.recorder = self.start(playback=False)
             if self.recorder and self.recorder.poll() is None:
                 try:
                     self.pending.extend(os.read(self.recorder.stdout.fileno(), 8192))
@@ -57,11 +70,11 @@ class AudioEndpoint:
             return packet[:4] + bytes([3, 24]) + packet[6:12] + data.ljust(1024, b'\0')
         return None
 
-    def start(self, command, playback):
+    def start(self, playback):
+        command = audio_command(playback)
         try:
             log = open('/tmp/mhi2-audio-host.log', 'ab')
-            p = subprocess.Popen([command, '--raw', '--rate=48000', '--channels=1',
-                                  '--format=s16', '-'],
+            p = subprocess.Popen(command,
                                  stdin=subprocess.PIPE if playback else subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL if playback else subprocess.PIPE,
                                  stderr=log)
@@ -85,7 +98,11 @@ class AudioEndpoint:
                 self.retry[attr] = time.monotonic() + 10
         if self.recorder is not None and time.monotonic() - self.last_mic > 2:
             self.recorder.terminate()
-            self.recorder.wait(timeout=2)
+            try:
+                self.recorder.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.recorder.kill()
+                self.recorder.wait()
             self.recorder.stdout.close()
             self.recorder = None
             self.pending.clear()

@@ -85,10 +85,13 @@ def main():
         ap.error('Output already exists; use a new directory')
     if args.jobs < 1:
         ap.error('--jobs must be positive')
-    for command in ('cc', 'c++', 'make', 'ninja', 'pkg-config', 'git',
+    for command in ('cc', 'c++', 'make', 'ninja', 'pkg-config', 'git', 'ffmpeg',
                     args.arm_prefix+'gcc', args.arm_prefix+'ld', args.arm_prefix+'strip'):
         if not shutil.which(command):
             ap.error('Missing tool: ' + command)
+    libraries = ('egl', 'glesv2', 'libavcodec', 'libavutil', 'libswscale', 'libusb-1.0')
+    if subprocess.run(['pkg-config', '--exists', *libraries]).returncode:
+        ap.error('Missing development libraries: pkg-config must find ' + ' '.join(libraries))
     sevenzip = shutil.which('7zz') or shutil.which('7z')
     if not sevenzip:
         ap.error('Install 7-Zip')
@@ -116,7 +119,7 @@ def main():
     build.mkdir()
     run([REPO/'configure', '--target-list=arm-softmmu', '--disable-docs',
          '--disable-sdl', '--disable-gtk', '--disable-fuse', '--disable-werror',
-         '--disable-rust',
+         '--disable-rust', '--enable-libusb',
          '--python='+sys.executable], cwd=build)
     run(['ninja', '-C', build, '-j', args.jobs, 'qemu-system-arm'])
     bridge = args.output/'bridge'

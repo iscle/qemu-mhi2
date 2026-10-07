@@ -53,8 +53,22 @@ static int encoder_pipe(int fd[2])
     return pipe2(fd, O_CLOEXEC);
 #endif
 }
+static const char *encoder_codec(void)
+{
+    const char *codec = getenv("MHI2_ENCODER_CODEC");
+    if (!codec) {
+        return getenv("MHI2_VAAPI_DEVICE") ? "h264_vaapi" : "libopenh264";
+    }
+    if (!strcmp(codec, "h264_vaapi") || !strcmp(codec, "h264_videotoolbox") ||
+        !strcmp(codec, "libx264") || !strcmp(codec, "libopenh264")) {
+        return codec;
+    }
+    return NULL;
+}
 static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
 {
+    const char *codec=encoder_codec();
+    if(!codec)return -1;
     int in[2],out[2];
     if(encoder_pipe(in))return -1;
     if(encoder_pipe(out)){close(in[0]);close(in[1]);return -1;}
@@ -62,7 +76,8 @@ static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
     snprintf(dimensions,sizeof(dimensions),"%ux%u",a[1],a[2]);
     snprintf(frequency,sizeof(frequency),"%u",a[3]);snprintf(bitrate,sizeof(bitrate),"%u",a[4]);
     const char *device=getenv("MHI2_VAAPI_DEVICE");
-    bool hw=device&&*device;
+    bool hw=!strcmp(codec,"h264_vaapi");
+    if(hw&&(!device||!*device)){close(in[0]);close(in[1]);close(out[0]);close(out[1]);return -1;}
     const char *filter=hw?(a[5]?"vflip,format=nv12,hwupload":"format=nv12,hwupload"):
                            (a[5]?"vflip,format=yuv420p":"format=yuv420p");
     char *args[80];unsigned n=0;
@@ -74,11 +89,14 @@ static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
     ARG("-f");ARG("rawvideo");ARG("-pixel_format");ARG("rgba");
     ARG("-video_size");ARG(dimensions);ARG("-framerate");ARG(frequency);
     ARG("-i");ARG("pipe:0");ARG("-an");ARG("-vf");ARG(filter);
-    ARG("-c:v");ARG(hw?"h264_vaapi":"libopenh264");
+    ARG("-c:v");ARG(codec);
     ARG("-threads");ARG("1");
-    ARG("-profile:v");ARG("constrained_baseline");ARG("-bf");ARG("0");
+    ARG("-profile:v");ARG(hw||!strcmp(codec,"libopenh264")?"constrained_baseline":"baseline");ARG("-bf");ARG("0");
     ARG("-g");ARG("30");ARG("-b:v");ARG(bitrate);
-    if(hw){ARG("-async_depth");ARG("1");}else{ARG("-rc_mode");ARG("bitrate");}
+    if(hw){ARG("-async_depth");ARG("1");}
+    else if(!strcmp(codec,"h264_videotoolbox")){ARG("-allow_sw");ARG("0");ARG("-realtime");ARG("1");}
+    else if(!strcmp(codec,"libx264")){ARG("-preset");ARG("ultrafast");ARG("-tune");ARG("zerolatency");}
+    else{ARG("-rc_mode");ARG("bitrate");}
     ARG("-mpegts_flags");ARG("+resend_headers");ARG("-muxdelay");ARG("0");
     ARG("-muxpreload");ARG("0");ARG("-flush_packets");ARG("1");
     ARG("-f");ARG("mpegts");ARG("pipe:1");args[n]=NULL;
@@ -116,7 +134,7 @@ static void *encoder_worker(void *opaque)
             child=encoder_spawn(job.args,&input,&output);
             if(child<0)break;
             memcpy(config,job.args,sizeof(config));
-            fprintf(stderr,"glhost: async encoder %u/%u %ux%u %u fps (%s)\n",e->owner,e->id,config[1],config[2],config[3],getenv("MHI2_VAAPI_DEVICE")?"h264_vaapi":"libopenh264");
+            fprintf(stderr,"glhost: async encoder %u/%u %ux%u %u fps (%s)\n",e->owner,e->id,config[1],config[2],config[3],encoder_codec());
         }
         struct pollfd fds[2]={{input,job.pixels?POLLOUT:0,0},{output,room?POLLIN:0,0}};
         int ready=poll(fds,2,5);if(ready<0){if(errno==EINTR)continue;break;}
