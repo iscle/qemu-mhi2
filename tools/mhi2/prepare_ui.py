@@ -6,16 +6,16 @@ EGL/GLES/encoder bridge are emulator compatibility resources, not flash images.
 """
 import argparse
 import ctypes
-import ctypes.util
 import hashlib
 import json
 from pathlib import Path
 import struct
-from sparse_copy import copy_sparse
 import subprocess
 import sys
 import zlib
 
+from lzo_library import load_lzo2
+from sparse_copy import copy_sparse
 from qnx6_read import Qnx6
 sys.path.insert(0, str(Path(__file__).parent / 'glforward'))
 from ifs_resource import add_file
@@ -35,7 +35,7 @@ def entries(raw, base=0):
 
 
 def pack_lzo(raw):
-    lib = ctypes.CDLL(ctypes.util.find_library('lzo2'))
+    lib = load_lzo2()
     work = ctypes.create_string_buffer(16*1024*1024)
     block = 2*1024*1024
     out = bytearray(0x800)
