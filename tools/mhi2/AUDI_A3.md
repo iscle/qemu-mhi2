@@ -36,9 +36,11 @@ touch events. VW retains touchscreen input and ABT keyboard 13.
 
 The build scripts support Linux and macOS, with Python 3.11 or newer, Mesa
 EGL/OpenGL ES libraries, and an ordinary desktop session for the viewer. Linux
-build and full Audi boot have been tested on Fedora. The macOS path is not yet
-validated by the portable-build CI: GitHub refused to start the jobs because
-of the account billing/spending limit. Reserve about 25 GB
+build and full Audi boot have been tested on Fedora. Fresh QEMU/bridge builds,
+hardware video and a Porsche QNX boot have been validated locally on Apple
+Silicon macOS; see [host validation](HOST_PARITY.md#validation). Full Audi boot
+on macOS remains unverified. GitHub refused to start the portable-build jobs
+because of the account billing/spending limit. Reserve about 25 GB
 for a full-history checkout, extracted firmware, build outputs and sparse disk
 images. More space is needed if the destination filesystem does not preserve
 sparse files. No QNX SDK, Ghidra, Pico SDK, Pico firmware, separate Pico

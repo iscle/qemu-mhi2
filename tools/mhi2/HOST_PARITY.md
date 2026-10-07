@@ -107,8 +107,26 @@ render devices rejected H.264 profiles, so local video tests exercised actual
 software frames and automatic fallback; hardware success is not claimed.
 The native English Audi radio/menu and rotary controls remain functional.
 
-The workflow runs the same codec/audio tests on Ubuntu and macOS. macOS compile,
-hardware video and physical audio validation for this change remain pending:
-GitHub Actions is disabled, and the attempted runner launch was rejected by
-the account billing/spending limit. Platform-selection tests run locally do
-not replace execution on a Mac.
+Local macOS validation on 2026-10-07 used macOS 26.5.1 on Apple Silicon,
+Mesa 26.2.4 and libavcodec 62.28.102. A fresh QEMU build with libusb enabled,
+the portable host/ARM guest bridge builds, image-preparation checks, all three
+firmware input profiles and the codec/audio tests above passed. All 75 shader
+entries compiled; client-array/EBO pixel tests and device/transport checks passed.
+
+Strict `MHI2_DECODER=hardware` passed both Annex-B and AVCC decoding and the
+center/cluster wire-protocol tests, reporting actual hardware frames. Strict
+hardware encoding selected `h264_videotoolbox` with software fallback disabled;
+the asynchronous worker delivered all 30 test frames with no drops and its MPEG-TS
+output decoded successfully. SoX CoreAudio opened the default playback device,
+accepted a short silent PCM stream and closed successfully. This checks device
+access, not audible output or microphone recording, which remain unverified.
+GLES pixel tests used Mesa llvmpipe; GPU-accelerated GLES is not claimed.
+
+The fresh executable also booted Porsche K5126 into QNX userspace, repeated
+after reset and rejected the intentionally corrupted stage2 fixture. A graphical
+session rendered the native Porsche radio screen in the macOS viewer and
+received the HOME key through RCC; `pidin info` reported all four Cortex-A9
+MPCore processors. Audi/VW
+full firmware boots have not been repeated on this Mac. The workflow remains
+blocked by the account billing/spending limit; these results are from local
+execution, not a successful GitHub Actions run.
