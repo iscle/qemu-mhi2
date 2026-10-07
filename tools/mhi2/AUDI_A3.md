@@ -34,22 +34,50 @@ touch events. VW retains touchscreen input and ABT keyboard 13.
 
 ## Reproduce on another computer
 
-Use a Linux x86-64 host, Python 3.11 or newer, an EGL/OpenGL ES capable graphics
-driver, and an ordinary desktop session for the viewer. The tested host is
-Fedora; the following package example is for Ubuntu 24.04. Reserve about 25 GB
+The build scripts support Linux and macOS, with Python 3.11 or newer, Mesa
+EGL/OpenGL ES libraries, and an ordinary desktop session for the viewer. Linux
+build and full Audi boot have been tested on Fedora. The macOS path is not yet
+validated by the portable-build CI: GitHub refused to start the jobs because
+of the account billing/spending limit. Reserve about 25 GB
 for a full-history checkout, extracted firmware, build outputs and sparse disk
 images. More space is needed if the destination filesystem does not preserve
-sparse files. No QNX SDK or Ghidra installation is required.
+sparse files. No QNX SDK, Ghidra, Pico SDK, Pico firmware, separate Pico
+checkout or physical Pico device is required. The optional `usb-mhi2-pico`
+test fixture uses an in-tree ASIX protocol implementation; ordinary head-unit
+boot does not instantiate it.
 
 ### 1. Install dependencies and clone the private branch
+
+On Ubuntu 24.04:
 
 ```sh
 sudo apt update
 sudo apt install build-essential git pkg-config ninja-build python3-venv \
   python3-dev libglib2.0-dev libpixman-1-dev zlib1g-dev libfdt-dev \
-  libffi-dev libegl-dev libgles-dev liblzo2-2 p7zip-full zstd ffmpeg \
+  libffi-dev libegl-dev libgles-dev liblzo2-dev p7zip-full zstd ffmpeg \
   libxcb-cursor0 libxkbcommon-x11-0 gh curl
+```
 
+On macOS, install the Xcode Command Line Tools (`xcode-select --install`) and
+[Homebrew](https://brew.sh), then:
+
+```sh
+brew install git pkgconf ninja python glib pixman mesa lzo sevenzip zstd \
+  ffmpeg gnu-tar gh
+# Use GNU tar to preserve the sparse bootstrap image when extracting it.
+export PATH="$(brew --prefix gnu-tar)/libexec/gnubin:$PATH"
+```
+
+The host bridge uses `pkg-config egl glesv2` on both hosts. On macOS it also
+links the SDK's VideoToolbox, CoreVideo, CoreMedia and CoreFoundation frameworks.
+Mesa's selected renderer determines GLES acceleration; installing Mesa alone
+is not a claim of GPU acceleration on every Mac. The native NvSS H.264 decoder
+currently requires macOS VideoToolbox hardware. Linux returns an explicit
+unsupported error for that decoder; ordinary GLES HMI rendering works there.
+
+On either host:
+
+```sh
 gh auth login
 gh auth setup-git
 mkdir -p "$HOME/mhi2-repro"
@@ -73,24 +101,27 @@ for the configure/Meson/Ninja workflow.
 ### 2. Install the tested ARM cross compiler
 
 The guest compatibility libraries use **xPack GNU Arm Embedded GCC 13.3.1-1.1**.
-They are freestanding ARM soft-float builds, not host Linux libraries. On an
-x86-64 Linux host:
+They are freestanding ARM soft-float builds, not host Linux libraries. On a
+supported Linux/macOS host:
 
 ```sh
 mkdir -p ../toolchain
 cd ../toolchain
+case "$(uname -s)" in Darwin) system=darwin;; Linux) system=linux;; esac
+case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64) arch=x64;; esac
+asset=xpack-arm-none-eabi-gcc-13.3.1-1.1-$system-$arch.tar.gz
 gh release download v13.3.1-1.1 \
-  --repo xpack-dev-tools/arm-none-eabi-gcc-xpack \
-  --pattern 'xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz*'
-sha256sum -c xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz.sha
-tar -xzf xpack-arm-none-eabi-gcc-13.3.1-1.1-linux-x64.tar.gz
+  --repo xpack-dev-tools/arm-none-eabi-gcc-xpack --pattern "$asset*"
+shasum -a 256 -c "$asset.sha"
+tar -xzf "$asset"
 export PATH="$PWD/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin:$PATH"
 cd ../qemu
 arm-none-eabi-gcc --version
 ```
 
 The upstream [toolchain release](https://github.com/xpack-dev-tools/arm-none-eabi-gcc-xpack/releases/tag/v13.3.1-1.1)
-also has Linux ARM64 assets; that host architecture has not been tested here.
+provides Linux and Darwin x64/ARM64 assets. Only Linux x64 was run locally
+for this portability change.
 Alternatively pass `--arm-prefix /absolute/path/bin/arm-none-eabi-` to the
 builder. Do not substitute `arm-linux-gnueabihf-gcc`.
 
@@ -114,7 +145,7 @@ mkdir -p ../bootstrap
 cd ../bootstrap
 gh release download mhi2-bootstrap-v1 --repo iscle/qemu-mhi2 \
   --pattern 'mhi2-bootstrap-v1.tar.zst' --pattern SHA256SUMS
-sha256sum -c SHA256SUMS
+shasum -a 256 -c SHA256SUMS
 tar --zstd -xf mhi2-bootstrap-v1.tar.zst
 cd ../qemu
 ```
@@ -185,6 +216,8 @@ under `audi-build/media/runs/`. Each boot uses writable temporary snapshots.
 Optional checks, run after closing the emulator:
 
 ```sh
+python tools/mhi2/check_sparse_copy.py
+python tools/mhi2/check_lzo_library.py
 python tools/mhi2/check_firmware_profiles.py
 python tools/mhi2/check_kanzi_shaders.py
 MHI2_GLHOST="$PWD/../audi-build/bridge/mhi2-glhost" \
@@ -220,6 +253,11 @@ downloaded `bootstrap-v1` asset and the original archive. It completed the
 QEMU/bridge/media build and the generated launcher reached the native English
 Audi radio screen. This validates the reproduction path on the tested Fedora
 host; the Ubuntu package example has not been tested in a separate VM.
+The `MHI2 portable build` workflow builds QEMU, host/guest bridges and runs
+firmware-free protocol, shader and image-preparation checks on Ubuntu and
+macOS. It compiles the VideoToolbox check on macOS without requiring a hardware
+decoder on the runner. Actions must be enabled and the account billing limit
+resolved before this workflow can validate the macOS path.
 
 ## Compatibility changes
 

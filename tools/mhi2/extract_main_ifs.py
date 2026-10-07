@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Extract the LZOZ main IFS and regular files for inspection."""
-import argparse,ctypes,ctypes.util,json,struct
+import argparse,ctypes,json,struct
 from pathlib import Path
+from lzo_library import load_lzo2
 ap=argparse.ArgumentParser();ap.add_argument('image',type=Path);ap.add_argument('output',type=Path);a=ap.parse_args()
 d=a.image.read_bytes();assert d[:4]==b'LZOZ';block=struct.unpack_from('<I',d,4)[0]
-lib=ctypes.CDLL(ctypes.util.find_library('lzo2'));buf=ctypes.create_string_buffer(block)
+lib=load_lzo2();buf=ctypes.create_string_buffer(block)
 off=0x800;chunks=[]
 for pos in range(8,0x800,4):
  size=struct.unpack_from('<I',d,pos)[0]

@@ -9,7 +9,9 @@ and Audi `mhi2-audi-a3` histories without squashing either branch. Both old
 branch tips remain available as archive tags. See
 [consolidation and validation](tools/mhi2/CONSOLIDATION.md).
 
-Start with [the emulator documentation](tools/mhi2/README.md).
+Start with [the emulator documentation](tools/mhi2/README.md) or the
+[Linux/macOS build and Audi boot instructions](tools/mhi2/AUDI_A3.md#reproduce-on-another-computer).
+Pico firmware, hardware and a separate Pico source checkout are not required.
 The Linux payload build and emulator media are in
 [iscle/mhi2-linux-port](https://github.com/iscle/mhi2-linux-port).
 Firmware analysis and the unified Ghidra project are in

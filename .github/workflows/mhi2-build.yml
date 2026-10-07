@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -28,10 +28,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev libegl-dev libgles-dev python3-venv
+          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev libegl-dev libgles-dev liblzo2-dev python3-venv
       - name: macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install ninja pkgconf glib pixman mesa python
+        run: brew install ninja pkgconf glib pixman mesa lzo python
       - name: ARM toolchain
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,6 +76,10 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: |
           python3 tools/mhi2/check_sparse_copy.py
+          python3 tools/mhi2/check_lzo_library.py
           python3 tools/mhi2/check_kanzi_shaders.py
           MHI2_GLHOST="$RUNNER_TEMP/bridge/mhi2-glhost" python3 tools/mhi2/glforward/check_client_indices.py
           "$RUNNER_TEMP/bridge/mhi2-glhost" --check-shaders
+          if [ "$(uname -s)" = Linux ]; then
+            MHI2_GLHOST="$RUNNER_TEMP/bridge/mhi2-glhost" python3 tools/mhi2/glforward/check_video_unavailable.py
+          fi

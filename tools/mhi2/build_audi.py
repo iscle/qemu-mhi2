@@ -2,7 +2,6 @@
 """Build QEMU, bridge libraries and Audi A3 media in a new output directory."""
 import argparse
 import configparser
-import ctypes.util
 import hashlib
 import json
 import os
@@ -11,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from lzo_library import load_lzo2
 
 SCRIPTS = Path(__file__).resolve().parent
 REPO = SCRIPTS.parents[1]
@@ -90,8 +90,12 @@ def main():
         if not shutil.which(command):
             ap.error('Missing tool: ' + command)
     sevenzip = shutil.which('7zz') or shutil.which('7z')
-    if not sevenzip or not ctypes.util.find_library('lzo2'):
-        ap.error('Install 7-Zip and liblzo2')
+    if not sevenzip:
+        ap.error('Install 7-Zip')
+    try:
+        load_lzo2()
+    except OSError as exc:
+        ap.error(str(exc))
     import cryptography  # noqa: F401
     import PySide6  # noqa: F401
     manifest = json.loads((args.bootstrap/'bootstrap.json').read_text())

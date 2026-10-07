@@ -9,6 +9,7 @@ if [[ $(uname -s) == Darwin ]]; then
     flags+=(-framework VideoToolbox -framework CoreVideo -framework CoreMedia -framework CoreFoundation)
 fi
 # pkg-config emits shell words, including Homebrew's non-system include/lib paths.
-read -r -a mesa_flags <<< "$(pkg-config --cflags --libs egl glesv2)"
+mesa_config=$(pkg-config --cflags --libs egl glesv2)
+read -r -a mesa_flags <<< "$mesa_config"
 mkdir -p "$(dirname "$out")"
 "${CC:-cc}" -O2 "$source" -o "$out" "${mesa_flags[@]}" "${flags[@]}" -pthread
