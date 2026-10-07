@@ -38,6 +38,27 @@ branch (`a61c6b0021fa857742f28eb6e43626d3319e0b5d`). Their historical tips
 remain available as `archive/mhi2-quickboot-2026-10-07` and
 `archive/mhi2-audi-a3-2026-10-07` tags. Those tags predate the history cleanup.
 
+## Rebase and source ZIP validation, 2026-10-08
+
+An archive of `13cf5db6d50228e1953343a0cb03c26aa3bec16d` was extracted into a
+new directory without `.git`. On Apple Silicon macOS, the documented builder
+fetched pinned dependencies, built QEMU and the guest/host bridges, and prepared
+Porsche K5126 media from the original update archive and published bootstrap.
+The generated launcher reached the native radio screen and handled a media-key
+press. The source revision was correctly recorded from archive metadata.
+
+The rebased binary passed device/I2C/SMMU/HOST1X/PCIe checks, CAR/timer and audio
+DMA handshakes, RCC/MOST and graphics backpressure, ATA mailbox checks, and
+Android USB enumeration/bulk transfers both directly and through the HFC hub.
+The K5126 boot check reached QNX after startup and reset, and rejected corrupted
+stage2 authentication. The older `check_boot.py` has a VW-specific expected
+image size; the K5126 check uses its actual `0x0068c3a4` size.
+
+All 75 translated shaders compiled. Four source/archive checks, 10 emulator
+configuration checks, 25 service checks, all three profile/input checks, sparse
+copy tests and LZO round trips passed. No firmware/map files were added to the
+source tree. Audi and VW full firmware boots were not repeated on this Mac.
+
 ## Reconciled behavior
 
 The Porsche/VW branch's Tegra devices, SMP fixes, SD readers, Android Auto USB

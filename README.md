@@ -209,10 +209,11 @@ CoreAudio playback uses SoX; microphone use may require macOS permission.
 See [host backend validation](tools/mhi2/HOST_PARITY.md) for the exact tests.
 
 Audi and VW have earlier Linux boot evidence. Porsche K5126 and the shared
-host backends have local Apple Silicon macOS execution evidence. On 2026-10-07,
-the Porsche command was tested with a new Python environment, the published
-bootstrap and original K5126 archive: a clean build and the generated launcher
-reached the native radio screen. That run used GNU Arm 14.3.Rel1. Audi and VW
+host backends have local Apple Silicon macOS execution evidence. The Porsche
+workflow was also tested from an extracted source ZIP with no `.git` directory
+after rebasing onto official QEMU: a clean build using the published bootstrap
+and original K5126 archive reached the native radio screen. That run used
+GNU Arm 14.3.Rel1. See [validation details](tools/mhi2/CONSOLIDATION.md). Audi and VW
 were not freshly boot-tested on macOS for this guide. This is not a
 claim that every firmware, host architecture, vehicle service or Android Auto
 connection works. Original HMI executables are used with emulator compatibility
