@@ -1,0 +1,81 @@
+name: MHI2 portable build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, mhi2-portable-build]
+    paths:
+      - 'hw/**'
+      - 'tools/mhi2/**'
+      - '.github/workflows/mhi2-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev libegl-dev libgles-dev python3-venv
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install ninja pkgconf glib pixman mesa python
+      - name: ARM toolchain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          case "$(uname -s)" in Darwin) system=darwin;; Linux) system=linux;; esac
+          case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64) arch=x64;; esac
+          asset=xpack-arm-none-eabi-gcc-13.3.1-1.1-$system-$arch.tar.gz
+          mkdir -p "$RUNNER_TEMP/toolchain"
+          cd "$RUNNER_TEMP/toolchain"
+          gh release download v13.3.1-1.1 --repo xpack-dev-tools/arm-none-eabi-gcc-xpack --pattern "$asset*"
+          shasum -a 256 -c "$asset.sha"
+          tar -xzf "$asset"
+          echo "$PWD/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin" >> "$GITHUB_PATH"
+      - name: Full-history QEMU dependencies
+        run: |
+          python3 - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools/mhi2')
+          from build_audi import build_dependencies
+          build_dependencies(Path('../dependencies'))
+          PY
+      - name: Build QEMU
+        run: |
+          mkdir ../build
+          cd ../build
+          "$GITHUB_WORKSPACE/configure" --target-list=arm-softmmu --disable-docs --disable-sdl --disable-gtk --disable-fuse --disable-rust --disable-werror
+          ninja -j 3 qemu-system-arm
+          ./qemu-system-arm -machine help | grep mhi2
+      - name: Build host and guest bridges
+        env:
+          MHI2_BUILD_LIBRARIES_ONLY: '1'
+        run: |
+          export MHI2_BUILD_DIR="$RUNNER_TEMP/bridge"
+          bash tools/mhi2/glforward/build_local.sh
+          if [ "$(uname -s)" = Darwin ]; then
+            bash tools/mhi2/glforward/build_host.sh "$MHI2_BUILD_DIR/check-video" tools/mhi2/glforward/host/check_video_decoder.c
+          fi
+      - name: Check portable image preparation and GLES protocol
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          python3 tools/mhi2/check_sparse_copy.py
+          python3 tools/mhi2/check_kanzi_shaders.py
+          MHI2_GLHOST="$RUNNER_TEMP/bridge/mhi2-glhost" python3 tools/mhi2/glforward/check_client_indices.py
+          "$RUNNER_TEMP/bridge/mhi2-glhost" --check-shaders

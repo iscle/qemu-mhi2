@@ -1,6 +1,6 @@
 /* Local development fixture for testing the Pico ASIX protocol against QNX.
- * The shared protocol source is compiled directly from this workspace's Pico
- * firmware; this fixture is not an RP2040 CPU or TinyUSB controller emulator.
+ * The ASIX protocol is self-contained; no Pico firmware or SDK is needed.
+ * This fixture is not an RP2040 CPU or TinyUSB controller emulator.
  * High-speed mode exists because the local hub does not yet implement splits.
  */
 #include "qemu/osdep.h"
@@ -10,7 +10,7 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "desc.h"
-#include "../../../../pico-companion/src/asix_protocol.c"
+#include "mhi2-asix.h"
 
 #define TYPE_MHI2_PICO "usb-mhi2-pico"
 OBJECT_DECLARE_SIMPLE_TYPE(MHI2Pico, MHI2_PICO)

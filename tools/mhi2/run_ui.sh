@@ -9,8 +9,13 @@ fi
 export MHI2_TIMEOUT="${MHI2_TIMEOUT:-86400}"
 export MHI2_COMMAND_FIFO=/tmp/mhi2-shell-commands
 export MHI2_GLHOST="${MHI2_GLHOST:-/tmp/mhi2-glhost}"
-if [[ ! -x "$MHI2_GLHOST" || tools/mhi2/glforward/host/glhost.c -nt "$MHI2_GLHOST" || tools/mhi2/glforward/host/known_shaders.h -nt "$MHI2_GLHOST" || tools/mhi2/glforward/host/audi_shaders.h -nt "$MHI2_GLHOST" || tools/mhi2/glforward/host/encoder.h -nt "$MHI2_GLHOST" ]]; then
-    cc -O2 tools/mhi2/glforward/host/glhost.c -o "$MHI2_GLHOST" -lEGL -lGLESv2 -pthread
+rebuild=0
+[[ -x "$MHI2_GLHOST" ]] || rebuild=1
+for source in tools/mhi2/glforward/host/*.[ch] tools/mhi2/glforward/build_host.sh; do
+    [[ "$source" -nt "$MHI2_GLHOST" ]] && rebuild=1
+done
+if [[ "$rebuild" == 1 ]]; then
+    bash tools/mhi2/glforward/build_host.sh "$MHI2_GLHOST"
 fi
 cat > /tmp/mhi2-diag-commands.txt <<'GUEST'
 echo UI_DIAGNOSTIC_SHELL_READY
