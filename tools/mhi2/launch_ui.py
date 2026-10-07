@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from encoder_backend import configure_encoder
+from firmware_profile import PROFILES, configure
 
 
 def stop(process):
@@ -34,7 +35,14 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true', help='Run without the desktop viewer')
+    parser.add_argument('--firmware', choices=PROFILES, default=os.environ.get('MHI2_FIRMWARE', 'vw'))
+    parser.add_argument('--media', help='Prepared media directory for the selected firmware')
     args = parser.parse_args()
+    try:
+        profile = configure(args.firmware, args.media)
+    except (OSError, ValueError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
     scripts = Path(__file__).resolve().parent
     with open('/tmp/mhi2-ui.lock', 'a') as lock:
         try:
@@ -80,7 +88,7 @@ def main():
                 if not args.headless:
                     viewer = subprocess.Popen([sys.executable, str(scripts/'view_ui.py')],
                                               stdout=viewer_log, stderr=subprocess.STDOUT, start_new_session=True)
-                print('MHI2 starting in English. Boot may take several minutes.', flush=True)
+                print(profile['title'] + ' starting. Boot may take several minutes.', flush=True)
                 print('Close the viewer or press Ctrl-C here to stop. Logs: /tmp/mhi2-session.log', flush=True)
                 while vm.poll() is None:
                     if viewer is not None and viewer.poll() is not None:

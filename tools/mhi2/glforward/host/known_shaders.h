@@ -6,7 +6,12 @@
  * blending; blend=2 additionally preserves destination alpha. These replace
  * Tegra's baked destination reads without requiring framebuffer-fetch GLSL.
  */
-static const struct { uint64_t hash; size_t size; const char *source; unsigned blend; } shaders[] = {
+struct ShaderTranslation {
+    uint64_t hash; size_t size; const char *source; unsigned blend;
+    const char *firmware; /* NULL is the historical Porsche/VW fallback. */
+};
+static const struct ShaderTranslation shaders[] = {
+#include "audi_shaders.h"
 { UINT64_C(0x841571f264507820), 708, "attribute vec2 position;uniform vec2 uGlobalOffset;uniform vec4 uSource,uTarget;varying mediump vec2 texout;void main(){texout=position*uSource.zw+uSource.xy;gl_Position=vec4(position*uTarget.zw+uTarget.xy+uGlobalOffset,0.0,1.0);}" },
 { UINT64_C(0x713bf0146ddfca27), 744, "attribute vec2 position;uniform vec4 uSourceBottom,uSourceTop,uTarget;varying mediump vec2 texBottom,texTop;void main(){texBottom=position*uSourceBottom.zw+uSourceBottom.xy;texTop=position*uSourceTop.zw+uSourceTop.xy;gl_Position=vec4(position*uTarget.zw+uTarget.xy,0.0,1.0);}" },
 { UINT64_C(0xf5f1d8bd3514e58c), 520, "attribute vec2 attrTex,attrVertex;varying mediump vec2 var_tex;void main(){var_tex=attrTex;gl_Position=vec4(attrVertex,0.0,1.0);}" },
@@ -59,4 +64,22 @@ static const struct { uint64_t hash; size_t size; const char *source; unsigned b
 { UINT64_C(0xb401e6bf40f5eaf2), 1124, "precision mediump float;varying vec4 v_color;varying vec2 v_texCoords;uniform sampler2D u_sampler;uniform sampler2D u_maskSampler;void main(){vec4 t=texture2D(u_sampler,v_texCoords);vec4 c=v_color;vec4 s=vec4(c.rgb,t.a*c.a);s*=texture2D(u_maskSampler,v_texCoords).r;if(s.a<=0.0)discard;gl_FragColor=s;}", 1 },
 { UINT64_C(0x63aa8149a8885415), 920, "precision mediump float;varying vec4 v_color;varying vec2 v_texCoords;uniform sampler2D u_sampler;void main(){vec4 t=texture2D(u_sampler,v_texCoords);vec4 c=v_color;c*=c;vec4 s=t*c;s.rgb*=s.a;gl_FragColor=s;}", 1 },
 { UINT64_C(0x33ea5406668ed38a), 1700, "precision mediump float;varying vec4 v_color;varying vec2 v_texCoords;uniform sampler2D u_sampler;uniform vec3 u_texCoordOffsets;void main(){vec4 s=vec4(0.0);for(int y=-1;y<=1;y++){for(int x=-1;x<=1;x++){s+=texture2D(u_sampler,v_texCoords+vec2(float(x)*u_texCoordOffsets.x,float(y)*u_texCoordOffsets.y))*u_texCoordOffsets.z;}}gl_FragColor=s;}", 1 },
+/* Audi P5089 masked compositor, recovered from captured Tegra programs. */
+{ UINT64_C(0xb372986db48cc454), 1412, "attribute vec2 position; uniform vec4 uSource,uTarget; uniform vec2 uResolution,maskOffset; uniform float uAngle,maskAngle; varying mediump vec2 texout,maskout; void main(){ vec2 inv=1.0/uResolution; vec2 rotated=vec2(cos(uAngle)*position.x-sin(uAngle)*position.y,sin(uAngle)*position.x+cos(uAngle)*position.y); vec2 origin=uTarget.xy*inv*2.0-1.0; origin-=vec2(fract(uTarget.z*.5)>0.0?inv.x:0.0,fract(uTarget.w*.5)>0.0?inv.y:0.0); gl_Position=vec4(rotated*uTarget.zw*inv+origin,0.0,1.0); texout=uSource.xy+(position+1.0)*uSource.zw*.5; vec2 m=texout-maskOffset*inv; maskout=vec2(cos(maskAngle)*m.x-sin(maskAngle)*m.y,sin(maskAngle)*m.x+cos(maskAngle)*m.y); }", 0, "audi-a3" },
+{ UINT64_C(0xa1d1062962f918ff), 952, "precision mediump float; varying vec2 texout,maskout; uniform sampler2D tex,mask; uniform float opacity; void main(){ gl_FragColor=texture2D(tex,texout)*(texture2D(mask,maskout).r*opacity); }", 1, "audi-a3" },
 };
+
+/* The two branches translated the same masked-compositor binaries differently.
+ * Keep each profile's established rendering until both can be compared against
+ * captures on the same hardware; table order must not silently select one. */
+static const struct ShaderTranslation *find_shader(uint64_t hash, size_t size)
+{
+    const char *firmware = getenv("MHI2_FIRMWARE");
+    const struct ShaderTranslation *fallback = NULL;
+    for (size_t i = 0; i < sizeof(shaders) / sizeof(shaders[0]); i++) {
+        if (shaders[i].hash != hash || shaders[i].size != size) continue;
+        if (!shaders[i].firmware) fallback = &shaders[i];
+        else if (firmware && !strcmp(firmware, shaders[i].firmware)) return &shaders[i];
+    }
+    return fallback;
+}

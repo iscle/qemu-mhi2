@@ -144,7 +144,7 @@ static void rec(u32 op,u32 total)
     if(size>r->capacity){r->data=realloc(r->data,size);if(!r->data)abort();r->capacity=size;}
     u32 *h=(u32 *)r->data;
     h[0]=119;h[1]=4;h[2]=getpid();h[3]=op;h[4]=total;
-    r->size=size;r->used=20;r->reply=(op>=100&&op<=109)||op==120||op==121||op==123||op==124||op==126||op==127||op==131||op==132||(op>=134&&op<=137);
+    r->size=size;r->used=20;r->reply=(op>=100&&op<=109)||op==120||op==121||op==123||op==124||op==126||op==127||op==131||op==132||op==138||(op>=134&&op<=137);
     if(!total)commit_record(r);
 }
 static void record_part(const void *p,unsigned n)

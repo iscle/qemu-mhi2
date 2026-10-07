@@ -2,6 +2,7 @@
 """Exercise native queue ownership/bounds and host PCM packet handling."""
 import io
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -69,7 +70,8 @@ int main(void){
 '''.replace('SOURCE', str(source))
         with tempfile.TemporaryDirectory(prefix='mhi2-audio-test-') as tmp:
             src=Path(tmp)/'queue.c'; exe=Path(tmp)/'queue';src.write_text(harness)
-            subprocess.run(['cc','-O2','-fno-builtin','-ffunction-sections','-Wl,--gc-sections',
+            gc_sections = '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections'
+            subprocess.run(['cc','-O2','-fno-builtin','-ffunction-sections',gc_sections,
                             str(src),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
 

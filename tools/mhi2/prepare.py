@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble K3342 variant 70 emulator media from an update and captured NOR/BIT.
+"""Assemble MHI2 variant 70 emulator media from an update and captured NOR/BIT.
 
 This models the installer and BootROM handoff; it is NOT a flashable update.
 No firmware instructions are patched and Quickboot still checks stage2 CMAC.
@@ -94,7 +94,7 @@ def main():
     with args.base_emmc.open('rb') as f:
         mbr = f.read(512)
     assert mbr[510:512] == b'\x55\xaa'
-    assert mbr[450] == 0xb2
+    assert mbr[450] in (0xb1, 0xb2)
     start, sectors = struct.unpack_from('<II',mbr,454)
     app = args.extracted/'MMX2/app/70/default/app.img'
     assert app.stat().st_size <= sectors*512

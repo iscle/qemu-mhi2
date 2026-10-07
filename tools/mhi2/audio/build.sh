@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -eu
 cd "$(dirname "$0")/../../.."
-cc=${MHI2_ARM_CC:-/home/iscle/xpack-arm-none-eabi-gcc-13.3.1-1.1/bin/arm-none-eabi-gcc}
+cc=${MHI2_ARM_CC:-arm-none-eabi-gcc}
+out=${MHI2_BUILD_DIR:-/tmp}
+mkdir -p "$out"
+out=$(realpath "$out")
 work=$(mktemp -d /tmp/mhi2-audio-build.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 # Link-only ABI stubs. These are never installed in the guest; the executable
@@ -15,5 +18,5 @@ STUB
 flags=(-mfloat-abi=soft -mcpu=cortex-a9 -marm -mno-unaligned-access -ffreestanding -fno-builtin -nostdlib -O2)
 "$cc" "${flags[@]}" -fPIC -shared -Wl,-soname,libc.so.3 -o "$work/libc.so" "$work/libc.c"
 "$cc" "${flags[@]}" -fPIC -shared -Wl,-soname,libsocket.so.3 -o "$work/socket.so" "$work/socket.c"
-"$cc" "${flags[@]}" -Wl,--dynamic-linker=/usr/lib/ldqnx.so.2,-e,_start -o /tmp/mhi2-pcm-endpoint tools/mhi2/audio/pcm_endpoint.c "$work/libc.so" "$work/socket.so"
-"${cc%gcc}strip" /tmp/mhi2-pcm-endpoint
+"$cc" "${flags[@]}" -Wl,--dynamic-linker=/usr/lib/ldqnx.so.2,-e,_start -o "$out/mhi2-pcm-endpoint" tools/mhi2/audio/pcm_endpoint.c "$work/libc.so" "$work/socket.so"
+"${cc%gcc}strip" "$out/mhi2-pcm-endpoint"

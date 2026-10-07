@@ -8,11 +8,13 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap, QShortcut, QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QMessageBox
 from firmware_profile import common_metadata, select_profile
 
-# Firmware org.dsi.ifc.keypanel.Constants; RCC peer selects ABT keyboard 13.
+from firmware_profile import current
+
+# Firmware org.dsi.ifc.keypanel.Constants; profile selects ABT/FCC identity.
 LEFT_KEYS = [('RADIO', 15), ('MEDIA', 1), ('PHONE', 3), ('VOICE', 50)]
 RIGHT_KEYS = [('NAV', 4), ('TRAFFIC', 5), ('CAR', 6), ('MENU', 78)]
 # Porsche PCM 4 controls. K5126's active key mapping opens Home on MENU=78;
@@ -24,10 +26,11 @@ PORSCHE_KEYS = [(('TUNER', 15), ('SOURCE', 103)),
 
 
 class Panel(QWidget):
-    def __init__(self, status):
+    def __init__(self, status, profile=None):
         super().__init__()
         self.setFixedSize(800, 480)
         self.status = status
+        self.touch_enabled = (current() if profile is None else profile)["touch"]
         self.frame = QImage()
         self.stamp = None
         self.pressed = None
@@ -51,7 +54,7 @@ class Panel(QWidget):
                        y=max(0, min(479, point.y()))))
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if self.touch_enabled and event.button() == Qt.LeftButton:
             self.pressed = event.position().toPoint()
             self.touch('press', self.pressed)
 
@@ -126,6 +129,8 @@ def control_column(keys, knob_text, knob_code, panel):
         connect_key(button, code, panel)
         column.addWidget(button)
     column.addStretch()
+    if knob_code is None:
+        return column
     column.addWidget(RotaryButton(knob_text, knob_code, panel), alignment=Qt.AlignHCenter)
     turns = QHBoxLayout()
     for text, ticks in [('−', -1), ('+', 1)]:
@@ -234,7 +239,7 @@ def porsche_controls(panel):
 
 
 def create_window(profile=None):
-    profile = select_profile() if profile is None else profile
+    profile = current() if profile is None else profile
     porsche = profile['brand'] == 'porsche'
     window = QWidget()
     window.setWindowTitle(profile['title'])
@@ -261,23 +266,52 @@ def create_window(profile=None):
         brand.setAlignment(Qt.AlignCenter)
         layout.addWidget(brand)
     status = QLabel('Touch the screen or use the buttons. Scroll over a knob to turn it.')
-    panel = Panel(status)
+    panel = Panel(status, profile)
     fascia = QHBoxLayout()
     fascia.setSpacing(14)
-    if not porsche:
+    if profile['touch'] and not porsche:
         fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
     fascia.addWidget(panel)
-    if not porsche:
+    if profile['touch'] and not porsche:
         fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
     layout.addLayout(fascia)
     if porsche:
         layout.addLayout(porsche_controls(panel))
+    if not profile['touch']:
+        status.setText('Use the MMI controller: turn to browse, press to select. Arrow keys, Enter and Esc also work.')
+        shortcuts = QHBoxLayout()
+        for name, code in [('RADIO',15), ('MEDIA',1), ('NAV',4), ('TEL',3), ('CAR',6), ('MENU',78)]:
+            button = QPushButton(name)
+            button.setObjectName(name.lower())
+            button.setMinimumHeight(42)
+            connect_key(button, code, panel)
+            shortcuts.addWidget(button)
+        layout.addLayout(shortcuts)
+        controller = QHBoxLayout()
+        controller.addLayout(control_column([('TOP\nLEFT',8), ('BOTTOM\nLEFT',9)], 'VOLUME',17,panel))
+        controller.addStretch()
+        controller.addLayout(control_column([], 'SELECT',16,panel))
+        controller.addStretch()
+        controller.addLayout(control_column([('TOP\nRIGHT',11), ('BOTTOM\nRIGHT',12), ('BACK',13)], None,None,panel))
+        layout.addLayout(controller)
+        def tap(code):
+            panel.send(dict(type='key',code=code,pressed=1))
+            QTimer.singleShot(60, lambda: panel.send(dict(type='key',code=code,pressed=0)))
+        window.input_shortcuts = []
+        for key, ticks in [('Left',-1), ('Up',-1), ('Right',1), ('Down',1)]:
+            shortcut = QShortcut(QKeySequence(key),window)
+            shortcut.activated.connect(lambda ticks=ticks: panel.send(dict(type='encoder',code=16,ticks=ticks)))
+            window.input_shortcuts.append(shortcut)
+        for key, code in [('Return',16), ('Enter',16), ('Escape',13), ('M',78)]:
+            shortcut = QShortcut(QKeySequence(key),window)
+            shortcut.activated.connect(lambda code=code: tap(code))
+            window.input_shortcuts.append(shortcut)
     footer = QHBoxLayout()
     back = QPushButton('BACK')
     back.setFixedSize(100, 32)
     back.setToolTip('Additional back control')
     connect_key(back, 13, panel)
-    if not porsche:
+    if profile['touch'] and not porsche:
         footer.addWidget(back)
     footer.addStretch()
     settings = QPushButton('Configuration')
@@ -310,12 +344,13 @@ def create_window(profile=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--firmware-meta', type=Path)
-    parser.add_argument('--brand', choices=('auto', 'porsche', 'volkswagen'), default='auto')
+    parser.add_argument('--brand', choices=('auto', 'porsche', 'volkswagen', 'audi'), default='auto')
     args, qt_args = parser.parse_known_args()
     if args.firmware_meta:
         os.environ['MHI2_FIRMWARE_META'] = str(args.firmware_meta)
     app = QApplication([sys.argv[0]] + qt_args)
-    window = create_window(select_profile(common_metadata(args.firmware_meta), args.brand))
+    window = create_window(current() if args.brand == 'auto' else
+                           select_profile(common_metadata(args.firmware_meta), args.brand))
     window.setAttribute(Qt.WA_DeleteOnClose)
     window.show()
     if os.environ.get('MHI2_SHOW_CLUSTER') == '1':

@@ -119,7 +119,16 @@ u32 eglReleaseThread(void) { return 1; }
 u32 eglBindAPI(u32 api) {if(api!=0x30a0){egl_error=0x300c;return 0;}bound_api=api;return 1;}
 u32 eglWaitGL(void) { return 1; }
 u32 eglWaitNative(i32 e) { (void)e; return 1; }
-const char *eglQueryString(void *dpy, i32 name) { (void)dpy; if(name==0x3055)return "EGL_KHR_image EGL_KHR_image_base "; return "glshim-fwd"; }
+const char *eglQueryString(void *dpy, i32 name) { (void)dpy; if(name==0x3055)return "EGL_KHR_image EGL_KHR_image_base EGL_NV_system_time "; return "glshim-fwd"; }
+/* EGL_NV_system_time uses the guest's monotonic nanosecond clock. */
+extern int ClockTime(int, const unsigned long long *, unsigned long long *);
+unsigned long long eglGetSystemTimeFrequencyNV(void) { return 1000000000ULL; }
+unsigned long long eglGetSystemTimeNV(void)
+{
+    unsigned long long now = 0;
+    if (ClockTime(2 /* QNX CLOCK_MONOTONIC */, 0, &now) != 0) abort();
+    return now;
+}
 void *eglGetProcAddress(const char *n);
 void *eglGetCurrentDisplay(void) { return (void *)1; }
 void *eglGetCurrentContext(void) { return (void *)1; }
@@ -211,7 +220,7 @@ void glDeleteBuffers(i32 n, const u32 *ids)
 /* ---------------- vertex attribs ---------------- */
 void glVertexAttribPointer(u32 index, i32 size, u32 type, u32 norm, i32 stride, const void *ptr)
 {
-    if(index>=16)return;
+    if(index>=16 || size<1 || size>4 || stride<0)abort();
     struct Record *r=current_record();struct ClientAttrib *a=&r->attribs[index];
     a->size=size;a->type=type;a->norm=norm;a->stride=stride;a->pointer=ptr;a->buffer=r->array_buffer;
     if(!a->buffer)return; /* Guest pointers are copied at draw time. */
@@ -246,7 +255,19 @@ void glUniform1i(i32 loc, i32 v) { i32 p[2] = { loc, v }; emit_iv(30, p, 2); }
 
 /* ---------------- draws ---------------- */
 static unsigned scalar_bytes(u32 type)
-{ return type==0x1400||type==0x1401?1:type==0x1402||type==0x1403?2:4; }
+{
+    switch(type){case 0x1400:case 0x1401:return 1;
+    case 0x1402:case 0x1403:return 2;
+    case 0x1404:case 0x1405:case 0x1406:case 0x140c:return 4;
+    default:abort();return 0;}
+}
+static int has_client_arrays(void)
+{
+    struct Record *r=current_record();
+    for(unsigned i=0;i<16;i++)
+        if(r->attribs[i].enabled && !r->attribs[i].buffer)return 1;
+    return 0;
+}
 static void upload_client_arrays(unsigned vertices)
 {
     struct Record *r=current_record();
@@ -254,25 +275,44 @@ static void upload_client_arrays(unsigned vertices)
         struct ClientAttrib *a=&r->attribs[i];
         if(!a->enabled||a->buffer||!vertices)continue;
         unsigned element=a->size*scalar_bytes(a->type),stride=a->stride?a->stride:element;
-        if(vertices>1000000 || stride>4096)abort();
-        unsigned bytes=(vertices-1)*stride+element;
-        u32 h[6]={i,a->size,a->type,a->norm,a->stride,bytes};
+        unsigned long long bytes=(unsigned long long)(vertices-1)*stride+element;
+        if(!a->pointer || bytes>16*1024*1024-24)abort();
+        u32 h[6]={i,a->size,a->type,a->norm,a->stride,(u32)bytes};
         rec(128,24+bytes);PART(h,24);PART(a->pointer,bytes);
     }
 }
 void glDrawArrays(u32 mode, i32 first, i32 count)
-{ if(first<0||count<=0)return;upload_client_arrays(first+count);i32 p[3]={(i32)mode,first,count};emit_iv(31,p,3); }
+{
+    if(first<0 || count<0 || (u32)count>0x7fffffffU-(u32)first)abort();
+    if(count)upload_client_arrays((u32)first+count);
+    i32 p[3]={(i32)mode,first,count};emit_iv(31,p,3);
+}
 void glDrawElements(u32 mode, i32 count, u32 type, const void *indices)
 {
-    if(count<=0)return;
+    if(count<0 || (type!=0x1401 && type!=0x1403 && type!=0x1405))abort();
+    if(!count)return;
     struct Record *r=current_record();
+    unsigned n=scalar_bytes(type),maximum=0;
     if(!r->element_buffer){
-        unsigned n=scalar_bytes(type),maximum=0;
-        const unsigned char *b=indices;
-        for(i32 i=0;i<count;i++){u32 v=0;for(unsigned j=0;j<n;j++)v|=(u32)b[i*n+j]<<(8*j);if(v>maximum)maximum=v;}
-        upload_client_arrays(maximum+1);
+        if(!indices || (unsigned long long)count*n>16*1024*1024-16)abort();
+        if(has_client_arrays()){
+            const unsigned char *b=indices;
+            for(i32 i=0;i<count;i++){u32 v=0;memcpy(&v,b+i*n,n);if(v>maximum)maximum=v;}
+            if(maximum==0xffffffffU)abort();
+            upload_client_arrays(maximum+1);
+        }
         u32 h[4]={mode,(u32)count,type,(u32)count*n};rec(129,16+h[3]);PART(h,16);PART(indices,h[3]);
-    }else{u32 p[4]={mode,(u32)count,type,(u32)(unsigned long)indices};emit_iv(32,(i32 *)p,4);}
+    }else{
+        if(has_client_arrays()){
+            /* Audi EAL combines guest client vertices with a host EBO. */
+            u32 query[3]={(u32)count,type,(u32)(unsigned long)indices};
+            maximum=0xffffffffU;
+            emit_iv(138,(i32 *)query,3);
+            if(recv_all(&maximum,4)<0 || maximum==0xffffffffU)abort();
+            upload_client_arrays(maximum+1);
+        }
+        u32 p[4]={mode,(u32)count,type,(u32)(unsigned long)indices};emit_iv(32,(i32 *)p,4);
+    }
 }
 
 /* ---------------- pipeline state ---------------- */
@@ -548,6 +588,8 @@ int glVertexAttribPointerBounds(void) { static int seen; if(!seen){seen=1;const 
 extern int strcmp(const char *,const char *);
 void *eglGetProcAddress(const char *n)
 {
+    if (!strcmp(n,"eglGetSystemTimeFrequencyNV")) return (void *)&eglGetSystemTimeFrequencyNV;
+    if (!strcmp(n,"eglGetSystemTimeNV")) return (void *)&eglGetSystemTimeNV;
     if (!strcmp(n,"eglCreateImageKHR")) return (void *)&eglCreateImageKHR;
     if (!strcmp(n,"eglDestroyImageKHR")) return (void *)&eglDestroyImageKHR;
     if (!strcmp(n,"eglBindAPI")) return (void *)&eglBindAPI;
@@ -778,5 +820,8 @@ void *eglGetProcAddress(const char *n)
     if (!strcmp(n,"glVertexAttribPointer")) return (void *)&glVertexAttribPointer;
     if (!strcmp(n,"glVertexAttribPointerBounds")) return (void *)&glVertexAttribPointerBounds;
     if (!strcmp(n,"glViewport")) return (void *)&glViewport;
+    write(2, "glbridge: unresolved EGL procedure: ", sizeof("glbridge: unresolved EGL procedure: ")-1);
+    write(2, n, strlen(n));
+    write(2, "\n", 1);
     return 0;
 }
