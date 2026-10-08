@@ -1,4 +1,4 @@
-# Wi-Fi and Bluetooth
+# Wi-Fi, Bluetooth and cellular
 
 The soldered Marvell 8787 on SDMMC2 implements the SDIO register/packet
 interfaces used by the original QNX drivers. Wi-Fi uses QEMU's `NetClientState`;
@@ -165,12 +165,83 @@ active pairing/session depends on the guest stack; rebooting the guest is the
 reliable way to start with a different controller. ISO packets for Bluetooth
 5.2 LE Audio are outside this older controller's interface.
 
+## Cellular
+
+```sh
+bash /path/to/porsche-build/run.sh --cellular 4g
+bash /path/to/porsche-build/run.sh --cellular 3g
+```
+
+`MHI2_CELLULAR=4g` is the environment equivalent. The default is `off`.
+Both modes emulate a Cinterion ALS6 composite USB device (`1e2d:0060`), with
+four serial interfaces and CDC ECM control/data interfaces. `3g` changes the
+reported radio access technology to UMTS; it does not substitute a different
+USB modem. The SIM identity and network are synthetic, and voice calls, SMS,
+remote SIM access and commercial SIM authentication are not implemented.
+
+The launcher connects it to `usb-bus.2,port=1`. The original QNX USB launcher
+starts `devc-serusb` and `devnp-ecmplus`, creates `/dev/NAD/AT_port`, and exposes
+`ecm0`. The firmware enables the Ethernet link with its normal AT data-session
+commands. The data network is `10.0.3.0/24`, separate from Wi-Fi's
+`10.0.2.0/24`; libslirp supplies DHCP, gateway and DNS. It uses the host's
+network rather than transmitting cellular RF.
+
+For another normal QEMU network backend, direct invocation can use:
+
+```sh
+-netdev user,id=cellular,net=10.0.3.0/24 \
+-device usb-mhi2-modem,id=modem,bus=usb-bus.2,port=1,netdev=cellular,lte=on
+```
+
+Replace the `-netdev` backend/options as needed. Keep the explicit USB bus and
+port: the MHI2 guest enables Tegra USB controllers 0 and 2, and the modem is a
+high-speed device. QMP `set_link` on `modem` drops the data session; reconnecting
+the backend requires a new AT session activation. Migration is not supported.
+
+Porsche K5126's emulated RCC profile supplies normal production-mode status,
+telephone/WLAN equipment activation and the native diagnostic data-services
+permission. The latter follows the existing `00060700` online-services feature
+switch. These are companion responses; no firmware executables are patched.
+The settings are scoped to the inspected K5126 train rather than assumed to
+have the same layout on every Audi/VW release.
+
+Once the firmware has booted, `python3 tools/mhi2/network.py cellular` requests
+the `qemu` APN and automatic connection through the original
+`DSIDataConfiguration` provider. It accepts native data-access requests for
+that emulator session. `python3 tools/mhi2/network.py wifi --ssid 'QEMU Wi-Fi'`
+uses the original `DSIWLAN` provider to enable station mode, scan and associate.
+These helper requests currently support Porsche K5126 only. They do not replace
+either provider, write firmware binaries, disable packet filtering or run a
+parallel DHCP client. Native configuration changes have the same lifetime as
+the running VM's snapshot. Firmware network status and
+`/tmp/mhi2-rcc-peer.log` show the outcome; sending a request before native
+services initialize can fail, in which case repeat it after boot.
+Porsche K5126 rejects WLAN tethering with a SIM inserted or a SAP phone
+connected; use `--cellular off` when selecting the WLAN uplink. The helper
+preserves this native policy.
+
+On Apple Silicon with Porsche K5126, the original NAD service registered on
+the simulated LTE network, and the original connection manager activated ECM
+and started DHCP. The guest obtained `10.0.3.15`, gateway `10.0.3.2` and DNS
+`10.0.3.3`. Guest DNS resolved `github.com` and `porsche.com`; gateway ICMP with
+1400-byte payloads and Internet ICMP to GitHub completed without loss in the
+validation run. 3G is covered by protocol tests; a separate full firmware boot
+in 3G mode has not been validated.
+
+Internet access and manufacturer services are separate checks. Account login,
+map content, retired service endpoints and vehicle provisioning are not
+emulated. Mobile-app local discovery also requires a suitable shared/bridged
+network: default user-mode NAT does not put a physical phone on the head unit's
+LAN, and an outbound Internet connection alone does not establish app pairing.
+
 ## Validation
 
 Run the protocol regression without any firmware download or boot assets:
 
 ```sh
 python3 tools/mhi2/check_wireless.py --qemu /path/to/qemu-system-arm
+python3 tools/mhi2/check_modem.py --qemu /path/to/qemu-system-arm --mode 3g
+python3 tools/mhi2/check_modem.py --qemu /path/to/qemu-system-arm --mode 4g
 ```
 
 It uses blank NOR/IRAM images with QEMU's qtest accelerator and exercises actual
@@ -178,6 +249,12 @@ SDHCI commands: scans, association, command queues, rotating data ports,
 batched transmit, bidirectional Ethernet, libslirp ARP, fragmented/coalesced H4,
 1021-byte ACL, SCO, oversized input and network/controller disconnects. This
 runs in the macOS/Linux CI workflow.
+
+The modem test exercises EHCI DMA and real USB transfers, descriptor
+enumeration, SIM/registration, malformed and oversized AT commands, PDP
+activation, libslirp DHCP, ARP and bidirectional UDP traffic. It covers exact
+512/1024-byte Ethernet transfer boundaries, full-size packets, backend link
+loss/recovery and radio-off teardown. It runs without proprietary boot assets.
 
 With the optional Bluetooth environment, also test against an independent
 [Bumble software controller](https://github.com/google/bumble):

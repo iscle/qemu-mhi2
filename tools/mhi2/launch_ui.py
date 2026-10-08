@@ -44,11 +44,14 @@ def main():
                         help='Name of the single emulated open access point')
     parser.add_argument('--bluetooth', default=os.environ.get('MHI2_BLUETOOTH', ''),
                         help='QEMU -chardev options for an H4 controller, without id=')
+    parser.add_argument('--cellular', choices=('off', '3g', '4g'),
+                        default=os.environ.get('MHI2_CELLULAR', 'off'),
+                        help='Emulated Cinterion USB modem with QEMU NAT data')
     args = parser.parse_args()
     try:
-        wireless_arguments(args.wifi, args.wifi_ssid, args.bluetooth)
+        wireless_arguments(args.wifi, args.wifi_ssid, args.bluetooth, args.cellular)
         os.environ.update(MHI2_WIFI=args.wifi, MHI2_WIFI_SSID=args.wifi_ssid,
-                          MHI2_BLUETOOTH=args.bluetooth)
+                          MHI2_BLUETOOTH=args.bluetooth, MHI2_CELLULAR=args.cellular)
         profile = configure(args.firmware, args.media)
     except (OSError, ValueError) as exc:
         print(exc, file=sys.stderr)

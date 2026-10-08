@@ -15,7 +15,7 @@ from wireless import arguments as wireless_arguments
 
 
 class Radio:
-    def __init__(self, qemu, media, root, bluetooth=True, user=False, explicit=False, disabled=False):
+    def __init__(self, qemu, media, root, bluetooth=True, user=False, explicit=False, disabled=False, extra_args=()):
         self.eth, eth_guest = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.bt, bt_guest = socket.socketpair()
         self.eth.settimeout(3)
@@ -37,7 +37,7 @@ class Radio:
         if bluetooth:
             args += ['-chardev', f'socket,id=bt,fd={bt_guest.fileno()}',
                      '-global', 'mv8787-sdio.bluetooth-chardev=bt']
-        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.proc = subprocess.Popen(args + list(extra_args), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.log, bufsize=0,
                                      pass_fds=(eth_guest.fileno(), bt_guest.fileno()))
         eth_guest.close(); bt_guest.close()

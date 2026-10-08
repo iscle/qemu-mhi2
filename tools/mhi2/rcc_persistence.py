@@ -43,6 +43,13 @@ class Persistence:
                 type='blob', value=metadata['release'].encode().ljust(32, b' ').hex())
 
     def configure_porsche(self, config):
+        # TelephoneDiagnosis::diagCBDiagnosisPModeValues reads byte 1 bit 3
+        # after validating a minimum three-byte diagnostic value. An absent
+        # value leaves NAD/SIM handling in factory production mode.
+        self.values['0:3221356586'] = dict(type='blob', value='000000')
+        # ConnectionManager::activateDataService requires exactly one byte.
+        self.values['0:3221356610'] = dict(
+            type='blob', value='01' if config['features']['00060700'] else '00')
         # K5126 smartphone_integrator: coding callback 0x193968 and
         # adaptation callback 0x19377c. USB mode other than 3 forcibly clears
         # the port mask (0x193448), independently of the FEC permission.
@@ -53,7 +60,17 @@ class Persistence:
         # PORSCHE. Do not inherit VW identity from the generic fixture.
         coding[0] = (coding[0] & 0xf0) | 7
         coding[19] = (coding[19] & 0x3f) | 0xc0
+        coding[24] |= 0x08  # Soldered Marvell WLAN module is present.
+        adaptation[15] = 1  # Telephone function, including the onboard NAD.
+        adaptation[16] = 1  # Native ConnectionManager WLAN enable byte.
         adaptation[30] |= 1  # First modeled smartphone USB port.
+        # High-platform AdaptationImplHigh: POI, portal, Earth/Street View,
+        # account integration; picture destinations, dictation, RemoteHMI,
+        # online metadata; online media and WLAN client. These are equipment
+        # flags, not server-side service activation or account credentials.
+        for index, mask in ((17, 0xbe), (18, 0x37), (43, 0x10), (51, 0x04)):
+            adaptation[index] = ((adaptation[index] & ~mask) |
+                                 (mask if config['features']['00060700'] else 0))
         for index, mask, feature in [(43, 0x80, '00060900'),
                                      (51, 0x01, '00060800'),
                                      (51, 0x60, '00060300'),

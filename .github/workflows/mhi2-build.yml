@@ -73,6 +73,12 @@ jobs:
       - name: Check SDIO Wi-Fi and Bluetooth transports
         run: |
           python3 "$RUNNER_TEMP/source/tools/mhi2/check_wireless.py" --qemu "$RUNNER_TEMP/build/qemu-system-arm"
+      - name: Check cellular USB modem and network transport
+        run: |
+          python3 "$RUNNER_TEMP/source/tools/mhi2/check_emulator_config.py"
+          python3 "$RUNNER_TEMP/source/tools/mhi2/check_native_network.py"
+          python3 "$RUNNER_TEMP/source/tools/mhi2/check_modem.py" --qemu "$RUNNER_TEMP/build/qemu-system-arm" --mode 3g
+          python3 "$RUNNER_TEMP/source/tools/mhi2/check_modem.py" --qemu "$RUNNER_TEMP/build/qemu-system-arm" --mode 4g
       - name: Build host and guest bridges
         env:
           MHI2_BUILD_LIBRARIES_ONLY: '1'

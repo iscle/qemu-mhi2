@@ -120,6 +120,10 @@ class Peer:
             print('Registered',name,flush=True)
 
     def input_event(self, event):
+        if event.get('type') == 'network':
+            from native_network import start
+            start(self, event)
+            return
         if event.get('type') in ('cluster', 'cluster-map', 'cluster-setup'):
             if event['type'] == 'cluster':
                 self.cluster_requested = True
@@ -287,6 +291,10 @@ class Peer:
             if not msg: continue
             if WIRE_TRACE: print('ESO RECV', key[1:], msg[:256].hex(), flush=True)
             kind = msg[0]
+            if flow.get('client') == 'network':
+                from native_network import message
+                message(self, key, flow, msg)
+                continue
             if kind == 1 and flow.get('active'):
                 self.comm(key, flow, bytes([2, msg[3]]))
                 if flow.get('client') == 'features':

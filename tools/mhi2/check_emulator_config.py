@@ -23,6 +23,10 @@ class Checks(unittest.TestCase):
         adap = bytes.fromhex(enabled['28442848:100']['value'])
         self.assertEqual(coding[19] >> 6, 3)
         self.assertEqual(coding[0] & 0xf, 7)
+        self.assertTrue(coding[24] & 8)
+        self.assertEqual(adap[15:17], b'\x01\x01')
+        self.assertEqual(enabled['0:3221356586']['value'], '000000')
+        self.assertEqual(enabled['0:3221356610']['value'], '01')
         train = bytes.fromhex(enabled['46924065:401']['value'])
         self.assertGreaterEqual(len(train), 21)
         self.assertEqual(train.rstrip().decode(), meta['release'])
@@ -37,6 +41,15 @@ class Checks(unittest.TestCase):
             self.assertEqual(disabled[i] & ~mask, adap[i] & ~mask)
         original = json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
         self.assertEqual(Persistence(config, {}).values, original)
+
+    def test_online_permission_controls_native_data_diagnosis(self):
+        config = defaults()
+        config['features']['00060700'] = False
+        values = Persistence(config, {'release': 'MHI2_ER_POG11_K5126'}).values
+        self.assertEqual(values['0:3221356610']['value'], '00')
+        adap = bytes.fromhex(values['28442848:100']['value'])
+        for i, mask in ((17, 0xbe), (18, 0x37), (43, 0x10), (51, 4)):
+            self.assertEqual(adap[i] & mask, 0)
 
     def test_firmware_selection_ignores_audi_header(self):
         with tempfile.TemporaryDirectory() as root:

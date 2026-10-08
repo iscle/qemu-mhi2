@@ -186,7 +186,7 @@ For console-only testing, add `--headless`. The generated launcher selects
 its build's QEMU, graphics host, Python environment, firmware metadata and
 media paths; no paths from the original developer's computer are needed.
 
-## Wi-Fi and Bluetooth
+## Wi-Fi, Bluetooth and cellular
 
 The Marvell SDIO radio exposes one open network, **QEMU Wi-Fi**, backed by
 QEMU user networking (NAT/DHCP) by default. Select it in the firmware's Wi-Fi
@@ -203,6 +203,33 @@ controller. To discover and connect to peers, attach an external H4 controller
 with `--bluetooth`; this can be a software controller or a dedicated USB
 Bluetooth adapter through an H4 bridge. See [wireless setup and validation](tools/mhi2/WIRELESS.md)
 for commands, backend choices and current limits.
+
+An optional Cinterion USB modem presents a simulated SIM and 3G/4G network to
+the original head-unit modem driver. Its USB Ethernet data path uses QEMU NAT:
+
+```sh
+bash "$MHI2_REPRO/porsche-build/run.sh" --cellular 4g
+# Use --cellular 3g for UMTS, or --cellular off to omit the modem.
+```
+
+After Porsche K5126 finishes booting, use its data-connection settings to select
+automatic connection with APN `qemu`, or request that configuration from another
+terminal in the source directory:
+
+```sh
+python3 tools/mhi2/network.py cellular
+# To connect through the native WLAN service instead:
+python3 tools/mhi2/network.py wifi
+```
+
+For Wi-Fi client mode, boot with `--cellular off`: this Porsche firmware
+rejects WLAN tethering while a SIM is inserted.
+
+This uses the computer's Internet connection. It does not require a physical
+SIM or mobile subscription. The Porsche K5126 companion profile enables the
+native WLAN and online-data equipment settings. Actual Porsche/Audi/VW cloud
+services still depend on compatible servers, accounts and vehicle entitlement;
+an emulated modem does not provide those. See the [cellular notes](tools/mhi2/WIRELESS.md#cellular).
 
 ## What to expect
 
