@@ -234,6 +234,45 @@ emulated. Mobile-app local discovery also requires a suitable shared/bridged
 network: default user-mode NAT does not put a physical phone on the head unit's
 LAN, and an outbound Internet connection alone does not establish app pairing.
 
+### Vehicle identity
+
+The RCC supplies stable synthetic defaults: VIN `ZZZEMU00XP0000001` and
+FAZIT ID `EMU-00009.10.2600000001`. The VIN is 17 uppercase characters,
+excludes I/O/Q, and includes its calculated check digit. These are emulator
+fixtures, not assigned manufacturer identities or backend credentials.
+
+K5126's original `VehicleRegistrationRequest` contains `vin`, `bg`, and `snr`.
+`OnlineRegistrationServiceImpl.getVehicle()` sets `bg` to `5F` and obtains
+`snr` from `FazitIdComponent.getFazitIDMIB2()`, which reads raw RCC persistence
+key `0:3221291024` as UTF-8. The emulator now supplies that attribute and
+delivers the configured VIN through the DSI vehicle service.
+The firmware rejected the previous `SIMULATED-VEHICLE` placeholder and could
+fall back to a generated test VIN.
+
+To use your own vehicle/unit identifiers, edit the `identity` object in the
+local brand configuration (`~/.config/mhi2/porsche.json`, or `MHI2_CONFIG`):
+
+```json
+"identity": {
+  "vin": "ZZZEMU00XP0000001",
+  "fazit_id": "EMU-00009.10.2600000001",
+  "bg": "5F"
+}
+```
+
+Restart the emulator after editing. Older configurations inherit the test
+defaults automatically. `emulator_config.py --vin ... --fazit-id ...` can
+also update the local configuration; use `--file` to select an explicit file.
+VIN validation checks uppercase format and excludes I/O/Q; it does not
+require a check digit for imported European VINs. FAZIT validation checks
+bounded printable identifier syntax, not manufacturer allocation. `bg` must
+remain `5F`; the original firmware owns that registration field.
+
+Real account pairing still requires the manufacturer's pairing flow and
+service entitlement. These identifiers alone do not demonstrate backend
+authorization; unit-specific provisioning requirements have not been verified.
+Keep actual identifiers and credentials outside the repository.
+
 ## Validation
 
 Run the protocol regression without any firmware download or boot assets:

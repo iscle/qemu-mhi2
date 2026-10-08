@@ -40,7 +40,25 @@ class Checks(unittest.TestCase):
             self.assertEqual(disabled[i] & mask, 0)
             self.assertEqual(disabled[i] & ~mask, adap[i] & ~mask)
         original = json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
+        original['0:3221291024'] = dict(type='blob', value=config['identity']['fazit_id'].encode().hex())
         self.assertEqual(Persistence(config, {}).values, original)
+
+    def test_identity_validation_and_legacy_config(self):
+        config = validate({'version': 1})
+        self.assertEqual(config['identity']['bg'], '5F')
+        vin = config['identity']['vin']
+        transliteration = dict(zip('ABCDEFGHJKLMNPRSTUVWXYZ',
+                                   [1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 7, 9, 2, 3, 4, 5, 6, 7, 8, 9]))
+        transliteration.update({str(i): i for i in range(10)})
+        remainder = sum(transliteration[c] * w for c, w in zip(
+            vin, [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2])) % 11
+        self.assertEqual(vin[8], 'X' if remainder == 10 else str(remainder))
+        for identity in (None, {'vin': 'SIMULATED-VEHICLE'}, {'vin': 'I' * 17},
+                         {'vin': 'a' * 17}, {'vin': 17}, {'fazit_id': ''},
+                         {'fazit_id': 'EMU\nINJECT'}, {'fazit_id': 'A' * 65},
+                         {'bg': '01'}, {'snr': 'unknown'}):
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                validate({'version': 1, 'identity': identity})
 
     def test_online_permission_controls_native_data_diagnosis(self):
         config = defaults()

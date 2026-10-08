@@ -28,10 +28,15 @@ class Persistence:
     def __init__(self, config=None, metadata=None):
         self.values=json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
         from firmware_profile import common_metadata
+        from emulator_config import load, validate
+        config = load() if config is None else validate(config)
+        self.identity = config['identity'].copy()
+        # K5126 FazitIdComponent.getFazitIDMIB2 reads this raw attribute
+        # as UTF-8. OnlineRegistrationServiceImpl uses it as vehicle.snr.
+        self.values['0:3221291024'] = dict(
+            type='blob', value=self.identity['fazit_id'].encode('utf-8').hex())
         metadata = common_metadata() if metadata is None else metadata
         if metadata.get('release') == 'MHI2_ER_POG11_K5126':
-            from emulator_config import load, validate
-            config = load() if config is None else validate(config)
             self.configure_porsche(config)
         for key, field in [('30:1966084', 'release'), ('30:1966083', 'MUVersion')]:
             if metadata.get(field):

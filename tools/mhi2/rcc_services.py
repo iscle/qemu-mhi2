@@ -227,7 +227,7 @@ class Services:
             elif method == 'updateSIAViewOptions':
                 vals[0] = {f:{'state':2,'reason':0} for f,t in SCHEMA['structs']['SIAViewOptions'] if t=='OptionalCarViewOption'}
         elif name == 'DSICarVehicleStates' and method == 'updateVINData':
-            vals[0] = 'SIMULATED-VEHICLE'
+            vals[0] = self.persistence.identity['vin']
         if name=='DSIGeneralVehicleStates' and method in ('updateVehicleStandstill','updateParkingBrake'):
             vals[0]=True
         if name=='DSICarTimeUnitsLanguage':

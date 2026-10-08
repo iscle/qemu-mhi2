@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from rcc_features import FEATURES
@@ -16,6 +17,10 @@ def config_path():
 
 def defaults():
     return {'version': 1, 'features': {f'{code:08x}': True for code in FEATURES},
+            # Synthetic fixtures, not a registered vehicle/unit identity.
+            # The VIN includes its calculated position-9 check digit.
+            'identity': {'vin': 'ZZZEMU00XP0000001',
+                         'fazit_id': 'EMU-00009.10.2600000001', 'bg': '5F'},
             'usb': {'mode': 'off', 'serial': '', 'port': 5277,
                     'hostbus': 0, 'hostport': ''}}
 
@@ -23,9 +28,21 @@ def defaults():
 def validate(value):
     if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 1:
         raise ValueError('Expected emulator configuration version 1')
-    if set(value) - {'version', 'features', 'usb'}:
+    if set(value) - {'version', 'features', 'usb', 'identity'}:
         raise ValueError('Unknown configuration section')
     result = defaults()
+    identity = value.get('identity', {})
+    if not isinstance(identity, dict) or set(identity) - set(result['identity']):
+        raise ValueError('Unknown identity setting')
+    result['identity'].update(identity)
+    identity = result['identity']
+    if not isinstance(identity['vin'], str) or not re.fullmatch(r'[A-HJ-NPR-Z0-9]{17}', identity['vin']):
+        raise ValueError('VIN must contain 17 uppercase letters/digits, excluding I, O and Q')
+    if not isinstance(identity['fazit_id'], str) or not re.fullmatch(r'[A-Z0-9][A-Z0-9.-]{0,63}', identity['fazit_id']):
+        raise ValueError('FAZIT ID must contain 1–64 uppercase letters, digits, dots or hyphens')
+    # K5126 OnlineRegistrationServiceImpl supplies this constant itself.
+    if identity['bg'] != '5F':
+        raise ValueError('The infotainment control-unit identifier must be 5F')
     features = value.get('features', {})
     if not isinstance(features, dict):
         raise ValueError('features must be an object')
@@ -84,6 +101,8 @@ def main():
     parser.add_argument('--file', type=Path)
     parser.add_argument('--enable', action='append', default=[], metavar='FEC_HEX')
     parser.add_argument('--disable', action='append', default=[], metavar='FEC_HEX')
+    parser.add_argument('--vin', help='Local vehicle VIN (does not provision backend access)')
+    parser.add_argument('--fazit-id', help='Local HU manufacturing identity')
     args = parser.parse_args()
     config = load(args.file)
     for codes, state in ((args.enable, True), (args.disable, False)):
@@ -92,7 +111,11 @@ def main():
             if key not in config['features']:
                 parser.error('Unknown feature: ' + code)
             config['features'][key] = state
-    if args.enable or args.disable:
+    if args.vin is not None:
+        config['identity']['vin'] = args.vin
+    if args.fazit_id is not None:
+        config['identity']['fazit_id'] = args.fazit_id
+    if args.enable or args.disable or args.vin is not None or args.fazit_id is not None:
         save(config, args.file)
     print(json.dumps(config, indent=2))
 

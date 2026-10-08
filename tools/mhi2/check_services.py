@@ -10,7 +10,7 @@ import unittest
 import hashlib
 from unittest.mock import patch
 from pathlib import Path
-from rcc_services import Services, encode, SCHEMA_FILE
+from rcc_services import Services, encode, decode, SCHEMA_FILE
 from rcc_persistence import Persistence, Reader, array
 from rcc_peer import Peer, IP
 from most_sink import TransportStream
@@ -23,6 +23,38 @@ class Transport:
 
 
 class Checks(unittest.TestCase):
+    def test_identity_reaches_dsi_and_raw_persistence(self):
+        from emulator_config import defaults, save
+        config = defaults()
+        config['identity']['vin'] = 'ZZZEMU00XP0000002'
+        config['identity']['fazit_id'] = 'EMU-00009.10.2600000002'
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'config.json'
+            save(config, path)
+            with patch.dict(os.environ, {'MHI2_CONFIG': str(path)}):
+                s = Services()
+        names = ['DSICarVehicleStates']
+        for name in names:
+            spec = next(v for v in s.definitions[name]['replies'].values()
+                        if v['name'] == 'updateVINData')
+            values = s.initial(name, spec)
+            _, wire = s.reply(name, 'updateVINData', values)
+            reader = Reader(wire)
+            self.assertEqual(decode('OptionalString', reader), config['identity']['vin'])
+            self.assertEqual(reader.take(4), struct.pack('!i', 0x81))
+        prefix = array([0]) + array([3221291024])
+        replies = s.persistence.handle(7, prefix)
+        self.assertEqual(len(replies), 1)
+        mid, wire = replies[0]
+        self.assertEqual(mid, 0)
+        reader = Reader(wire)
+        self.assertEqual(reader.array(), [0])
+        self.assertEqual(reader.array(), [3221291024])
+        self.assertEqual(reader.take(5), b'\0\0\0\0\1')
+        self.assertEqual(bytes(reader.array('B')).decode(), config['identity']['fazit_id'])
+        self.assertEqual(reader.array('i'), [0])  # Success, not missing attribute.
+        self.assertEqual(reader.pos, len(wire))
+
     def test_display_power_firmware_key(self):
         for train, expected in (
                 ('MHI2_ER_POG11_K5126', '0bfa6630-3507-5427-be78-4c68f807cc18'),
