@@ -273,6 +273,32 @@ service entitlement. These identifiers alone do not demonstrate backend
 authorization; unit-specific provisioning requirements have not been verified.
 Keep actual identifiers and credentials outside the repository.
 
+#### My Porsche add-vehicle validation
+
+Static inspection of the user-supplied My Porsche Android 21.26.39-row
+(190220) package distinguishes local input checks from backend acceptance:
+
+- The add-VIN view model (`vehicleadd.ui.add.vin.g.v0`) accepts 17-character
+  input for lookup. It also supports shorter identifiers for older vehicles.
+- The vehicle-info API (`vehicleinfo.api.m.b`) performs a GET to
+  `/proof-of-ownership/v1/{locale-part-1}/{locale-part-2}/{vin}/details`.
+  There is no FAZIT parameter or HU connection in this request.
+- `vehicleinfo.service.h.b` maps HTTP 400 to invalid-format and HTTP 404 to
+  vehicle-not-found; the add-VIN UI renders these as separate errors.
+- A successful response provides the vehicle description and
+  `addRequestAllowed`; the UI reports an already-added vehicle when the latter
+  is false. Further ownership verification is a separate flow.
+
+A generated VIN can pass length, checksum and model-decoder checks without
+existing in Porsche's records. Changing the emulator's FAZIT ID cannot fix
+this app-side lookup. Porsche documents the real-vehicle and ownership
+requirements in its [vehicle management instructions](https://ask.porsche.com/us/en-US/manage-vehicles/).
+The user's exact rejection response has not been captured, so this static
+analysis does not identify which HTTP status their session received.
+No production API requests, account registration, or app modifications were
+performed for this inspection. Decompiled proprietary code is not included
+in the repository.
+
 ## Validation
 
 Run the protocol regression without any firmware download or boot assets:
