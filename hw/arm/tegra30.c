@@ -299,6 +299,7 @@ static void tegra30_realize(DeviceState *dev, Error **errp)
     /* The soldered Marvell combo chip occupies SDMMC2. */
     {
         DeviceState *wifi = qdev_new("mv8787-sdio");
+        qemu_configure_nic_device(wifi, true, "wifi");
         qdev_realize_and_unref(wifi, qdev_get_child_bus(s->sdmmc[1], "sd-bus"),
                                &error_fatal);
     }

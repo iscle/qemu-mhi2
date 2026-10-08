@@ -1,0 +1,2 @@
+# Optional H4-to-USB bridge. Install in a separate venv from the GUI tools.
+bumble==0.0.235

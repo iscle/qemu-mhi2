@@ -11,6 +11,7 @@ import sys
 import time
 from encoder_backend import configure_encoder
 from firmware_profile import PROFILES, configure
+from wireless import arguments as wireless_arguments
 
 
 def stop(process):
@@ -37,8 +38,17 @@ def main():
     parser.add_argument('--headless', action='store_true', help='Run without the desktop viewer')
     parser.add_argument('--firmware', choices=PROFILES, default=os.environ.get('MHI2_FIRMWARE', 'vw'))
     parser.add_argument('--media', help='Prepared media directory for the selected firmware')
+    parser.add_argument('--wifi', default=os.environ.get('MHI2_WIFI', 'user'),
+                        help='QEMU -nic backend options (default: user); "none" disables Wi-Fi')
+    parser.add_argument('--wifi-ssid', default=os.environ.get('MHI2_WIFI_SSID', 'QEMU Wi-Fi'),
+                        help='Name of the single emulated open access point')
+    parser.add_argument('--bluetooth', default=os.environ.get('MHI2_BLUETOOTH', ''),
+                        help='QEMU -chardev options for an H4 controller, without id=')
     args = parser.parse_args()
     try:
+        wireless_arguments(args.wifi, args.wifi_ssid, args.bluetooth)
+        os.environ.update(MHI2_WIFI=args.wifi, MHI2_WIFI_SSID=args.wifi_ssid,
+                          MHI2_BLUETOOTH=args.bluetooth)
         profile = configure(args.firmware, args.media)
     except (OSError, ValueError) as exc:
         print(exc, file=sys.stderr)

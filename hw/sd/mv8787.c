@@ -7,20 +7,42 @@
 #include "qemu/osdep.h"
 #include "hw/sd/sd.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "migration/vmstate.h"
+#include "net/net.h"
+#include "net/eth.h"
+#include "chardev/char-fe.h"
+#include "qapi/error.h"
 
 #define TYPE_MV8787 "mv8787-sdio"
 OBJECT_DECLARE_SIMPLE_TYPE(MV8787State, MV8787)
 #define MV_SPACE 0x20000
 #define MV_PORT  0x10000
 #define MV_MAX_TRANSFER (512 * 2048)
+#define MV_RX_DEPTH 64
+#define MV_BT_TX_SIZE (128 * 1024)
 
 struct MV8787State {
     DeviceState parent_obj;
+    NICConf conf;
+    NICState *nic;
+    char *ssid;
+    MACAddr bssid;
+    uint8_t channel;
+    bool associated;
+    uint8_t station_bss, wlan_rx_port, wlan_next_rx_port;
+    uint16_t rx_sequence;
+    GQueue pending[4];
+    CharFrontend bt_chr;
+    uint8_t bt_rx[4096], bt_tx[MV_BT_TX_SIZE];
+    unsigned bt_rx_used, bt_rx_needed, bt_rx_discard, bt_tx_used, bt_watch;
+    unsigned bt_function;
+    bool bt_open;
+
     uint8_t regs[4][MV_SPACE];
     uint16_t rca;
     bool selected;
@@ -72,6 +94,9 @@ static void mv_irq(MV8787State *s)
                   (s->regs[0][4] & pending));
 }
 
+static void mv_bt_flush(MV8787State *s);
+static void mv_queue_next(MV8787State *s, unsigned f);
+
 static void mv_reset(DeviceState *dev)
 {
     MV8787State *s = MV8787(dev);
@@ -84,6 +109,22 @@ static void mv_reset(DeviceState *dev)
     s->trace_count = 0;
     memset(s->rx_len, 0, sizeof(s->rx_len));
     memset(s->rx_pos, 0, sizeof(s->rx_pos));
+    s->associated = false;
+    s->station_bss = s->wlan_rx_port = 0;
+    s->wlan_next_rx_port = 1;
+    s->rx_sequence = 0;
+    for (unsigned f = 0; f < 4; f++) {
+        g_queue_clear_full(&s->pending[f], (GDestroyNotify)g_bytes_unref);
+    }
+    s->bt_rx_used = s->bt_rx_needed = s->bt_rx_discard = s->bt_tx_used = 0;
+    s->bt_function = 2;
+    if (s->bt_watch) {
+        g_source_remove(s->bt_watch);
+        s->bt_watch = 0;
+    }
+    if (s->nic) {
+        qemu_purge_queued_packets(qemu_get_queue(s->nic));
+    }
     s->wlan_initialized = false;
     s->tx_buffer_size = 2048;
     s->power_save_bitmap = 0;
@@ -96,7 +137,7 @@ static void mv_reset(DeviceState *dev)
     s->max_stations = 16;
     memset(s->coex, 0, sizeof(s->coex));
     for (unsigned i = 0; i < 4; i++) {
-        memcpy(s->mac_address[i], "\x02\x00\x02\x87\x87\x01", 6);
+        memcpy(s->mac_address[i], s->conf.macaddr.a, 6);
         s->mac_address[i][5] += i;
     }
     memset(s->local_name, 0, sizeof(s->local_name));
@@ -132,6 +173,8 @@ static void mv_reset(DeviceState *dev)
             stw_le_p(p + 28, 100);
             p += 42;
             s->regs[0][base] = f == 1 ? 7 : 2;
+            /* 32-byte RX units fit full ACL packets in the length register. */
+            s->regs[f][0x63] = 5;
             s->regs[f][0x30] = 9; /* Boot ROM can accept download data */
             s->regs[f][0x40] = 16;
             s->regs[f][0x5c] = 3;
@@ -174,6 +217,7 @@ static void mv_fw_byte(MV8787State *s, uint8_t value)
                 stw_le_p(&s->regs[f][6], 0xffff);
                 s->regs[f][0x30] = 0x09;
             }
+            qemu_chr_fe_accept_input(&s->bt_chr);
             fprintf(stderr, "mv8787: firmware received: %u bytes, %u records\n",
                     s->fw_bytes, s->fw_records);
         }
@@ -182,20 +226,357 @@ static void mv_fw_byte(MV8787State *s, uint8_t value)
 
 static void mv_enqueue(MV8787State *s, unsigned f, const uint8_t *p, unsigned len)
 {
-    if (len > sizeof(s->rx[f]) || s->rx_len[f]) {
+    if (len > sizeof(s->rx[f]) ||
+        g_queue_get_length(&s->pending[f]) >= MV_RX_DEPTH) {
         error_report("mv8787: RX queue overflow fn=%u len=%u", f, len);
+        return;
+    }
+    if (s->rx_len[f]) {
+        g_queue_push_tail(&s->pending[f], g_bytes_new(p, len));
         return;
     }
     memcpy(s->rx[f], p, len);
     s->rx_len[f] = len;
     s->rx_pos[f] = 0;
     s->regs[f][3] |= 3; /* Packet available and transmit slot free */
-    stw_le_p(&s->regs[f][4], 1);
-    stw_le_p(&s->regs[f][8], len);
-    s->regs[f][0x62] = (len + 3) / 4;
-    s->regs[f][0x63] = 2;
+    unsigned port = 0;
+    if (f == 1 && len >= 4 && lduw_le_p(p + 2) == 0) {
+        port = s->wlan_next_rx_port;
+        s->wlan_next_rx_port = port == 15 ? 1 : port + 1;
+    }
+    if (f == 1) {
+        s->wlan_rx_port = port;
+    }
+    stw_le_p(&s->regs[f][4], 1u << port);
+    stw_le_p(&s->regs[f][8 + 2 * port], len);
+    s->regs[f][0x62] = (len + 31) / 32;
+    s->regs[f][0x63] = 5;
     s->regs[f][0x30] |= 2;
     mv_irq(s);
+}
+
+/* Standard Ethernet backend; the chip terminates the virtual 802.11 link. */
+static bool mv_wifi_link(MV8787State *s)
+{
+    NetClientState *nc = qemu_get_queue(s->nic);
+    return s->wlan_initialized && nc->peer && !nc->link_down;
+}
+
+static void mv_wifi_event(MV8787State *s, uint32_t event)
+{
+    uint8_t out[14] = {0};
+    stw_le_p(out, sizeof(out));
+    stw_le_p(out + 2, 3);
+    stl_le_p(out + 4, event | (s->station_bss << 16));
+    memcpy(out + 8, s->bssid.a, 6);
+    mv_enqueue(s, 1, out, sizeof(out));
+}
+
+static bool mv_wifi_can_receive(NetClientState *nc)
+{
+    MV8787State *s = qemu_get_nic_opaque(nc);
+    /* Reserve command/event slots even under a saturated Ethernet backend. */
+    return g_queue_get_length(&s->pending[1]) < MV_RX_DEPTH - 8;
+}
+
+static ssize_t mv_wifi_receive(NetClientState *nc, const uint8_t *buf,
+                               size_t len)
+{
+    MV8787State *s = qemu_get_nic_opaque(nc);
+    uint8_t out[4096] = {0};
+    if (!s->associated || !mv_wifi_link(s) || len < 14 || len > 1518) {
+        return len;
+    }
+    if (!mv_wifi_can_receive(nc)) {
+        return 0;
+    }
+    stw_le_p(out, len + 24);
+    out[5] = s->station_bss;
+    stw_le_p(out + 6, len);
+    stw_le_p(out + 8, 20); /* RxPD-relative Ethernet frame offset */
+    stw_le_p(out + 12, s->rx_sequence++);
+    out[15] = 7; /* Legacy OFDM 18 Mbps, no aggregation/reordering */
+    out[16] = 50; out[17] = (uint8_t)-90;
+    memcpy(out + 24, buf, len);
+    mv_enqueue(s, 1, out, len + 24);
+    return len;
+}
+
+static void mv_wifi_tx(MV8787State *s, const uint8_t *pd, unsigned len)
+{
+    unsigned offset, size;
+    if (len < 16 || !s->associated || !mv_wifi_link(s)) {
+        return;
+    }
+    size = lduw_le_p(pd + 2);
+    offset = lduw_le_p(pd + 4);
+    if (offset < 16 || offset > len || size > len - offset ||
+        size < 14 || size > 1518 || lduw_le_p(pd + 6) ||
+        pd[0] != 0 || pd[1] != s->station_bss) {
+        qemu_log_mask(LOG_GUEST_ERROR, "mv8787: invalid Wi-Fi TxPD\n");
+        return;
+    }
+    qemu_send_packet(qemu_get_queue(s->nic), pd + offset, size);
+    s->regs[1][3] |= 2;
+    mv_irq(s);
+}
+
+static void mv_wifi_link_changed(NetClientState *nc)
+{
+    MV8787State *s = qemu_get_nic_opaque(nc);
+    if (nc->link_down && s->associated) {
+        s->associated = false;
+        qemu_purge_queued_packets(nc);
+        mv_wifi_event(s, 8); /* EVENT_DEAUTHENTICATED */
+    }
+}
+
+static NetClientInfo mv_net_info = {
+    .type = NET_CLIENT_DRIVER_NIC,
+    .size = sizeof(NICState),
+    .can_receive = mv_wifi_can_receive,
+    .receive = mv_wifi_receive,
+    .link_status_changed = mv_wifi_link_changed,
+};
+
+/* H4 is the standard HCI UART byte stream, also used by BlueZ btproxy. */
+static void mv_bt_packet(MV8787State *s, unsigned f,
+                         const uint8_t *h4, unsigned len)
+{
+    uint8_t out[4096];
+    if (len < 1 || len + 3 > sizeof(out)) {
+        return;
+    }
+    stl_le_p(out, len + 3);
+    memcpy(out + 3, h4, len);
+    mv_enqueue(s, f, out, len + 3);
+}
+
+static void mv_queue_next(MV8787State *s, unsigned f)
+{
+    GBytes *next = g_queue_pop_head(&s->pending[f]);
+    if (next) {
+        gsize len;
+        const void *data = g_bytes_get_data(next, &len);
+        mv_enqueue(s, f, data, len);
+        g_bytes_unref(next);
+    }
+    if (f == 1 && s->nic) {
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    }
+    if (f == s->bt_function) {
+        qemu_chr_fe_accept_input(&s->bt_chr);
+    }
+}
+
+static gboolean mv_bt_writable(void *unused, GIOCondition condition,
+                               void *opaque)
+{
+    MV8787State *s = opaque;
+    s->bt_watch = 0;
+    if (!(condition & G_IO_HUP)) {
+        mv_bt_flush(s);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void mv_bt_flush(MV8787State *s)
+{
+    while (s->bt_open && s->bt_tx_used) {
+        int n = qemu_chr_fe_write(&s->bt_chr, s->bt_tx, s->bt_tx_used);
+        if (n <= 0) {
+            break;
+        }
+        s->bt_tx_used -= n;
+        memmove(s->bt_tx, s->bt_tx + n, s->bt_tx_used);
+    }
+    if (s->bt_open && s->bt_tx_used && !s->bt_watch) {
+        s->bt_watch = qemu_chr_fe_add_watch(&s->bt_chr, G_IO_OUT | G_IO_HUP,
+                                           mv_bt_writable, s);
+    }
+    if (s->bt_tx_used <= MV_BT_TX_SIZE - 4096) {
+        s->regs[s->bt_function][3] |= 2;
+        mv_irq(s);
+    }
+}
+
+static void mv_bt_send(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
+{
+    unsigned expected;
+    if (n < 7) {
+        return;
+    }
+    switch (p[3]) {
+    case 1:
+    case 3:
+        expected = 7 + p[6];
+        break;
+    case 2:
+        if (n < 8) {
+            return;
+        }
+        expected = 8 + lduw_le_p(p + 6);
+        break;
+    default:
+        return;
+    }
+    if (expected != n || n - 3 > 4093) {
+        qemu_log_mask(LOG_GUEST_ERROR, "mv8787: malformed Bluetooth TX\n");
+        return;
+    }
+    s->bt_function = f;
+    /* This is a chip-local health query, not a command for the host radio. */
+    if (p[3] == 1 && lduw_le_p(p + 4) == 0xfc0f && p[6] == 0) {
+        const uint8_t revision[] = {
+            4, 0x0e, 8, 1, 0x0f, 0xfc, 0, 0, 0, 0x0e, 1
+        };
+        mv_bt_packet(s, f, revision, sizeof(revision));
+        return;
+    }
+    if (!s->bt_open || n - 3 > sizeof(s->bt_tx) - s->bt_tx_used) {
+        const uint8_t failure[] = {4, 0x10, 1, 1}; /* Hardware Error */
+        mv_bt_packet(s, f, failure, sizeof(failure));
+        return;
+    }
+    memcpy(s->bt_tx + s->bt_tx_used, p + 3, n - 3);
+    s->bt_tx_used += n - 3;
+    s->regs[f][3] &= ~2;
+    mv_bt_flush(s);
+}
+
+static int mv_bt_can_read(void *opaque)
+{
+    MV8787State *s = opaque;
+    if (!s->fw_ready ||
+        g_queue_get_length(&s->pending[s->bt_function]) >= MV_RX_DEPTH - 1) {
+        return 0;
+    }
+    if (s->bt_rx_discard) {
+        return MIN(s->bt_rx_discard, 4096);
+    }
+    return s->bt_rx_needed ? s->bt_rx_needed - s->bt_rx_used : 1;
+}
+
+static void mv_bt_read(void *opaque, const uint8_t *buf, int size)
+{
+    MV8787State *s = opaque;
+    while (size--) {
+        unsigned header;
+        if (s->bt_rx_discard) {
+            s->bt_rx_discard--;
+            buf++;
+            continue;
+        }
+        s->bt_rx[s->bt_rx_used++] = *buf++;
+        switch (s->bt_rx[0]) {
+        case 4:
+            header = 3;
+            break;
+        case 2:
+            header = 5;
+            break;
+        case 3:
+            header = 4;
+            break;
+        default:
+            s->bt_rx_used = s->bt_rx_needed = 0;
+            qemu_log_mask(LOG_GUEST_ERROR, "mv8787: invalid H4 RX type\n");
+            continue;
+        }
+        if (s->bt_rx_used < header) {
+            s->bt_rx_needed = header;
+            continue;
+        }
+        if (s->bt_rx_used == header) {
+            unsigned payload = s->bt_rx[0] == 2 ? lduw_le_p(s->bt_rx + 3) :
+                                                s->bt_rx[header - 1];
+            s->bt_rx_needed = header + payload;
+            if (s->bt_rx_needed + 3 > sizeof(s->rx[0])) {
+                s->bt_rx_discard = payload;
+                s->bt_rx_used = s->bt_rx_needed = 0;
+                continue;
+            }
+        }
+        if (s->bt_rx_used == s->bt_rx_needed) {
+            mv_bt_packet(s, s->bt_function, s->bt_rx, s->bt_rx_used);
+            s->bt_rx_used = s->bt_rx_needed = 0;
+        }
+    }
+}
+
+static void mv_bt_event(void *opaque, QEMUChrEvent event)
+{
+    MV8787State *s = opaque;
+    if (event == CHR_EVENT_OPENED || event == CHR_EVENT_CLOSED) {
+        s->bt_open = event == CHR_EVENT_OPENED;
+        s->bt_rx_used = s->bt_rx_needed = s->bt_rx_discard = s->bt_tx_used = 0;
+        if (s->bt_watch) {
+            g_source_remove(s->bt_watch);
+            s->bt_watch = 0;
+        }
+        if (!s->bt_open && s->fw_ready) {
+            const uint8_t failure[] = {4, 0x10, 1, 1};
+            mv_bt_packet(s, s->bt_function, failure, sizeof(failure));
+        }
+    }
+}
+
+/* Validate Marvell scan TLVs and report the single open infrastructure BSS. */
+static int mv_scan_match(MV8787State *s, const uint8_t *p, unsigned len)
+{
+    bool match = true;
+    if (len < 7) {
+        return -1;
+    }
+    if (p[0] != 1 && p[0] != 3) {
+        match = false;
+    }
+    if (memcmp(p + 1, "\0\0\0\0\0\0", 6) && memcmp(p + 1, s->bssid.a, 6)) {
+        match = false;
+    }
+    for (unsigned off = 7; off < len;) {
+        unsigned tag, n;
+        if (len - off < 4) {
+            return -1;
+        }
+        tag = lduw_le_p(p + off); n = lduw_le_p(p + off + 2); off += 4;
+        if (n > len - off) {
+            return -1;
+        }
+        if (tag == 0 && n &&
+            (n != strlen(s->ssid) || memcmp(p + off, s->ssid, n))) {
+            match = false;
+        } else if (tag == 0x101) {
+            bool channel = false;
+            if (n % 7) {
+                return -1;
+            }
+            for (unsigned i = 0; i < n; i += 7) {
+                channel |= p[off + i + 1] == s->channel;
+            }
+            match &= channel;
+        }
+        off += n;
+    }
+    return match && mv_wifi_link(s);
+}
+
+static unsigned mv_scan_response(MV8787State *s, uint8_t *out)
+{
+    uint8_t *beacon = out + 17, *ie = beacon + 19;
+    unsigned n = strlen(s->ssid), len;
+    memcpy(beacon, s->bssid.a, 6);
+    beacon[6] = 40; /* -40 dBm */
+    stw_le_p(beacon + 15, 100); /* beacon interval */
+    stw_le_p(beacon + 17, 0x21); /* ESS, short preamble; no privacy */
+    *ie++ = 0; *ie++ = n; memcpy(ie, s->ssid, n); ie += n;
+    *ie++ = 1; *ie++ = 8;
+    memcpy(ie, "\x82\x84\x8b\x96\x0c\x12\x18\x24", 8); ie += 8;
+    *ie++ = 3; *ie++ = 1; *ie++ = s->channel;
+    len = ie - beacon;
+    stw_le_p(out + 12, len + 2); out[14] = 1;
+    stw_le_p(out + 15, len);
+    return len + 13;
 }
 
 static void mv_hci(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
@@ -233,6 +614,20 @@ static void mv_hci(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
         }
     }
     switch (op) {
+    case 0x0401: /* Inquiry: a powered empty radio has no remote devices. */
+        if (p[6] != 5 || !p[10] || p[10] > 0x30) {
+            r[0] = 0x12; break;
+        }
+        /* Command Status precedes the asynchronous Inquiry Complete event. */
+        {
+            const uint8_t status[] = {4, 0x0f, 4, 0, 1, 1, 4};
+            const uint8_t done[] = {4, 1, 1, 0};
+            mv_bt_packet(s, f, status, sizeof(status));
+            mv_bt_packet(s, f, done, sizeof(done));
+        }
+        return;
+    case 0x0402: /* Inquiry Cancel (the empty scan has already completed). */
+        r[0] = 0x0c; break;
     case 0x0c03: /* Reset */
         if (p[6]) { r[0] = 0x12; break; }
         s->scan_enable = 0;
@@ -271,7 +666,8 @@ static void mv_hci(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
         break;
     case 0x1002: /* Read Supported Commands */
         len = 65;
-        /* Reset, event mask, name, scan, version, buffer/address queries. */
+        /* Inquiry/cancel, reset, event mask, name, scan and local queries. */
+        r[1] = 0x03;
         r[1 + 5] = 0xc0; r[1 + 6] = 0x03;
         r[1 + 7] = 0x0c; r[1 + 14] = 0xf8; r[1 + 15] = 0x02;
         break;
@@ -330,11 +726,38 @@ static void mv_runtime(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
     }
     unsigned plen = n >= 4 ? lduw_le_p(p) : 0;
     if (f != 1 && n >= 4 && plen <= n - 4) {
-        mv_hci(s, f, p, plen + 4);
+        if (qemu_chr_fe_backend_connected(&s->bt_chr)) {
+            mv_bt_send(s, f, p, plen + 4);
+        } else {
+            mv_hci(s, f, p, plen + 4);
+        }
         return;
     }
     if (plen < 4 || plen > n) {
         error_report("mv8787: malformed runtime packet fn=%u len=%u", f, plen);
+        return;
+    }
+    if (lduw_le_p(p + 2) == 0) {
+        /* Multi-port TX concatenates SDIO frames padded to function blocks. */
+        unsigned block = lduw_le_p(&s->regs[0][0x110]);
+        unsigned off = 0;
+        if (!block) {
+            block = 256;
+        }
+        while (n - off >= 4) {
+            unsigned length = lduw_le_p(p + off);
+            if (length < 4 || length > n - off || lduw_le_p(p + off + 2)) {
+                break;
+            }
+            mv_wifi_tx(s, p + off + 4, length - 4);
+            unsigned padded = DIV_ROUND_UP(length, block) * block;
+            if (padded > n - off) {
+                break;
+            }
+            off += padded;
+        }
+        s->regs[1][3] |= 2;
+        mv_irq(s);
         return;
     }
     if (plen < 12 || lduw_le_p(p + 2) != 1) {
@@ -355,8 +778,78 @@ static void mv_runtime(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
     }
     fprintf(stderr, "\n");
     switch (cmd) {
+    case 0x0006: { /* Legacy scan, used by the 8787 firmware API */
+        int match = mv_scan_match(s, p + 12, size - 8);
+        memset(out + 12, 0, sizeof(out) - 12);
+        if (match < 0) {
+            stw_le_p(out + 10, 2);
+            size = 8;
+        } else {
+            size = match ? mv_scan_response(s, out) : 11;
+        }
+        break;
+    }
+    case 0x0012: { /* Associate with the emulated open AP */
+        bool ok = size >= 21 && mv_wifi_link(s) &&
+                  !memcmp(p + 12, s->bssid.a, 6) && !(lduw_le_p(p + 18) & 0x10);
+        /* Reject malformed or foreign SSID parameters. */
+        for (unsigned off = 25; ok && off < size + 4;) {
+            if (size + 4 - off < 4) {
+                ok = false;
+                break;
+            }
+            unsigned tag = lduw_le_p(p + off), n = lduw_le_p(p + off + 2);
+            off += 4;
+            if (n > size + 4 - off) {
+                ok = false;
+                break;
+            }
+            if (tag == 0 &&
+                (n != strlen(s->ssid) || memcmp(p + off, s->ssid, n))) {
+                ok = false;
+            }
+            off += n;
+        }
+        memset(out + 12, 0, sizeof(out) - 12);
+        stw_le_p(out + 12, 0x21);
+        stw_le_p(out + 14, ok ? 0 : 1);
+        stw_le_p(out + 16, ok ? 0xc001 : 0);
+        size = 14;
+        s->associated = ok;
+        s->station_bss = (lduw_le_p(p + 8) >> 8) & 0xf;
+        break;
+    }
+    case 0x0024: /* Deauthenticate */
+        if (size != 16) {
+            stw_le_p(out + 10, 2);
+            break;
+        }
+        s->associated = false;
+        qemu_purge_queued_packets(qemu_get_queue(s->nic));
+        break;
+    case 0x001d: /* RF channel */
+        if (size < 12 || lduw_le_p(p + 12) > 1 ||
+            (lduw_le_p(p + 12) && lduw_le_p(p + 14) != s->channel)) {
+            stw_le_p(out + 10, 2); break;
+        }
+        stw_le_p(out + 14, s->channel);
+        break;
+    case 0x00a4: /* RSSI/NF statistics */
+        if (size < 14) {
+            stw_le_p(out + 10, 2);
+            break;
+        }
+        size = 38;
+        for (unsigned i = 0; i < 8; i++) {
+            stw_le_p(out + 18 + 2 * i, (uint16_t)(i & 1 ? -90 : -40));
+        }
+        break;
+
     case 0x00a9: s->wlan_initialized = true; break;
-    case 0x00aa: s->wlan_initialized = false; break;
+    case 0x00aa:
+        s->wlan_initialized = false;
+        s->associated = false;
+        break;
     case 0x0010: { /* Multicast receive address list */
         if (size < 12 || lduw_le_p(p + 12) != 1) {
             stw_le_p(out + 10, 2); break;
@@ -592,7 +1085,7 @@ static void mv_runtime(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
         size = MAX(size, 72);
         uint8_t *h = out + 12;
         stw_le_p(h, 1); stw_le_p(h + 2, 1); stw_le_p(h + 6, 32);
-        memcpy(h + 8, "\x02\x00\x02\x87\x87\x01", 6);
+        memcpy(h + 8, s->conf.macaddr.a, 6);
         stw_le_p(h + 14, 0x30); stw_le_p(h + 16, 1);
         stl_le_p(h + 18, 0x0e000001); /* Emulated firmware revision */
         stw_le_p(h + 43, 16); stw_le_p(h + 45, 4);
@@ -604,6 +1097,9 @@ static void mv_runtime(MV8787State *s, unsigned f, const uint8_t *p, unsigned n)
     }
     stw_le_p(out, size + 4); stw_le_p(out + 6, size);
     mv_enqueue(s, f, out, size + 4);
+    if (s->associated) {
+        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    }
 }
 
 static uint8_t mv_read_reg(MV8787State *s, unsigned f, unsigned addr)
@@ -717,7 +1213,8 @@ static size_t mv_read(SDState *card, void *buf, size_t len)
         }
         unsigned f = s->function;
         if (f && s->address >= MV_PORT) {
-            if (s->rx_pos[f] < s->rx_len[f]) {
+            if (s->rx_pos[f] < s->rx_len[f] &&
+                (f != 1 || (s->address & 15) == s->wlan_rx_port)) {
                 p[i] = s->rx[f][s->rx_pos[f]++];
             }
         } else {
@@ -728,9 +1225,10 @@ static size_t mv_read(SDState *card, void *buf, size_t len)
             s->rx_len[f] = s->rx_pos[f] = 0;
             s->regs[f][3] &= ~1;
             stw_le_p(&s->regs[f][4], 0);
-            stw_le_p(&s->regs[f][8], 0);
+            memset(&s->regs[f][8], 0, 32);
             s->regs[f][0x62] = 0;
             s->regs[f][0x30] &= ~2;
+            mv_queue_next(s, f);
             mv_irq(s);
         }
         if (s->increment) {
@@ -787,9 +1285,48 @@ static bool mv_readonly(SDState *card) { return false; }
 static void mv_voltage(SDState *card, uint16_t voltage) { }
 static void mv_realize(DeviceState *dev, Error **errp)
 {
+    MV8787State *s = MV8787(dev);
+    if (!s->ssid[0] || strlen(s->ssid) > 32 || !s->channel || s->channel > 11 ||
+        is_multicast_ether_addr(s->bssid.a)) {
+        error_setg(errp, "mv8787: SSID must be 1..32 bytes, "
+                   "channel 1..11, BSSID unicast");
+        return;
+    }
+    qemu_macaddr_default_if_unset(&s->conf.macaddr);
+    if (!memcmp(s->bssid.a, "\0\0\0\0\0\0", 6)) {
+        memcpy(s->bssid.a, "\x52\x54\x00\x87\x87\x01", 6);
+    }
+    s->nic = qemu_new_nic(&mv_net_info, &s->conf, TYPE_MV8787, dev->id,
+                          &dev->mem_reentrancy_guard, s);
+    qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
     mv_reset(dev);
-    sdbus_set_inserted(mv_bus(MV8787(dev)), true);
+    qemu_chr_fe_set_handlers(&s->bt_chr, mv_bt_can_read, mv_bt_read,
+                             mv_bt_event, NULL, s, NULL, true);
+    sdbus_set_inserted(mv_bus(s), true);
 }
+static void mv_unrealize(DeviceState *dev)
+{
+    MV8787State *s = MV8787(dev);
+    mv_reset(dev);
+    qemu_chr_fe_deinit(&s->bt_chr, false);
+    qemu_del_nic(s->nic);
+    s->nic = NULL;
+}
+
+static const Property mv_properties[] = {
+    DEFINE_NIC_PROPERTIES(MV8787State, conf),
+    DEFINE_PROP_STRING("ssid", MV8787State, ssid),
+    DEFINE_PROP_MACADDR("bssid", MV8787State, bssid),
+    DEFINE_PROP_UINT8("channel", MV8787State, channel, 6),
+    DEFINE_PROP_CHR("bluetooth-chardev", MV8787State, bt_chr),
+};
+
+static void mv_init(Object *obj)
+{
+    MV8787State *s = MV8787(obj);
+    s->ssid = g_strdup("QEMU Wi-Fi");
+}
+
 static const VMStateDescription mv_vmstate = {
     .name = TYPE_MV8787,
     .unmigratable = true,
@@ -799,6 +1336,8 @@ static void mv_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     SDCardClass *sc = SD_DEVICE_CLASS(klass);
     dc->realize = mv_realize;
+    dc->unrealize = mv_unrealize;
+    device_class_set_props(dc, mv_properties);
     dc->vmsd = &mv_vmstate;
     dc->desc = "Marvell 8787 SDIO combo controller (local experiment)";
     device_class_set_legacy_reset(dc, mv_reset);
@@ -816,6 +1355,7 @@ static const TypeInfo mv_type = {
     .parent = TYPE_SD_DEVICE,
     .instance_size = sizeof(MV8787State),
     .class_init = mv_class_init,
+    .instance_init = mv_init,
 };
 static void mv_register(void) { type_register_static(&mv_type); }
 type_init(mv_register)

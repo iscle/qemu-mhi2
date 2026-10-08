@@ -41,7 +41,7 @@ xcode-select --install
 Install [Homebrew](https://brew.sh/) if it is not already available, then run:
 
 ```sh
-brew install git pkgconf ninja python glib pixman mesa lzo libusb sevenzip zstd \
+brew install git pkgconf ninja python glib pixman mesa lzo libusb libslirp sevenzip zstd \
   ffmpeg sox gnu-tar
 
 export MHI2_REPRO="$HOME/mhi2-repro"
@@ -186,6 +186,24 @@ For console-only testing, add `--headless`. The generated launcher selects
 its build's QEMU, graphics host, Python environment, firmware metadata and
 media paths; no paths from the original developer's computer are needed.
 
+## Wi-Fi and Bluetooth
+
+The Marvell SDIO radio exposes one open network, **QEMU Wi-Fi**, backed by
+QEMU user networking (NAT/DHCP) by default. Select it in the firmware's Wi-Fi
+client settings. The access point is virtual; it does not scan your host's
+wireless networks. You can change its name and use normal QEMU network options:
+
+```sh
+bash "$MHI2_REPRO/porsche-build/run.sh" --wifi-ssid "My emulator" \
+  --wifi 'user,hostfwd=tcp:127.0.0.1:2222-:22'
+```
+
+`--wifi none` disconnects the network backend. Bluetooth defaults to an empty
+controller. To discover and connect to peers, attach an external H4 controller
+with `--bluetooth`; this can be a software controller or a dedicated USB
+Bluetooth adapter through an H4 bridge. See [wireless setup and validation](tools/mhi2/WIRELESS.md)
+for commands, backend choices and current limits.
+
 ## What to expect
 
 Cold boot can take several minutes. Porsche's Home page can remain at
@@ -227,7 +245,7 @@ images onto a real head unit.
 - **Output already exists:** choose a new `--output` path. A failed build is
   retained for inspection rather than overwritten.
 - **Missing EGL/FFmpeg/LZO/USB libraries:** check
-  `pkg-config --exists egl glesv2 libavcodec libavutil libswscale libusb-1.0`.
+  `pkg-config --exists egl glesv2 libavcodec libavutil libswscale libusb-1.0 slirp`.
   Use a native Homebrew installation matching your Mac's architecture. A custom
   FFmpeg installation needs its `lib/pkgconfig` directory in `PKG_CONFIG_PATH`.
 - **No window / helper exited:** read `/tmp/mhi2-session.log`,

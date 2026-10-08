@@ -34,10 +34,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev libegl-dev libgles-dev liblzo2-dev libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev ffmpeg sox python3-venv
+          sudo apt-get install -y ninja-build pkg-config libglib2.0-dev libpixman-1-dev libegl-dev libgles-dev liblzo2-dev libavcodec-dev libavutil-dev libswscale-dev libusb-1.0-0-dev libslirp-dev ffmpeg sox python3-venv
       - name: macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install ninja pkgconf glib pixman mesa lzo libusb ffmpeg sox python
+        run: brew install ninja pkgconf glib pixman mesa lzo libusb libslirp ffmpeg sox python
       - name: ARM toolchain
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,9 +67,12 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/build"
           cd "$RUNNER_TEMP/build"
-          "$RUNNER_TEMP/source/configure" --target-list=arm-softmmu --disable-docs --disable-sdl --disable-gtk --disable-fuse --disable-rust --disable-werror --enable-libusb
+          "$RUNNER_TEMP/source/configure" --target-list=arm-softmmu --disable-docs --disable-sdl --disable-gtk --disable-fuse --disable-rust --disable-werror --enable-libusb --enable-slirp
           ninja -j 3 qemu-system-arm
           ./qemu-system-arm -machine help | grep mhi2
+      - name: Check SDIO Wi-Fi and Bluetooth transports
+        run: |
+          python3 "$RUNNER_TEMP/source/tools/mhi2/check_wireless.py" --qemu "$RUNNER_TEMP/build/qemu-system-arm"
       - name: Build host and guest bridges
         env:
           MHI2_BUILD_LIBRARIES_ONLY: '1'

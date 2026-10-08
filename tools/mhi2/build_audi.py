@@ -98,7 +98,7 @@ def main():
                     args.arm_prefix+'gcc', args.arm_prefix+'ld', args.arm_prefix+'strip'):
         if not shutil.which(command):
             ap.error('Missing tool: ' + command)
-    libraries = ('egl', 'glesv2', 'libavcodec', 'libavutil', 'libswscale', 'libusb-1.0')
+    libraries = ('egl', 'glesv2', 'libavcodec', 'libavutil', 'libswscale', 'libusb-1.0', 'slirp')
     if subprocess.run(['pkg-config', '--exists', *libraries]).returncode:
         ap.error('Missing development libraries: pkg-config must find ' + ' '.join(libraries))
     sevenzip = shutil.which('7zz') or shutil.which('7z')
@@ -130,7 +130,7 @@ def main():
     build.mkdir()
     run([REPO/'configure', '--target-list=arm-softmmu', '--disable-docs',
          '--disable-sdl', '--disable-gtk', '--disable-fuse', '--disable-werror',
-         '--disable-rust', '--enable-libusb',
+         '--disable-rust', '--enable-libusb', '--enable-slirp',
          '--python='+sys.executable], cwd=build)
     run(['ninja', '-C', build, '-j', args.jobs, 'qemu-system-arm'])
     bridge = args.output/'bridge'
