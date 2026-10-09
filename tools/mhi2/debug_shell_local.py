@@ -9,6 +9,10 @@ Path(root+'tmp').mkdir(parents=True,exist_ok=True)
 env=os.environ.copy();env['TMPDIR']=root+'tmp'
 cmd=[os.environ.get('QEMU_SYSTEM_ARM','/home/iscle/qemu-mhi2/build/qemu-system-arm'),'-M','mhi2-harman,iram='+os.environ.get('MHI2_IRAM',root+'k3342-70/iram.bin'),'-bios',os.environ.get('MHI2_DEBUG_NOR',root+'k3342-debug-nor.bin'),'-drive','if=sd,format=raw,snapshot='+os.environ.get('MHI2_SNAPSHOT','on')+',file='+os.environ.get('MHI2_EMMC',root+'k3342-70/emmc.raw'),'-display','none','-monitor','none','-qmp','pipe:/tmp/mhi2-debug-qmp','-serial','null','-serial','null','-serial','null','-serial','stdio']
 cmd += wireless_arguments()
+# The modem device traces every AT line it is given; MHI2_TRACE names the
+# events to turn on, as QEMU's -trace takes them.
+if os.environ.get('MHI2_TRACE'):
+ cmd += ['-trace', 'enable='+os.environ['MHI2_TRACE']+',file='+os.environ.get('MHI2_TRACE_FILE','/tmp/mhi2-qemu-trace.log')]
 if os.environ.get('MHI2_OSCILLATOR_12MHZ') == '1':
  cmd += ['-global', 'tegra30-clk.oscillator-12mhz=on']
 import json,stat
