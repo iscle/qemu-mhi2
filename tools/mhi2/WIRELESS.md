@@ -275,19 +275,29 @@ The firmware rejected the previous `SIMULATED-VEHICLE` placeholder and could
 fall back to a generated test VIN.
 
 To use your own vehicle/unit identifiers, edit the `identity` object in the
-local brand configuration (`~/.config/mhi2/porsche.json`, or `MHI2_CONFIG`):
+local brand configuration (`~/.config/mhi2/porsche.json`, or `MHI2_CONFIG`).
+Keep the existing top-level `version`, `features`, and `usb` settings when
+editing an existing file. For a new file, this is a complete minimal example:
 
 ```json
-"identity": {
-  "vin": "ZZZEMU00XP0000001",
-  "fazit_id": "EMU-00009.10.2600000001",
-  "bg": "5F"
+{
+  "version": 1,
+  "identity": {
+    "vin": "ZZZEMU00XP0000001",
+    "fazit_id": "EMU-00009.10.2600000001",
+    "bg": "5F"
+  }
 }
 ```
 
-Restart the emulator after editing. Older configurations inherit the test
-defaults automatically. `emulator_config.py --vin ... --fazit-id ...` can
-also update the local configuration; use `--file` to select an explicit file.
+Top-level `"version": 1` is required; it identifies the emulator configuration
+schema, not the firmware version. Missing or unsupported versions are rejected.
+Omitted `features` and `usb` sections use the emulator defaults.
+
+Restart the emulator after editing. Older version-1 configurations that lack
+an `identity` section inherit the test defaults automatically.
+`emulator_config.py --vin ... --fazit-id ...` can also update the local
+configuration; use `--file` to select an explicit file.
 VIN validation checks uppercase format and excludes I/O/Q; it does not
 require a check digit for imported European VINs. FAZIT validation checks
 bounded printable identifier syntax, not manufacturer allocation. `bg` must
