@@ -24,7 +24,7 @@ struct MHI2Modem {
     NICConf conf;
     NICState *nic;
     bool lte, radio, attached, active, echo[4], overflow[4];
-    unsigned creg, cgreg, cereg, notify;
+    unsigned creg, cgreg, cereg, notify, cops_format;
     char command[4][1024];
     unsigned command_len[4];
     GByteArray *serial[4];
@@ -231,7 +231,16 @@ static bool modem_at(MHI2Modem *s, unsigned port, const char *c)
                value <= 2) {
         s->cereg = value;
     } else if (!strcmp(c, "+COPS?")) {
-        answer = g_strdup_printf("+COPS: 0,2,\"00101\",%u\r\n", s->lte ? 7 : 2);
+        /* Answer in the format the head last selected, as 3GPP 27.007 asks:
+         * long name, short name or numeric PLMN. The device used to answer
+         * numerically whatever was requested, so an alphanumeric read never
+         * produced a name. */
+        static const char *const names[] = {"QEMU", "QEMU", "00101"};
+        answer = g_strdup_printf("+COPS: 0,%u,\"%s\",%u\r\n", s->cops_format,
+                                 names[s->cops_format], s->lte ? 7 : 2);
+    } else if (sscanf(c, "+COPS=%u,%u%n", &value, &cid, &end) == 2 && !c[end] &&
+               value <= 4 && cid <= 2) {
+        s->cops_format = cid;
     } else if (!strcmp(c, "+COPS=?")) {
         answer = g_strdup_printf(
             "+COPS: (2,\"QEMU\",\"QEMU\",\"00101\",%u)\r\n", s->lte ? 7 : 2);
