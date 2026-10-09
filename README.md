@@ -282,9 +282,10 @@ images onto a real head unit.
 - **A session is already running:** close its viewer or stop its Terminal
   before starting another firmware profile.
 
-To inspect or modify `/eso/hmi/lsd/jars/`, see
-[accessing HMI JARs on Linux and macOS](tools/mhi2/JAR_ACCESS.md). It explains
-the guest shell, file-transfer limits, read-only mounts and persistent copies.
+To copy files from Linux or macOS into QNX, see
+[file transfers and guest filesystem access](tools/mhi2/FILE_TRANSFER.md).
+It includes a host upload command, an HMI JAR example, writable mounts and
+persistent copies.
 
 For advanced details see the [Audi reproduction guide](tools/mhi2/AUDI_A3.md),
 [emulator internals](tools/mhi2/README.md), [fork notes](README.MHI2.md)
