@@ -70,7 +70,7 @@ different constraints for the driver and the head unit's hotspot:
   also includes `ChanList=1,6,11`. This stock hotspot path is 2.4 GHz.
 - The original `devnp-mrvl_wlan-sdiorm.so` contains 802.11a/5 GHz support.
   `wlan_ret_get_hw_spec` at `0x1addc` extracts the radio-reported band mask;
-  its BAND_A branch tests bit 4 and selects channel 36 (`0x24`). The driver
+  its BAND_A branch tests mask `0x04` and selects channel 36 (`0x24`). The driver
   includes 5 GHz region/channel handling and DFS/radar handling. This is
   conditional support, not proof that a physical board advertises/enables it.
 - The bundled `sd8787_uapsta.bin` identifies itself as
