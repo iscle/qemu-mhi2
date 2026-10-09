@@ -58,6 +58,31 @@ The portable builder requires `libslirp` (`brew install libslirp`, or
 `libslirp-dev` on Debian/Ubuntu) and configures `--enable-slirp`. Existing builds
 without slirp need rebuilding to use the default NAT backend.
 
+### Porsche K5126 band restrictions
+
+Static inspection of the original `MHI2_ER_POG11_K5126` binaries confirms
+different constraints for the driver and the head unit's hotspot:
+
+- `connectionmanager` selects an upper hotspot channel of 11 or 13 in the
+  region-dependent routine at `0x1555c0` (stored at WLAN object offset
+  `0x478`). Its `WLAN::setDefaultChannel` at `0x16cf4c` clamps the configured
+  channel to that limit and defaults to 11. Its generated uAP configuration
+  also includes `ChanList=1,6,11`. This stock hotspot path is 2.4 GHz.
+- The original `devnp-mrvl_wlan-sdiorm.so` contains 802.11a/5 GHz support.
+  `wlan_ret_get_hw_spec` at `0x1addc` extracts the radio-reported band mask;
+  its BAND_A branch tests bit 4 and selects channel 36 (`0x24`). The driver
+  includes 5 GHz region/channel handling and DFS/radar handling. This is
+  conditional support, not proof that a physical board advertises/enables it.
+- The bundled `sd8787_uapsta.bin` identifies itself as
+  `w8787-Ax, RF878X, FP44, 14.44.35.p233, BT_SDIO`. Its presence alone does
+  not establish the physical unit's band capabilities.
+
+Joining a 5 GHz access point as a client has not been demonstrated on the
+original hardware. QEMU currently advertises only the 2.4 GHz AP described
+above, so a channel listing from the emulator cannot establish the physical
+PCM's capabilities. These findings apply to K5126, not the unavailable
+P5250 firmware from the user's vehicle.
+
 ### Guest diagnostics
 
 If the HMI has not enabled Wi-Fi client mode yet, the disposable emulator's
