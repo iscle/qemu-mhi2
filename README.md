@@ -282,6 +282,10 @@ images onto a real head unit.
 - **A session is already running:** close its viewer or stop its Terminal
   before starting another firmware profile.
 
+To inspect or modify `/eso/hmi/lsd/jars/`, see
+[accessing HMI JARs on Linux and macOS](tools/mhi2/JAR_ACCESS.md). It explains
+the guest shell, file-transfer limits, read-only mounts and persistent copies.
+
 For advanced details see the [Audi reproduction guide](tools/mhi2/AUDI_A3.md),
 [emulator internals](tools/mhi2/README.md), [fork notes](README.MHI2.md)
 and the original [upstream QEMU README](README.rst).
