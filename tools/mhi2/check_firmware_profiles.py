@@ -4,6 +4,7 @@ import os
 import struct
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 from firmware_profile import current
@@ -36,9 +37,24 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
     panel = window.findChild(Panel)
     events = []
     panel.send = events.append
-    QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(100, 100))
+    window.resize(900, 600)
+    app.processEvents()
+    assert window.height() <= 600, (name, window.minimumSizeHint())
+    assert window.maximumHeight() > 600
+    frame = panel.frame_rect()
+    QTest.mouseClick(panel, Qt.LeftButton, pos=frame.center())
     if name != 'audi-a3':
         assert [event['action'] for event in events] == ['press', 'tap', 'release']
+        assert abs(events[0]['x'] - 400) <= 3
+        assert abs(events[0]['y'] - 240) <= 3
+        events.clear()
+        # Letterbox clicks must not operate controls at the screen edge.
+        if not frame.contains(QPoint(0, 0)):
+            QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(1, 1))
+            assert events == []
+        QTest.mousePress(panel, Qt.LeftButton, pos=frame.center())
+        QTest.mouseRelease(panel, Qt.LeftButton, pos=QPoint(panel.width()+10, panel.height()+10))
+        assert events[-1] == dict(type='touch', action='release', x=799, y=479)
     else:
         assert events == []
         QTest.mouseClick(window.findChild(QPushButton, 'menu'), Qt.LeftButton)
@@ -57,5 +73,21 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
         events.clear()
         QTest.mouseClick(window.findChild(QPushButton, 'home'), Qt.LeftButton)
         assert [event['code'] for event in events] == [78, 78]
+    # A paused cluster frame must scale immediately, without a new file frame.
+    cluster = window.cluster
+    cluster.timer.stop()
+    cluster.show()
+    cluster.screen.frame = QImage(408 if name == 'porsche' else 800,
+                                  448 if name == 'porsche' else 400, QImage.Format_RGB32)
+    cluster.screen.frame.fill(Qt.red)
+    cluster.resize(360, 400)
+    app.processEvents()
+    assert cluster.height() <= 400
+    before = cluster.screen.frame_rect().size()
+    cluster.resize(500, 550)
+    app.processEvents()
+    assert cluster.screen.frame_rect().size() != before
+    assert cluster.screen.grab().toImage().pixelColor(cluster.screen.rect().center()) == Qt.red
+    cluster.close()
     window.close()
     print(name, 'input routing and controls passed')

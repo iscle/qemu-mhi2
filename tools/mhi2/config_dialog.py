@@ -4,13 +4,14 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QCheckBox,
     QSpinBox, QMessageBox, QTabWidget)
 from emulator_config import load, save, config_path
 from rcc_features import FEATURES
+from viewer_widgets import fit_to_screen
 
 
 class ConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Emulator configuration')
-        self.resize(600, 560)
+        self.setSizeGripEnabled(True)
         self.config = load()
         layout = QVBoxLayout(self)
         note = QLabel('Changes apply on the next emulator start. Feature states are supplied '
@@ -62,7 +63,10 @@ class ConfigDialog(QDialog):
                       'the AVD’s USB controller. End-to-end projection is still under test.')
         hint.setWordWrap(True)
         form.addRow(hint)
-        tabs.addTab(usb, 'Android Auto / USB')
+        usb_scroll = QScrollArea()
+        usb_scroll.setWidgetResizable(True)
+        usb_scroll.setWidget(usb)
+        tabs.addTab(usb_scroll, 'Android Auto / USB')
         def update_fields():
             mode = self.mode.currentData()
             self.serial.setEnabled(mode == 'avd')
@@ -78,6 +82,7 @@ class ConfigDialog(QDialog):
         buttons.accepted.connect(self.store)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        fit_to_screen(self)
 
     def store(self):
         config = {**self.config,

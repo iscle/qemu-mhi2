@@ -7,12 +7,13 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPainter, QPixmap, QShortcut, QKeySequence
+from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtGui import QImage, QShortcut, QKeySequence
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QMessageBox
 from firmware_profile import common_metadata, select_profile
 
 from firmware_profile import current
+from viewer_widgets import FrameView, fit_to_screen
 
 # Firmware org.dsi.ifc.keypanel.Constants; profile selects ABT/FCC identity.
 LEFT_KEYS = [('RADIO', 15), ('MEDIA', 1), ('PHONE', 3), ('VOICE', 50)]
@@ -25,10 +26,9 @@ PORSCHE_KEYS = [(('TUNER', 15), ('SOURCE', 103)),
                 (('MAP', 104), ('HOME', 78))]
 
 
-class Panel(QWidget):
+class Panel(FrameView):
     def __init__(self, status, profile=None):
-        super().__init__()
-        self.setFixedSize(800, 480)
+        super().__init__(800, 480)
         self.status = status
         self.touch_enabled = (current() if profile is None else profile)["touch"]
         self.frame = QImage()
@@ -53,18 +53,24 @@ class Panel(QWidget):
         self.send(dict(type='touch', action=action, x=max(0, min(799, point.x())),
                        y=max(0, min(479, point.y()))))
 
+    def guest_point(self, point):
+        rect = self.frame_rect()
+        return QPoint(max(0, min(799, int((point.x() - rect.x()) * 800 / rect.width()))),
+                      max(0, min(479, int((point.y() - rect.y()) * 480 / rect.height()))))
+
     def mousePressEvent(self, event):
-        if self.touch_enabled and event.button() == Qt.LeftButton:
-            self.pressed = event.position().toPoint()
+        if (self.touch_enabled and event.button() == Qt.LeftButton and
+                self.frame_rect().contains(event.position().toPoint())):
+            self.pressed = self.guest_point(event.position())
             self.touch('press', self.pressed)
 
     def mouseMoveEvent(self, event):
         if self.pressed is not None:
-            self.touch('drag', event.position().toPoint())
+            self.touch('drag', self.guest_point(event.position()))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.pressed is not None:
-            point = event.position().toPoint()
+            point = self.guest_point(event.position())
             if (point - self.pressed).manhattanLength() < 12:
                 self.touch('tap', point)
             self.touch('release', point)
@@ -86,13 +92,6 @@ class Panel(QWidget):
                 self.update()
         except OSError:
             pass
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.black)
-        if not self.frame.isNull():
-            painter.drawImage(self.rect(), self.frame)
-
 
 class RotaryButton(QPushButton):
     """A pressable physical knob; mouse wheel sends signed encoder ticks."""
@@ -150,20 +149,15 @@ class ClusterWindow(QWidget):
         self.source=os.environ.get('MHI2_CLUSTER_SOURCE','MOST video')
         self.setWindowTitle(('Porsche cluster — ' if porsche else 'Virtual Cockpit — ')+self.source)
         layout=QVBoxLayout(self)
-        self.screen=QLabel('Waiting for '+self.source)
-        self.screen.setAlignment(Qt.AlignCenter)
-        if porsche:
-            self.screen.setFixedSize(408,448)
-        else:
-            self.screen.setMinimumSize(800,400)
-        layout.addWidget(self.screen)
+        self.screen=FrameView(*((408,448) if porsche else (800,400)),
+                              message='Waiting for '+self.source)
+        layout.addWidget(self.screen, 1)
         self.status=QLabel('No video received')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         if porsche:
             note=QLabel('Porsche map viewport · 408 × 448\nPhysical 718 output remains unverified.')
             note.setWordWrap(True)
-            note.setMaximumWidth(408)
             layout.addWidget(note)
         self.timer=QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -173,6 +167,7 @@ class ClusterWindow(QWidget):
         self.requested=float('-inf')
         self.auto_request=not porsche and 'MHI2_CLUSTER_SOURCE' not in os.environ
         self.path=Path(os.environ.get('MHI2_CLUSTER_FRAME','/tmp/mhi2-cluster.ppm'))
+        fit_to_screen(self)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -197,12 +192,14 @@ class ClusterWindow(QWidget):
             if stamp==self.stamp:return
             frame=QImage.fromData(path.read_bytes(),'PPM')
             if frame.isNull():return
-            self.screen.setPixmap(QPixmap.fromImage(frame).scaled(self.screen.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation))
+            self.screen.frame=frame
+            self.screen.update()
             self.stamp=stamp
         except OSError:
             self.status.setText('No video received')
             if self.stamp is not None:
-                self.screen.setText('Waiting for '+self.source)
+                self.screen.frame=QImage()
+                self.screen.update()
                 self.stamp=None
             if self.auto_request and self.isVisible() and time.monotonic()-self.requested>15:
                 self.request_stream()
@@ -228,7 +225,8 @@ def porsche_controls(panel):
         for label, code in keys:
             button = QPushButton(label)
             button.setObjectName(label.lower())
-            button.setFixedSize(130, 40)
+            button.setMinimumSize(64, 32)
+            button.setMaximumHeight(40)
             connect_key(button, code, panel)
             column.addWidget(button)
         row.addLayout(column)
@@ -266,15 +264,16 @@ def create_window(profile=None):
         brand.setAlignment(Qt.AlignCenter)
         layout.addWidget(brand)
     status = QLabel('Touch the screen or use the buttons. Scroll over a knob to turn it.')
+    status.setWordWrap(True)
     panel = Panel(status, profile)
     fascia = QHBoxLayout()
     fascia.setSpacing(14)
     if profile['touch'] and not porsche:
         fascia.addLayout(control_column(LEFT_KEYS, 'POWER\nVOLUME', 17, panel))
-    fascia.addWidget(panel)
+    fascia.addWidget(panel, 1)
     if profile['touch'] and not porsche:
         fascia.addLayout(control_column(RIGHT_KEYS, 'SELECT\nTUNE', 16, panel))
-    layout.addLayout(fascia)
+    layout.addLayout(fascia, 1)
     if porsche:
         layout.addLayout(porsche_controls(panel))
     if not profile['touch']:
@@ -337,7 +336,7 @@ def create_window(profile=None):
         footer.addWidget(QLabel(profile['release']))
     layout.addLayout(footer)
     layout.addWidget(status)
-    window.setFixedSize(window.sizeHint())
+    fit_to_screen(window)
     return window
 
 
