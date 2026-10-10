@@ -6,6 +6,7 @@ metadata uses a generic title rather than misidentifying another VAG brand.
 import os
 import re
 from pathlib import Path
+from skoda_profile import ID as SKODA_ID, RELEASE as SKODA_RELEASE, validate_metadata, validate_media, read_metadata
 
 
 def common_metadata(path=None):
@@ -26,6 +27,10 @@ def common_metadata(path=None):
 
 
 PROFILES = {
+    SKODA_ID: dict(brand='skoda', title='Škoda Columbus MHI2 (SKG13 P4526)',
+                   keyboard=13, touch=True, train=SKODA_RELEASE, mu='1440',
+                   oscillator_12mhz=None, metadata='',
+                   main_viewport=(1280, 640), touch_wire_divisor=(2, 2), cockpit_viewport=(1280, 480)),
     'porsche': dict(brand='porsche', title='Porsche PCM 4.0', keyboard=13, touch=True,
                     train='MHI2_ER_POG11_K5126', mu='1394', oscillator_12mhz=False,
                     metadata=''),
@@ -39,10 +44,15 @@ PROFILES = {
 
 
 def select_profile(metadata=None, brand='auto'):
-    if brand not in ('auto', 'porsche', 'volkswagen', 'audi'):
+    if brand not in ('auto', 'porsche', 'volkswagen', 'audi', 'skoda'):
         raise ValueError('Unknown UI brand: ' + brand)
     metadata = common_metadata() if metadata is None else metadata
     release = metadata.get('release', '')
+    if brand == 'skoda' or release == SKODA_RELEASE or '_SKG' in release:
+        validate_metadata(metadata)
+        if brand not in ('auto', 'skoda'):
+            raise ValueError('Skoda metadata conflicts with selected UI brand')
+        brand = 'skoda'
     if brand == 'auto':
         variants = ' '.join(v for k, v in metadata.items() if k.startswith('variant'))
         if re.search(r'_(?:PO|PAG)\w*_', release) or '-PO-' in variants:
@@ -53,7 +63,7 @@ def select_profile(metadata=None, brand='auto'):
             brand = 'volkswagen'
         else:
             brand = 'generic'
-    name = {'porsche': 'porsche', 'volkswagen': 'vw', 'audi': 'audi-a3'}.get(brand)
+    name = {'porsche': 'porsche', 'volkswagen': 'vw', 'audi': 'audi-a3', 'skoda': SKODA_ID}.get(brand)
     profile = dict(PROFILES[name]) if name else dict(
         title='MHI2', keyboard=13, touch=True, train='', mu='',
         oscillator_12mhz=False, metadata='')
@@ -71,6 +81,10 @@ def current():
         raise ValueError('Unknown MHI2 firmware: ' + name)
     metadata = common_metadata()
     brand = PROFILES[name]['brand'] if name else 'auto'
+    if name == SKODA_ID and not metadata:
+        raise ValueError('Skoda metadata required; no implicit VW fallback')
+    if (name == SKODA_ID or metadata.get('release') == SKODA_RELEASE) and (os.environ.get('MHI2_FIRMWARE_META') or os.environ.get('MHI2_METADATA')):
+        metadata = read_metadata(os.environ.get('MHI2_FIRMWARE_META') or os.environ['MHI2_METADATA'])
     profile = select_profile(metadata, brand)
     path = os.environ.get('MHI2_FIRMWARE_META') or os.environ.get('MHI2_METADATA')
     if path:
@@ -83,9 +97,18 @@ def configure(name, media=None):
     from pathlib import Path
     if name not in PROFILES:
         raise ValueError('Unknown MHI2 firmware: ' + name)
-    os.environ['MHI2_FIRMWARE'] = name
     profile = dict(PROFILES[name])
-    os.environ['MHI2_OSCILLATOR_12MHZ'] = str(int(profile['oscillator_12mhz']))
+    if name == SKODA_ID:
+        if not media:
+            raise ValueError('Skoda requires independently prepared --media')
+        validate_media(media)
+        oscillator = os.environ.get('MHI2_SKODA_OSCILLATOR_12MHZ')
+        if oscillator not in ('0', '1') or os.environ.get('MHI2_SKODA_INPUT_EXPERIMENT') != '1':
+            raise ValueError('Skoda clock/input unverified; explicit experiment overrides required')
+        os.environ['MHI2_OSCILLATOR_12MHZ'] = oscillator
+    else:
+        os.environ['MHI2_OSCILLATOR_12MHZ'] = str(int(profile['oscillator_12mhz']))
+    os.environ['MHI2_FIRMWARE'] = name
     if name == 'porsche' and not media:
         raise ValueError('Porsche requires --media with prepared Porsche images')
     if name == 'audi-a3' or media:

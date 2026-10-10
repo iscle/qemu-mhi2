@@ -94,6 +94,9 @@ def main():
         ap.error('Output already exists; use a new directory')
     if args.jobs < 1:
         ap.error('--jobs must be positive')
+    if args.firmware == 'skoda-skg13-p4526':
+        ap.error('The experimental Skoda profile supports viewer/input only. '
+                 'Bootstrap compatibility and app layout need separate validation; no media written.')
     for command in ('cc', 'c++', 'make', 'ninja', 'pkg-config', 'git', 'ffmpeg',
                     args.arm_prefix+'gcc', args.arm_prefix+'ld', args.arm_prefix+'strip'):
         if not shutil.which(command):

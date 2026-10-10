@@ -28,8 +28,15 @@ PORSCHE_KEYS = [(('TUNER', 15), ('SOURCE', 103)),
 
 class Panel(FrameView):
     def __init__(self, status, profile=None):
-        super().__init__(800, 480)
+        self.profile = current() if profile is None else profile
+        super().__init__(*self.profile.get("main_viewport", (800, 480)))
+        self.resize(self.native_size)
         self.status = status
+        self.control = None
+        port = os.environ.get("MHI2_RCC_CONTROL_PORT")
+        if port:
+            from native_control import NativeControl
+            self.control = NativeControl(int(port), status, self)
         self.touch_enabled = (current() if profile is None else profile)["touch"]
         self.frame = QImage()
         self.stamp = None
@@ -39,6 +46,9 @@ class Panel(FrameView):
         self.timer.start(50)
 
     def send(self, event):
+        if self.control is not None:
+            self.control.send(event)
+            return
         try:
             fd = os.open('/tmp/mhi2-rcc-input', os.O_WRONLY | os.O_NONBLOCK)
             try:
@@ -50,13 +60,15 @@ class Panel(FrameView):
             self.status.setText(f'RCC input unavailable: {exc.strerror}')
 
     def touch(self, action, point):
-        self.send(dict(type='touch', action=action, x=max(0, min(799, point.x())),
-                       y=max(0, min(479, point.y()))))
+        self.send(dict(type='touch', action=action,
+                       x=max(0, min(self.native_size.width()-1, point.x())),
+                       y=max(0, min(self.native_size.height()-1, point.y()))))
 
     def guest_point(self, point):
         rect = self.frame_rect()
-        return QPoint(max(0, min(799, int((point.x() - rect.x()) * 800 / rect.width()))),
-                      max(0, min(479, int((point.y() - rect.y()) * 480 / rect.height()))))
+        width, height = self.native_size.width(), self.native_size.height()
+        return QPoint(max(0, min(width-1, int((point.x() - rect.x()) * width / rect.width()))),
+                      max(0, min(height-1, int((point.y() - rect.y()) * height / rect.height()))))
 
     def mousePressEvent(self, event):
         if (self.touch_enabled and event.button() == Qt.LeftButton and
@@ -77,14 +89,16 @@ class Panel(FrameView):
             self.pressed = None
 
     def refresh(self):
-        path = Path('/tmp/glhost_frame.ppm')
+        path = Path(os.environ.get('MHI2_GL_FRAME', '/tmp/glhost_frame.ppm'))
         try:
             stamp = path.stat().st_mtime_ns
             if stamp == self.stamp:
                 return
             # Validate the complete PPM before reading a concurrently written frame.
             data = path.read_bytes()
-            if not data.startswith(b'P6\n800 480\n255\n') or len(data) != 1152015:
+            width, height = self.native_size.width(), self.native_size.height()
+            header = f'P6\n{width} {height}\n255\n'.encode()
+            if not data.startswith(header) or len(data) != len(header)+width*height*3:
                 return
             frame = QImage.fromData(data, 'PPM')
             if not frame.isNull():
@@ -132,7 +146,7 @@ def control_column(keys, knob_text, knob_code, panel):
         return column
     column.addWidget(RotaryButton(knob_text, knob_code, panel), alignment=Qt.AlignHCenter)
     turns = QHBoxLayout()
-    for text, ticks in [('−', -1), ('+', 1)]:
+    for text, ticks in [('-', -1), ('+', 1)]:
         button = QPushButton(text)
         button.setObjectName(f'encoder_{knob_code}_{ticks}')
         button.setFixedSize(48, 32)
@@ -156,7 +170,7 @@ class ClusterWindow(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         if porsche:
-            note=QLabel('Porsche map viewport · 408 × 448\nPhysical 718 output remains unverified.')
+            note=QLabel('Porsche map viewport \xb7 408 \xd7 448\nPhysical 718 output remains unverified.')
             note.setWordWrap(True)
             layout.addWidget(note)
         self.timer=QTimer(self)
@@ -185,7 +199,7 @@ class ClusterWindow(QWidget):
         try:
             info=path.stat()
             fresh=time.time()-info.st_mtime<10
-            self.status.setText(('Receiving '+self.source) if fresh else 'Video paused — last received frame')
+            self.status.setText(('Receiving '+self.source) if fresh else 'Video paused \u2014 last received frame')
             stamp=info.st_mtime_ns
             if self.auto_request and self.isVisible() and not fresh and time.monotonic()-self.requested>15:
                 self.request_stream()
@@ -208,7 +222,7 @@ class ClusterWindow(QWidget):
 def porsche_controls(panel):
     controls = QVBoxLayout()
     transport = QHBoxLayout()
-    for label, code in [('◀◀', 10), ('▶▶', 14), ('OPT', 106), ('BACK', 13)]:
+    for label, code in [('\u25c0\u25c0', 10), ('\u25b6\u25b6', 14), ('OPT', 106), ('BACK', 13)]:
         if label == 'OPT':
             transport.addStretch()
         button = QPushButton(label)
@@ -305,6 +319,21 @@ def create_window(profile=None):
             shortcut = QShortcut(QKeySequence(key),window)
             shortcut.activated.connect(lambda code=code: tap(code))
             window.input_shortcuts.append(shortcut)
+    if profile.get('brand') == 'skoda':
+        # Reuse the existing Audi controller shortcuts for an additional SK input route.
+        def tap(code):
+            panel.send(dict(type='key', code=code, pressed=1))
+            QTimer.singleShot(60, lambda: panel.send(dict(type='key', code=code, pressed=0)))
+        window.input_shortcuts = []
+        for key, ticks in [('Left', -1), ('Up', -1), ('Right', 1), ('Down', 1)]:
+            shortcut = QShortcut(QKeySequence(key), window)
+            shortcut.activated.connect(lambda ticks=ticks: panel.send(dict(type='encoder', code=16, ticks=ticks)))
+            window.input_shortcuts.append(shortcut)
+        for key, code in [('Return', 16), ('Enter', 16), ('Escape', 13), ('M', 78)]:
+            shortcut = QShortcut(QKeySequence(key), window)
+            shortcut.activated.connect(lambda code=code: tap(code))
+            window.input_shortcuts.append(shortcut)
+        panel.setToolTip('Arrow keys: turn SELECT/TUNE; Enter: select; Esc: back; M: menu')
     footer = QHBoxLayout()
     back = QPushButton('BACK')
     back.setFixedSize(100, 32)
@@ -343,7 +372,7 @@ def create_window(profile=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--firmware-meta', type=Path)
-    parser.add_argument('--brand', choices=('auto', 'porsche', 'volkswagen', 'audi'), default='auto')
+    parser.add_argument('--brand', choices=('auto', 'porsche', 'volkswagen', 'audi', 'skoda'), default='auto')
     args, qt_args = parser.parse_known_args()
     if args.firmware_meta:
         os.environ['MHI2_FIRMWARE_META'] = str(args.firmware_meta)

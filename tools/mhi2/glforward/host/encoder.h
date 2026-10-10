@@ -1,13 +1,17 @@
 /* Host encoder workers. Only native EGLImage pixels enter this pipeline.
  * Graphics submission and TS retrieval never wait for FFmpeg or the GPU. */
+#ifndef _WIN32
 #include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
-#include <pthread.h>
 #include <sys/wait.h>
+#endif
+#include <pthread.h>
 #include <time.h>
+#ifndef _WIN32
 extern char **environ;
+#endif
 #define ENC_LIMIT (4u * 1024 * 1024)
 struct EncoderJob { uint32_t args[6]; uint8_t *pixels; size_t size; };
 struct Encoder {
@@ -23,6 +27,25 @@ struct Encoder {
 };
 static struct Encoder encoders[4];
 static double encoder_now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+t.tv_nsec/1e9;}
+static const char *encoder_codec(void)
+{
+    const char *codec = getenv("MHI2_ENCODER_CODEC");
+    if (!codec) {
+#ifdef _WIN32
+        return "libx264";
+#else
+        return getenv("MHI2_VAAPI_DEVICE") ? "h264_vaapi" : "libopenh264";
+#endif
+    }
+    if (!strcmp(codec, "h264_vaapi") || !strcmp(codec, "h264_videotoolbox") ||
+        !strcmp(codec, "libx264") || !strcmp(codec, "libopenh264")) {
+        return codec;
+    }
+    return NULL;
+}
+#ifdef _WIN32
+#include "encoder_windows_uv.h"
+#else
 static void encoder_child_stop(pid_t child,int input,int output)
 {
     if(input>=0)close(input);if(output>=0)close(output);
@@ -52,18 +75,6 @@ static int encoder_pipe(int fd[2])
 #else
     return pipe2(fd, O_CLOEXEC);
 #endif
-}
-static const char *encoder_codec(void)
-{
-    const char *codec = getenv("MHI2_ENCODER_CODEC");
-    if (!codec) {
-        return getenv("MHI2_VAAPI_DEVICE") ? "h264_vaapi" : "libopenh264";
-    }
-    if (!strcmp(codec, "h264_vaapi") || !strcmp(codec, "h264_videotoolbox") ||
-        !strcmp(codec, "libx264") || !strcmp(codec, "libopenh264")) {
-        return codec;
-    }
-    return NULL;
 }
 static pid_t encoder_spawn(const uint32_t *a,int *input,int *output)
 {
@@ -158,6 +169,7 @@ static void *encoder_worker(void *opaque)
     fprintf(stderr,"glhost: encoder %u/%u submitted=%u delivered-to-codec=%u dropped=%u failed=%d\n",e->owner,e->id,e->submitted,e->completed,e->dropped,e->failed);
     pthread_mutex_unlock(&e->lock);return NULL;
 }
+#endif
 static struct Encoder *encoder_find(uint32_t owner,uint32_t id)
 {for(unsigned i=0;i<4;i++)if(encoders[i].used&&encoders[i].owner==owner&&encoders[i].id==id)return &encoders[i];return NULL;}
 static void encoder_reap(void)
@@ -203,5 +215,5 @@ static uint32_t encoder_poll(uint32_t owner,uint32_t id,uint8_t **data)
 }
 static void encoder_close(uint32_t owner,uint32_t id)
 {struct Encoder *e=encoder_find(owner,id);if(e){pthread_mutex_lock(&e->lock);e->stop=true;pthread_mutex_unlock(&e->lock);}}
-static void encoder_stop(struct Encoder *e)
-{if(e->used){encoder_close(e->owner,e->id);pthread_join(e->thread,NULL);pthread_mutex_destroy(&e->lock);memset(e,0,sizeof(*e));}}
+static int encoder_stop(struct Encoder *e)
+{if(!e->used)return 0;encoder_close(e->owner,e->id);pthread_join(e->thread,NULL);int failed=e->failed;pthread_mutex_destroy(&e->lock);memset(e,0,sizeof(*e));return failed;}

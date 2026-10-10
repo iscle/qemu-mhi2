@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 /*
- * glhost - Linux/macOS host renderer for the MIB2 GL-forward shim.
+ * glhost - native host renderer for the MIB2 GL-forward shim.
  *
  * Experimental QNX GLES/EGL forwarding over stdin/stdout, backed by a Mesa
  * surfaceless EGL pbuffer. Guest records use [u32 opcode][u32 length][payload].
@@ -13,12 +13,21 @@
  *   31-32 draws  33-43 pipeline state  50-58 textures  100/101 sync getters
  */
 #include <GLES2/gl2.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#else
+#include <io.h>
+#include <fcntl.h>
+#include <uv.h>
+#endif
 #include <errno.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#ifdef _WIN32
+#include <EGL/eglext_angle.h>
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -130,9 +139,32 @@ static uint32_t u32(const uint8_t *p, int off) { uint32_t v; memcpy(&v, p + off,
 #include "menu_texture.h"
 
 static unsigned char *display_rgba;
+static int publish_frame_file(const char *source,const char *target)
+{
+#ifdef _WIN32
+    return MoveFileExA(source,target,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)?0:-1;
+#else
+    return rename(source,target);
+#endif
+}
 
 static const char *frame_path(void)
 { const char *p=getenv("MHI2_GL_FRAME");return p&&*p?p:"/tmp/glhost_frame.ppm"; }
+
+static int write_ppm_rows(FILE *f,const unsigned char *rgba,int width,int height,int stride,int flip)
+{
+    unsigned char *rgb=malloc((size_t)width*3);
+    if(!rgb)return -1;
+    int result=fprintf(f,"P6\n%d %d\n255\n",width,height)<0?-1:0;
+    for(int y=0;y<height && !result;y++){
+        const unsigned char *row=rgba+(size_t)(flip?height-1-y:y)*stride*4;
+        for(int x=0;x<width;x++){
+            rgb[x*3]=row[x*4];rgb[x*3+1]=row[x*4+1];rgb[x*3+2]=row[x*4+2];
+        }
+        if(fwrite(rgb,3,(size_t)width,f)!=(size_t)width)result=-1;
+    }
+    free(rgb);return result;
+}
 
 static void dump_frame(const char *path)
 {
@@ -150,13 +182,9 @@ static void dump_frame(const char *path)
     snprintf(temporary, sizeof(temporary), "%s.tmp", path);
     FILE *f = fopen(temporary, "wb");
     if (f) {
-        fprintf(f, "P6\n%d %d\n255\n", win_w, win_h);
-        for (int y = win_h - 1; y >= 0; y--) {       /* flip: GL origin bottom-left */
-            const unsigned char *row = rgba + (size_t)y * win_w * 4;
-            for (int x = 0; x < win_w; x++)
-                fwrite(row + x * 4, 1, 3, f);          /* RGBA -> RGB */
-        }
-        if (fclose(f) == 0) rename(temporary, path);
+        int written=write_ppm_rows(f,rgba,win_w,win_h,win_w,1);
+        int closed=fclose(f);
+        if (!written && !closed) publish_frame_file(temporary, path);
     }
     free(rgba);
 }
@@ -176,10 +204,10 @@ static void video_display_changed(void)
             /* source is validated by video_attributes, and defaults to the
              * whole frame. Publish the negotiated viewport at native size. */
             int *s=v->source;
-            if(f){fprintf(f,"P6\n%d %d\n255\n",s[2],s[3]);
-                for(int y=0;y<s[3];y++)for(int x=0;x<s[2];x++)
-                    fwrite(v->rgba+((size_t)(y+s[1])*v->width+x+s[0])*4,1,3,f);
-                if(!fclose(f)&&!rename(tmp,cluster_path))v->published_frames=v->frames;}
+            if(f){
+                int written=write_ppm_rows(f,v->rgba+((size_t)s[1]*v->width+s[0])*4,s[2],s[3],v->width,0);
+                int closed=fclose(f);
+                if(!written&&!closed&&!publish_frame_file(tmp,cluster_path))v->published_frames=v->frames;}
         }
         if(!active)unlink(cluster_path);
     }
@@ -189,20 +217,33 @@ static void video_display_changed(void)
     memcpy(rgba,display_rgba,bytes);video_composite(rgba,win_w,win_h);
     char tmp[4096];snprintf(tmp,sizeof(tmp),"%s.tmp",frame_path());
     FILE *f=fopen(tmp,"wb");
-    if(f){fprintf(f,"P6\n%d %d\n255\n",win_w,win_h);
-        for(int y=win_h-1;y>=0;y--)for(int x=0;x<win_w;x++)fwrite(rgba+((size_t)y*win_w+x)*4,1,3,f);
-        if(!fclose(f))rename(tmp,frame_path());}
+    if(f){int written=write_ppm_rows(f,rgba,win_w,win_h,win_w,1);
+        int closed=fclose(f);if(!written&&!closed)publish_frame_file(tmp,frame_path());}
     free(rgba);
 }
 
 static int read_full(int fd, void *buf, size_t n)
 {
     uint8_t *p = buf;
+    size_t total = n;
     while (n) {
         ssize_t r = read(fd, p, n);
-        if (r == 0) return -1;
+        if (r == 0) return n == total ? 1 : -1;
         if (r < 0) { if (errno == EINTR) continue; return -1; }
         p += r; n -= (size_t)r;
+    }
+    return 0;
+}
+
+static int write_full(int fd, const void *buf, size_t n)
+{
+    const uint8_t *p = buf;
+    while (n) {
+        ssize_t written = write(fd, p, n);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) return -1;
+        p += written;
+        n -= (size_t)written;
     }
     return 0;
 }
@@ -210,10 +251,28 @@ static int read_full(int fd, void *buf, size_t n)
 static void ensure_window(int w, int h)
 {
     if (win) return;
+    const char *main_w=getenv("MHI2_GL_MAIN_WIDTH"), *main_h=getenv("MHI2_GL_MAIN_HEIGHT");
+    if(main_w || main_h){
+        char *end_w=NULL, *end_h=NULL;
+        long width=main_w?strtol(main_w,&end_w,10):0;
+        long height=main_h?strtol(main_h,&end_h,10):0;
+        if(!main_w || !main_h || !*main_w || !*main_h || *end_w || *end_h ||
+           width<1 || height<1 || width>2048 || height>2048){
+            fprintf(stderr,"Invalid main display geometry\n");exit(1);
+        }
+        w=(int)width;h=(int)height;
+    }
     if (w <= 0 || w > 8192) w = DEFAULT_W;
     if (h <= 0 || h > 8192) h = DEFAULT_H;
 
+#ifdef _WIN32
+    PFNEGLGETPLATFORMDISPLAYEXTPROC platform=(PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if(!platform){fprintf(stderr,"ANGLE platform API absent\n");exit(1);}
+    const EGLint backend[]={EGL_PLATFORM_ANGLE_TYPE_ANGLE,EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,EGL_NONE};
+    display=platform(EGL_PLATFORM_ANGLE_ANGLE,EGL_DEFAULT_DISPLAY,backend);
+#else
     display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL);
+#endif
     EGLint major, minor, count;
     const EGLint attrs[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 8,
@@ -406,12 +465,13 @@ static int valid_record(uint32_t op,uint32_t len,const uint8_t *p)
     return sizes[op]!=0;
 }
 
-static void serve(int cfd)
+static int serve(int cfd)
 {
     uint8_t *p = NULL;
     size_t cap = 0;
     unsigned long frames = 0;
     uint32_t request_pid = 0;
+    int result = 0;
     const char *capture_path=getenv("MHI2_GL_CAPTURE");
     FILE *capture = capture_path && *capture_path ? fopen(capture_path, "wb") : NULL;
     bool trace = getenv("MHI2_GL_TRACE") != NULL;
@@ -419,23 +479,38 @@ static void serve(int cfd)
 
     for (;;) {
         uint32_t hdr[2];
-        if (read_full(cfd, hdr, 8) < 0) break;
+        int read_status = read_full(cfd, hdr, 8);
+        if (read_status == 1) break;
+        if (read_status < 0) {
+            fprintf(stderr, "glhost: incomplete or failed record header\n");
+            result = 1;
+            goto cleanup;
+        }
         uint32_t op = hdr[0], len = hdr[1];
-        if (len > 64 * 1024 * 1024) break;
+        if (len > 64 * 1024 * 1024) {
+            fprintf(stderr, "glhost: oversized record: %u\n", len);
+            result = 1;
+            goto cleanup;
+        }
         if (trace) fprintf(stderr, "glhost op=%u len=%u\n", op, len);
         if (len > cap) {
             cap = len + 4096;
             p = realloc(p, cap);
-            if (!p) { fprintf(stderr, "glhost: OOM %u\n", len); break; }
+            if (!p) { fprintf(stderr, "glhost: OOM %u\n", len); result = 1; goto cleanup; }
         }
-        if (len && read_full(cfd, p, len) < 0) break;
+        if (len && read_full(cfd, p, len) != 0) {
+            fprintf(stderr, "glhost: incomplete record payload\n");
+            result = 1;
+            goto cleanup;
+        }
         if(capture){fwrite(hdr,1,8,capture);fwrite(p,1,len,capture);fflush(capture);}
         /* Pre-merge Audi shims used 128 for a 12-byte query. Porsche 128
          * carries at least 24 bytes. Retain both wire formats without ambiguity. */
         if(op==128 && len==12)op=138;
         if(!valid_record(op,len,p)){
             fprintf(stderr,"Invalid graphics record: op=%u len=%u\n",op,len);
-            break;
+            result=1;
+            goto cleanup;
         }
         pump_events();
         /* Encoder traffic has no GL state. Polling must not flush another
@@ -451,7 +526,7 @@ static void serve(int cfd)
             if(op==135)status=video_decode(request_pid,p);
             if(op==136)status=video_attributes(request_pid,p);
             if(op==137)video_close(request_pid,u32(p,0));
-            if(write(STDOUT_FILENO,&status,4)!=4)return;
+            if(write_full(STDOUT_FILENO,&status,4)<0){result=1;goto cleanup;}
             break;
         }
         case 119: request_pid=u32(p,0); break;
@@ -463,40 +538,35 @@ static void serve(int cfd)
             if(op==123)glGetActiveAttrib(M(u32(p,0)),u32(p,4),count,&length,&size,&type,name);
             else glGetActiveUniform(M(u32(p,0)),u32(p,4),count,&length,&size,&type,name);
             header[0]=length;header[1]=size;header[2]=type;
-            if(write(STDOUT_FILENO,header,12)!=12)return;
-            unsigned done=0;while(done<count){ssize_t n=write(STDOUT_FILENO,name+done,count-done);
-                if(n<0&&errno==EINTR)continue;if(n<=0)return;done+=n;}
+            if(write_full(STDOUT_FILENO,header,12)<0){result=1;goto cleanup;}
+            if(write_full(STDOUT_FILENO,name,count)<0){result=1;goto cleanup;}
             break;
         }
         case 127: {
             uint32_t status=encoder_submit(request_pid,p);
-            if(write(STDOUT_FILENO,&status,4)!=4)return;
+            if(write_full(STDOUT_FILENO,&status,4)<0){result=1;goto cleanup;}
             break;
         }
         case 126: {
             uint8_t *data;uint32_t count=encoder_poll(request_pid,u32(p,0),&data);
-            if(write(STDOUT_FILENO,&count,4)!=4){free(data);return;}
-            size_t off=0;while(data&&off<count){ssize_t n=write(STDOUT_FILENO,data+off,count-off);
-                if(n<0&&errno==EINTR)continue;if(n<=0){free(data);return;}off+=n;}
+            if(write_full(STDOUT_FILENO,&count,4)<0){free(data);result=1;goto cleanup;}
+            if(data&&write_full(STDOUT_FILENO,data,count)<0){free(data);result=1;goto cleanup;}
             free(data);break;
         }
         case 132: {
             uint32_t hit=native_frame_upload(u32(p,0),u32(p,4),u32(p,8));
-            if(write(STDOUT_FILENO,&hit,4)!=4)return;
+            if(write_full(STDOUT_FILENO,&hit,4)<0){result=1;goto cleanup;}
             break;
         }
         case 133: native_frame_remove(u32(p,0));break;
         case 120: case 131: {
             size_t size=(size_t)u32(p,8)*u32(p,12)*4;
-            unsigned char *pixels=calloc(1,size);if(!pixels)return;
+            unsigned char *pixels=calloc(1,size);if(!pixels){result=1;goto cleanup;}
             GLint alignment;glGetIntegerv(GL_PACK_ALIGNMENT,&alignment);
             glPixelStorei(GL_PACK_ALIGNMENT,1);
             glReadPixels(i32(p,0),i32(p,4),i32(p,8),i32(p,12),GL_RGBA,GL_UNSIGNED_BYTE,pixels);
             glPixelStorei(GL_PACK_ALIGNMENT,alignment);
-            size_t done=0;
-            while(done<size){ssize_t n=write(STDOUT_FILENO,pixels+done,size-done);
-                if(n<0&&errno==EINTR)continue;
-                if(n<=0){free(pixels);return;}done+=n;}
+            if(write_full(STDOUT_FILENO,pixels,size)<0){free(pixels);result=1;goto cleanup;}
             if(op==131)native_frame_store(u32(p,24),u32(p,8),u32(p,12),pixels);
             else free(pixels);
             break;
@@ -568,7 +638,7 @@ static void serve(int cfd)
             glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &binding);
             if (!binding) {
                 fprintf(stderr, "glhost: vertex array lacks transferred buffer\n");
-                return;
+                result=1;goto cleanup;
             }
             glVertexAttribPointer(u32(p,0), i32(p,4), u32(p,8), u32(p,12) ? GL_TRUE : GL_FALSE,
                                   i32(p,16), (const void *)(uintptr_t)u32(p,20)); break;
@@ -730,7 +800,7 @@ static void serve(int cfd)
                 pname != GL_NUM_SHADER_BINARY_FORMATS) {
                 glGetIntegerv(pname,out);
             }
-            if(write(STDOUT_FILENO,out,sizeof(out)) != sizeof(out))return;
+            if(write_full(STDOUT_FILENO,out,sizeof(out))<0){result=1;goto cleanup;}
             break;
         }
         case 106: {
@@ -742,7 +812,7 @@ static void serve(int cfd)
                 pname != GL_NUM_SHADER_BINARY_FORMATS) {
                 glGetBooleanv(pname,out);
             }
-            if(write(STDOUT_FILENO,out,sizeof(out))!=sizeof(out))return;
+            if(write_full(STDOUT_FILENO,out,sizeof(out))<0){result=1;goto cleanup;}
             break;
         }
         case 107: {
@@ -754,24 +824,24 @@ static void serve(int cfd)
                 pname != GL_NUM_SHADER_BINARY_FORMATS) {
                 glGetFloatv(pname,out);
             }
-            if(write(STDOUT_FILENO,out,sizeof(out))!=sizeof(out))return;
+            if(write_full(STDOUT_FILENO,out,sizeof(out))<0){result=1;goto cleanup;}
             break;
         }
         case 108: {
             GLint out[3]={0};glGetShaderPrecisionFormat(u32(p,0),u32(p,4),out,out+2);
-            if(write(STDOUT_FILENO,out,sizeof(out))!=sizeof(out))return;
+            if(write_full(STDOUT_FILENO,out,sizeof(out))<0){result=1;goto cleanup;}
             break;
         }
         case 105: {
             int32_t out=glGetError();
-            if(write(STDOUT_FILENO,&out,4)!=4)return;
+            if(write_full(STDOUT_FILENO,&out,4)<0){result=1;goto cleanup;}
             break;
         }
         case 102: case 103: {
             GLint out = 0;
             if (op == 102) glGetShaderiv(M(u32(p,0)),u32(p,4),&out);
             else glGetProgramiv(M(u32(p,0)),u32(p,4),&out);
-            if (write(STDOUT_FILENO,&out,4) != 4) return;
+            if(write_full(STDOUT_FILENO,&out,4)<0){result=1;goto cleanup;}
             break;
         }
         case 60: glBindFramebuffer(u32(p,0),M(u32(p,4))); break;
@@ -793,7 +863,7 @@ static void serve(int cfd)
         case 77: glStencilOpSeparate(u32(p,0),u32(p,4),u32(p,8),u32(p,12)); break;
         case 78: {unsigned count=u32(p,0);for(unsigned i=0;i<count;i++){GLuint o;glGenFramebuffers(1,&o);gmap[u32(p,4+4*i)]=o;}break;}
         case 79: {unsigned count=u32(p,0);for(unsigned i=0;i<count;i++){GLuint o;glGenRenderbuffers(1,&o);gmap[u32(p,4+4*i)]=o;}break;}
-        case 109: {uint32_t out=glCheckFramebufferStatus(u32(p,0));if(write(STDOUT_FILENO,&out,4)!=4)return;break;}
+        case 109: {uint32_t out=glCheckFramebufferStatus(u32(p,0));if(write_full(STDOUT_FILENO,&out,4)<0){result=1;goto cleanup;}break;}
         case 80: glUniform1iv(i32(p,0),i32(p,4),(const GLint *)(p+8));break;
         case 81: glUniform2iv(i32(p,0),i32(p,4),(const GLint *)(p+8));break;
         case 82: glUniform3iv(i32(p,0),i32(p,4),(const GLint *)(p+8));break;
@@ -808,21 +878,27 @@ static void serve(int cfd)
             GLint loc = (op == 100) ? glGetAttribLocation(M(pid), nm)
                                     : glGetUniformLocation(M(pid), nm);
             int32_t out = loc;
-            if (write(STDOUT_FILENO, &out, 4) != 4) { fprintf(stderr, "glhost: getter reply failed\n"); }
+            if(write_full(STDOUT_FILENO, &out, 4) < 0) { result=1; goto cleanup; }
             } break;
 
         default: /* unknown: drained, stay in sync */ break;
         }
     }
-    for(unsigned i=0;i<4;i++)encoder_stop(&encoders[i]);
-    if(capture)fclose(capture);
+cleanup:
+    for(unsigned i=0;i<4;i++)if(encoder_stop(&encoders[i]))result=1;
+    if(capture && fclose(capture))result=1;
     free(p);
-    fprintf(stderr, "glhost: client disconnected after %lu frames\n", frames);
+    fprintf(stderr, "glhost: client disconnected after %lu frames (status=%d)\n", frames,result);
+    return result;
 }
-
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    _setmode(STDIN_FILENO,_O_BINARY);_setmode(STDOUT_FILENO,_O_BINARY);
+    uv_disable_stdio_inheritance();
+#else
     signal(SIGPIPE,SIG_IGN);
+#endif
     menu_texture_init();
     if (argc == 2 && strcmp(argv[1], "--check-shaders") == 0) {
         ensure_window(DEFAULT_W, DEFAULT_H);
@@ -842,6 +918,5 @@ int main(int argc, char **argv)
                 sizeof(shaders) / sizeof(shaders[0]), failed);
         return failed != 0;
     }
-    serve(STDIN_FILENO);
-    return 0;
+    return serve(STDIN_FILENO);
 }

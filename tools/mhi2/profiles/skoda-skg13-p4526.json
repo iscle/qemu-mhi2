@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "skoda-skg13-p4526",
+  "firmware": {
+    "release": "MHI2_ER_SKG13_P4526",
+    "mu": "1440",
+    "status": "EXPERIMENTAL PROFILE IDENTIFICATION; not builder or boot support"
+  },
+  "input": {
+    "keyboard": 13,
+    "touch": true,
+    "touch_wire_divisor": [2, 2],
+    "main_viewport": [1280, 640],
+    "status": "EXPERIMENTAL input and geometry; physical target not verified"
+  },
+  "cockpit": {
+    "viewport": [1280, 480],
+    "status": "REQUESTED geometry; cockpit/MOST rendering not verified"
+  },
+  "clock": {
+    "oscillator_12mhz": null,
+    "status": "UNKNOWN; explicit experiment override required"
+  }
+}
