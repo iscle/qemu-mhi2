@@ -20,6 +20,27 @@ def cmac(data):
     return c.finalize()
 
 
+def app_partition(base_emmc, app):
+    """Check the captured app slot before creating any preparation output."""
+    with Path(base_emmc).open('rb') as stream:
+        mbr = stream.read(512)
+    if len(mbr) != 512 or mbr[510:512] != b'\x55\xaa':
+        raise ValueError('Invalid eMMC partition-table signature')
+    if mbr[450] not in (0xb1, 0xb2):
+        raise ValueError('Unsupported app partition type')
+    start, sectors = struct.unpack_from('<II', mbr, 454)
+    size = Path(app).stat().st_size
+    disk_size = Path(base_emmc).stat().st_size
+    if not start or not sectors or (start + sectors) * 512 > disk_size:
+        raise ValueError('App partition lies outside the supplied eMMC image')
+    if not size or size % 512:
+        raise ValueError('App image must contain a positive whole number of sectors')
+    if size > sectors * 512:
+        raise ValueError(f'App image needs {size} bytes; captured slot has {sectors * 512} bytes. '
+                         'Supply a separately validated larger emulator layout.')
+    return start, sectors
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--extracted', type=Path, required=True, help='directory containing MMX2')
@@ -28,6 +49,11 @@ def main():
     ap.add_argument('--base-emmc', type=Path, required=True)
     ap.add_argument('--output', type=Path, required=True, help='new output directory')
     args = ap.parse_args()
+    app = args.extracted/'MMX2/app/70/default/app.img'
+    try:
+        start, sectors = app_partition(args.base_emmc, app)
+    except (OSError, ValueError) as exc:
+        ap.error(str(exc))
     args.output.mkdir(parents=True, exist_ok=False)
     nor = bytearray(args.base_nor.read_bytes())
     iram = bytearray(args.base_iram.read_bytes())
@@ -92,13 +118,6 @@ def main():
     (args.output/'nor.bin').write_bytes(nor)
     (args.output/'iram.bin').write_bytes(iram)
     # Preserve the supplied partition layout; replace its app partition only.
-    with args.base_emmc.open('rb') as f:
-        mbr = f.read(512)
-    assert mbr[510:512] == b'\x55\xaa'
-    assert mbr[450] in (0xb1, 0xb2)
-    start, sectors = struct.unpack_from('<II',mbr,454)
-    app = args.extracted/'MMX2/app/70/default/app.img'
-    assert app.stat().st_size <= sectors*512
     # Preserve sparse zero ranges without modifying the source disk.
     copy_sparse(args.base_emmc, args.output/'emmc.raw')
     digest = hashlib.sha256()
