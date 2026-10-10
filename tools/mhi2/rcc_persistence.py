@@ -26,16 +26,22 @@ class Reader:
 
 class Persistence:
     def __init__(self, config=None, metadata=None):
-        self.values=json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
         from firmware_profile import common_metadata
-        from emulator_config import load, validate
-        config = load() if config is None else validate(config)
-        self.identity = config['identity'].copy()
-        # K5126 FazitIdComponent.getFazitIDMIB2 reads this raw attribute
-        # as UTF-8. OnlineRegistrationServiceImpl uses it as vehicle.snr.
-        self.values['0:3221291024'] = dict(
-            type='blob', value=self.identity['fazit_id'].encode('utf-8').hex())
         metadata = common_metadata() if metadata is None else metadata
+        from skoda_profile import RELEASE as SKODA_RELEASE, validate_metadata, firmware_identity
+        self.read_only = metadata.get('release') == SKODA_RELEASE
+        if self.read_only:
+            validate_metadata(metadata)
+            self.values = firmware_identity()
+            self.identity = None
+            config = None
+        else:
+            self.values=json.loads(Path(__file__).with_name('vehicle_profile.json').read_text())
+            from emulator_config import load, validate
+            config = load() if config is None else validate(config)
+            self.identity = config['identity'].copy()
+            self.values['0:3221291024'] = dict(
+                type='blob', value=self.identity['fazit_id'].encode('utf-8').hex())
         if metadata.get('release') == 'MHI2_ER_POG11_K5126':
             self.configure_porsche(config)
         for key, field in [('30:1966084', 'release'), ('30:1966083', 'MUVersion')]:
@@ -95,7 +101,7 @@ class Persistence:
         ids=[f'{n}:{k}' for n,k in zip(namespaces,keys)]
         prefix=array(namespaces)+array(keys)
         print('RCC PERSIST',mid,ids,flush=True)
-        if mid==8:return [(10,prefix+array([0]*len(ids),'i'))]
+        if mid==8:return [(10,prefix+array([1 if self.read_only else 0]*len(ids),'i'))]
         if mid==7:
             replies=[]
             for kind,reply in [('blob',0),('int',1),('string',6)]:
@@ -127,5 +133,7 @@ class Persistence:
                 values.append(r.take(length).decode('utf-8'))
         else:raise ValueError('Unknown persistence method')
         if len(values)!=len(ids) or r.pos!=len(data):raise ValueError('Invalid persistence values')
+        if self.read_only:
+            return [(4,prefix+array([1]*len(ids),'i'))]
         for key,value in zip(ids,values):self.values[key]={'type':kind,'value':value}
         return [(4,prefix+array([0]*len(ids),'i'))]+self.handle(7,prefix)

@@ -169,8 +169,9 @@ class Peer:
             self.flows[key]=flow;self.tcp(key,flow,2)
             return
         x, y = int(event.get('x', 0)), int(event.get('y', 0))
-        if not 0 <= x < 800 or not 0 <= y < 480:
-            raise ValueError('Touch coordinates outside 800x480 display')
+        width, height = self.profile.get('main_viewport', (800, 480))
+        if not 0 <= x < width or not 0 <= y < height:
+            raise ValueError(f'Touch coordinates outside {width}x{height} display')
         for key, flow in self.flows.items():
             if 'keypanel_reply' not in flow: continue
             now = int(time.monotonic() * 1000) & 0x7fffffff
@@ -178,7 +179,10 @@ class Peer:
                 if not self.profile['touch']:
                     raise ValueError('This firmware uses the console controller, not a touchscreen')
                 gesture = {'press': 4, 'release': 3, 'tap': 1, 'drag': 5}[event['action']]
-                payload = struct.pack('!iiiBiiiiii', 13, gesture, 1, 0, x, y, 1, 0, now, 1)
+                # Stock MU1440 lsd.sh scales both incoming axes by 2.0.
+                # JSON coordinates describe the visible framebuffer; DSI uses panel units.
+                dx, dy = self.profile.get('touch_wire_divisor', (1, 1))
+                payload = struct.pack('!iiiBiiiiii', 13, gesture, 1, 0, x // dx, y // dy, 1, 0, now, 1)
                 method = 42
             elif event['type'] == 'key':
                 if not 0 <= int(event['code']) <= 116 or int(event['pressed']) not in (0, 1):
