@@ -8,6 +8,11 @@ import shlex
 import subprocess
 import sys
 
+# A build-only Windows mode for hosts without symlink privilege. This does not create an install bundle.
+if os.name == 'nt' and os.environ.get('QEMU_BUILD_ONLY_NO_INSTALL_LINKS') == '1':
+    print('QEMU build-only mode: install bundle links skipped; packaging not validated')
+    sys.exit(0)
+
 def destdir_join(d1: str, d2: str) -> str:
     if not d1:
         return d2
