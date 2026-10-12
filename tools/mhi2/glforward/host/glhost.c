@@ -39,6 +39,7 @@ static EGLSurface surface;
 static EGLConfig config;
 static int win_w, win_h;
 static uint32_t current_pid;
+static unsigned long draw_count, stat_last_draws; static uint32_t stat_last_pid; /* MHI2_GL_STATS */
 static uint32_t primary_display_pid;
 static GLuint default_gmap[MAXOBJ];
 static GLuint *gmap = default_gmap;        /* guest object id -> real GL object */
@@ -210,8 +211,12 @@ static int read_full(int fd, void *buf, size_t n)
 static void ensure_window(int w, int h)
 {
     if (win) return;
-    if (w <= 0 || w > 8192) w = DEFAULT_W;
-    if (h <= 0 || h > 8192) h = DEFAULT_H;
+    /* MHI2_GL_WIDTH/HEIGHT override the default (A4 MMI panel is 1024x480). */
+    const char *ew = getenv("MHI2_GL_WIDTH"), *eh = getenv("MHI2_GL_HEIGHT");
+    int dw = ew && atoi(ew) > 0 && atoi(ew) <= 8192 ? atoi(ew) : DEFAULT_W;
+    int dh = eh && atoi(eh) > 0 && atoi(eh) <= 8192 ? atoi(eh) : DEFAULT_H;
+    if (w <= 0 || w > 8192) w = dw;
+    if (h <= 0 || h > 8192) h = dh;
 
     display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL);
     EGLint major, minor, count;
@@ -511,6 +516,11 @@ static void serve(int cfd)
                  if(!primary_display_pid || current_pid==primary_display_pid)
                      dump_frame(frame_path());
                  if(dump_clients){char path[128];snprintf(path,sizeof(path),"/tmp/mhi2-client-%u.ppm",current_pid);dump_frame(path);}
+                 if (getenv("MHI2_GL_STATS") && (current_pid != stat_last_pid || draw_count != stat_last_draws)) {
+                     fprintf(stderr, "glhost: stats pid=%u draws_since_swap=%lu frame=%lu\n", current_pid, draw_count, frames);
+                     stat_last_pid = current_pid; stat_last_draws = draw_count;
+                 }
+                 draw_count = 0;
                  eglSwapBuffers(display, surface);
                  if (frames < 3 || (frames % 120) == 0)
                      fprintf(stderr, "glhost: %lu frames swapped\n", frames + 1);
@@ -619,6 +629,7 @@ static void serve(int cfd)
             glBindBuffer(GL_ARRAY_BUFFER,binding);break;
         }
         case 31: case 32: case 129: {
+            draw_count++;
             GLuint menu_binding=menu_texture_begin_draw(op,p,len);
             unsigned mode=blend->program[blend->active_program];
             struct BlendState saved;

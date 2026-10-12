@@ -3,6 +3,7 @@
 The initial data is the explicit simulated vehicle profile. Writes survive for
 this emulator session, matching the VM's default snapshot mode.
 """
+import os
 import json
 import struct
 from pathlib import Path
@@ -38,6 +39,25 @@ class Persistence:
         metadata = common_metadata() if metadata is None else metadata
         if metadata.get('release') == 'MHI2_ER_POG11_K5126':
             self.configure_porsche(config)
+        if metadata.get('release') == 'MHI2_ER_AUG22_K3346':
+            # AU491 / A4 B9: class 4, generation 9, derivative 1.
+            # The generic AU370 fixture selects the empty main-menu KZB.
+            coding = bytearray.fromhex(self.values['28180695:1']['value'])
+            # Native navigation reads the brand from the low nibble too.
+            coding[0] = (coding[0] & 0xf0) | 1  # Audi, not the generic VW fixture.
+            coding[1] = 0x94
+            coding[2] = (coding[2] & 0xf0) | 1
+            self.values['28180695:1']['value'] = coding.hex()
+        # K3346 (Audi A4 B9, 2nd LVDS cluster): AdaptationImplHigh.getNavMapTransmissionMode() is byte 34
+        # of the adaptation (3 -> SysConst(541)=2 -> DISPLAYTYPE_LVDS, 2 -> DISPLAYTYPE_H264_MOST).
+        # MHI2_NAV_MAP_TRANSMISSION overrides it (0..3) for experiments.
+        mode = os.environ.get('MHI2_NAV_MAP_TRANSMISSION')
+        if mode is not None and '28442848:100' in self.values:
+            if int(mode) not in range(4):
+                raise ValueError('MHI2_NAV_MAP_TRANSMISSION must be 0..3')
+            blob = bytearray.fromhex(self.values['28442848:100']['value'])
+            blob[34] = int(mode)
+            self.values['28442848:100']['value'] = blob.hex()
         for key, field in [('30:1966084', 'release'), ('30:1966083', 'MUVersion')]:
             if metadata.get(field):
                 self.values[key] = dict(type='string', value=metadata[field])

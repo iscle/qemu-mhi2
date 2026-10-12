@@ -1,0 +1,36 @@
+precision highp float;
+attribute vec3 a_normal;
+attribute vec4 a_position;
+attribute vec2 a_texCoord;
+varying mediump float v_fogFactor;
+varying mediump vec3 v_normal;
+varying mediump vec2 v_texCoord;
+uniform sampler2D s_texture0;
+uniform float u_fogEnd;
+uniform float u_fogStart;
+uniform mat4 u_mvpMatrix;
+void main(){vec4 r[64];vec4 c[64];vec4 v[16];vec4 o[16];vec4 t;
+for(int i=0;i<64;i++){r[i]=vec4(0.0);c[i]=vec4(0.0);}for(int i=0;i<16;i++){v[i]=vec4(0.0);o[i]=vec4(0.0);}
+c[5]=vec4(u_fogEnd,0.0,0.0,0.0);
+c[4]=vec4(u_fogStart,0.0,0.0,0.0);
+c[0]=u_mvpMatrix[0];
+c[1]=u_mvpMatrix[1];
+c[2]=u_mvpMatrix[2];
+c[3]=u_mvpMatrix[3];
+v[2]=vec4(a_normal,1.0);
+v[0]=vec4(a_position);
+v[1]=vec4(a_texCoord,0.0,1.0);
+t=vec4((v[0].yyyy)*(c[1].xyzw));r[0].xyzw=t.xyzw;
+t=vec4((v[0].xxxx)*(c[0].xyzw)+(r[0].xyzw));r[0].xyzw=t.xyzw;
+t=vec4((v[0].zzzz)*(c[2].xyzw)+(r[0].xyzw));r[0].xyzw=t.xyzw;
+t=vec4((c[3].xyzw)+(r[0].xyzw));r[0].xyzw=t.xyzw;
+t=vec4(v[2].xyzx);o[2].xyz=t.xyz;
+t=vec4(v[1].xyxx);o[1].xy=t.xy;
+t=vec4((r[0].wwww)*(c[4].xxxx));r[1].x=t.x;
+t=vec4((c[5].xxxx)+(r[1].xxxx));o[3].x=t.x;
+t=vec4(r[0].xyzw);o[0].xyzw=t.xyzw;
+gl_Position=o[0];
+v_fogFactor=o[3].x;
+v_normal=o[2].xyz;
+v_texCoord=o[1].xy;
+}

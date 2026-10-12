@@ -19,8 +19,16 @@ from firmware_profile import common_metadata
 FIRMWARE = common_metadata()
 SCHEMA_FILE = ('dsi_schema_pog11_k5126.json'
                if FIRMWARE.get('release') == 'MHI2_ER_POG11_K5126'
+               else 'dsi_schema_aug22_k3346.json'
+               if FIRMWARE.get('release') == 'MHI2_ER_AUG22_K3346'
                else 'dsi_schema.json')
 SCHEMA = json.loads(Path(__file__).with_name(SCHEMA_FILE).read_text())
+if SCHEMA_FILE == 'dsi_schema_aug22_k3346.json':
+    # K3346 changes one service and nine structs; retain the common schema.
+    base = json.loads(Path(__file__).with_name('dsi_schema.json').read_text())
+    for section, definitions in SCHEMA.items():
+        base[section].update(definitions)
+    SCHEMA = base
 FORMATS = {'Int8':'b', 'UInt8':'B', 'Int16':'h', 'UInt16':'H',
            'Int32':'i', 'UInt32':'I', 'Int64':'q', 'UInt64':'Q',
            'Float':'f', 'Double':'d', 'Bool':'?', 'Enum':'i'}

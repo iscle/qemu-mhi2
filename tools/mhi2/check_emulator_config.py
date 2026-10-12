@@ -15,6 +15,15 @@ from rcc_persistence import Persistence
 
 
 class Checks(unittest.TestCase):
+    def test_a4_navigation_and_hmi_share_audi_vehicle_identity(self):
+        original = Persistence(defaults(), {}).values['28180695:1']['value']
+        actual = Persistence(defaults(), {'release': 'MHI2_ER_AUG22_K3346'}).values
+        coding = bytes.fromhex(actual['28180695:1']['value'])
+        self.assertEqual(coding[0] & 0xf, 1)
+        self.assertEqual(coding[1], 0x94)
+        self.assertEqual(coding[2] & 0xf, 1)
+        self.assertEqual(coding[3:], bytes.fromhex(original)[3:])
+
     def test_porsche_equipment_matches_feature_permissions(self):
         config = defaults()
         meta = {'release': 'MHI2_ER_POG11_K5126'}
@@ -79,6 +88,11 @@ class Checks(unittest.TestCase):
         self.assertEqual(select_profile({})['brand'], 'volkswagen')
         self.assertEqual(select_profile({'release': 'MHI2_ER_AUG22_P3663'})['brand'], 'generic')
         self.assertEqual(select_profile({'release': 'MHI2_ER_AU37x_P5089'})['brand'], 'audi')
+        a4 = select_profile({'release': 'MHI2_ER_AUG22_K3346'})
+        self.assertEqual(a4['name'], 'audi-a4')
+        self.assertEqual(a4['screen'], (1024, 480))
+        with patch.dict(os.environ, {'MHI2_FIRMWARE': 'audi-a4'}, clear=True):
+            self.assertEqual(current()['name'], 'audi-a4')
 
     def test_metadata_aliases_select_porsche_services_and_controls(self):
         with tempfile.TemporaryDirectory() as root:

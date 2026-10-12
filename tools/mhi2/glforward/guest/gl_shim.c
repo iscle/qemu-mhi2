@@ -1,5 +1,13 @@
 #include "bridge_transport.h"
 
+/* Display size the guest reports to the host; override with -DMHI2_DEFAULT_W/H (A4 MMI is 1024x480). */
+#ifndef MHI2_DEFAULT_W
+#define MHI2_DEFAULT_W 800
+#endif
+#ifndef MHI2_DEFAULT_H
+#define MHI2_DEFAULT_H 480
+#endif
+
 static void native_register_api(u32 api);
 void NvEglRegClientApi(unsigned api, void *unused)
 { (void)unused;native_register_api(api); }
@@ -47,9 +55,9 @@ u32 eglInitialize(void *dpy, i32 *major, i32 *minor)
     if (major) *major = 1;
     if (minor) *minor = 4;
     const char *ws = getenv("GLBRIDGE_W"), *hs = getenv("GLBRIDGE_H");
-    i32 wh[2] = { ws ? atoi(ws) : 800, hs ? atoi(hs) : 480 };
-    if (wh[0] <= 0) wh[0] = 800;
-    if (wh[1] <= 0) wh[1] = 480;
+    i32 wh[2] = { ws ? atoi(ws) : MHI2_DEFAULT_W, hs ? atoi(hs) : MHI2_DEFAULT_H };
+    if (wh[0] <= 0) wh[0] = MHI2_DEFAULT_W;
+    if (wh[1] <= 0) wh[1] = MHI2_DEFAULT_H;
     emit_iv(1, wh, 2);
     return 1;
 }
@@ -95,14 +103,14 @@ u32 eglQuerySurface(void *dpy, void *surf, i32 attr, i32 *value)
 {
     (void)dpy;(void)surf;
     const char *ws = getenv("GLBRIDGE_W"), *hs = getenv("GLBRIDGE_H");
-    i32 w = ws ? atoi(ws) : 800, h = hs ? atoi(hs) : 480;
+    i32 w = ws ? atoi(ws) : MHI2_DEFAULT_W, h = hs ? atoi(hs) : MHI2_DEFAULT_H;
     if ((u32)surf > 1) {
         struct NativeWindow *window = surf;
         w = window->buffers[0].width;
         h = window->buffers[0].height;
     }
-    if (w <= 0) w = 800;
-    if (h <= 0) h = 480;
+    if (w <= 0) w = MHI2_DEFAULT_W;
+    if (h <= 0) h = MHI2_DEFAULT_H;
     i32 v = 0;
     if (attr == 0x3057) v = w;        /* EGL_WIDTH */
     else if (attr == 0x3056) v = h;   /* EGL_HEIGHT */

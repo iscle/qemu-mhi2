@@ -12,7 +12,7 @@ from rcc_peer import Peer
 from view_ui import Panel, create_window
 
 app = QApplication([])
-for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
+for name, keyboard in [('vw', 13), ('audi-a3', 1), ('audi-a4', 1), ('porsche', 13)]:
     os.environ['MHI2_FIRMWARE'] = name
     peer = Peer.__new__(Peer)
     peer.profile = current()
@@ -24,7 +24,13 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
     assert struct.unpack('!HH', packets[0][1:5]) == (123, 38)
     assert struct.unpack('!iii', packets[0][5:17]) == (keyboard, 78, 1)
     assert struct.unpack('!HHiii', packets[1][1:17]) == (123, 30, keyboard, 16, -2)
-    if name == 'audi-a3':
+    if peer.profile['brand'] == 'audi':
+        for direction, code in [('up', 24), ('right', 26), ('down', 28), ('left', 30)]:
+            peer.input_event(dict(type='joystick', direction=direction))
+            peer.input_event(dict(type='joystick', direction='neutral'))
+            assert struct.unpack('!HHiii', packets[-2][1:17]) == (123, 38, 5, code, 1)
+            assert struct.unpack('!HHiii', packets[-1][1:17]) == (123, 38, 5, 23, 0)
+    if name.startswith('audi-'):
         try:
             peer.input_event(dict(type='touch', action='tap', x=100, y=100))
         except ValueError:
@@ -35,6 +41,7 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
     window.show()
     app.processEvents()
     panel = window.findChild(Panel)
+    assert panel.screen_size == ((1024, 480) if name == 'audi-a4' else (800, 480))
     events = []
     panel.send = events.append
     window.resize(900, 600)
@@ -43,7 +50,7 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
     assert window.maximumHeight() > 600
     frame = panel.frame_rect()
     QTest.mouseClick(panel, Qt.LeftButton, pos=frame.center())
-    if name != 'audi-a3':
+    if not name.startswith('audi-'):
         assert [event['action'] for event in events] == ['press', 'tap', 'release']
         assert abs(events[0]['x'] - 400) <= 3
         assert abs(events[0]['y'] - 240) <= 3
@@ -64,8 +71,18 @@ for name, keyboard in [('vw', 13), ('audi-a3', 1), ('porsche', 13)]:
         QTest.mouseClick(window.findChild(QPushButton, 'encoder_16_1'), Qt.LeftButton)
         assert events == [dict(type='encoder', code=16, ticks=1)]
         events.clear()
+        QTest.mouseClick(window.findChild(QPushButton, 'encoder_16_-1'), Qt.LeftButton)
+        assert events == [dict(type='encoder', code=16, ticks=-1)]
+        events.clear()
         QTest.keyClick(window, Qt.Key_Left)
         assert events == [dict(type='encoder', code=16, ticks=-1)]
+        for direction in ('up', 'right', 'down', 'left'):
+            events.clear()
+            key = window.findChild(QPushButton, 'joystick_' + direction)
+            QTest.mousePress(key, Qt.LeftButton)
+            assert events == [dict(type='joystick', direction=direction)]
+            QTest.mouseRelease(key, Qt.LeftButton)
+            assert events[-1] == dict(type='joystick', direction='neutral')
     if name == 'porsche':
         assert window.windowTitle() == 'Porsche PCM 4.0'
         assert window.findChild(QPushButton, 'home') is not None

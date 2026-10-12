@@ -35,6 +35,10 @@ PROFILES = {
     'audi-a3': dict(brand='audi', title='Audi A3 MMI', keyboard=1, touch=False,
                     train='MHI2_ER_AU37x_P5089', mu='1326', oscillator_12mhz=True,
                     metadata='/home/iscle/mhi2-audi-port/firmware/metainfo2.txt'),
+    # Local addition (Denys): Audi A4 B9, MLB Evo / G22, own firmware. Untested upstream.
+    'audi-a4': dict(brand='audi', title='Audi A4 MMI', keyboard=1, touch=False,
+                    train='MHI2_ER_AUG22_K3346', mu='1438', oscillator_12mhz=True,
+                    metadata='', keyboard_type_mid=32, screen=(1024, 480)),
 }
 
 
@@ -47,13 +51,15 @@ def select_profile(metadata=None, brand='auto'):
         variants = ' '.join(v for k, v in metadata.items() if k.startswith('variant'))
         if re.search(r'_(?:PO|PAG)\w*_', release) or '-PO-' in variants:
             brand = 'porsche'
-        elif re.search(r'_AU37\w*_', release):
+        elif re.search(r'_AU37\w*_', release) or release == 'MHI2_ER_AUG22_K3346':
             brand = 'audi'
         elif not metadata or re.search(r'_VW\w*_', release) or '-VW-' in variants:
             brand = 'volkswagen'
         else:
             brand = 'generic'
     name = {'porsche': 'porsche', 'volkswagen': 'vw', 'audi': 'audi-a3'}.get(brand)
+    if brand == 'audi' and release == 'MHI2_ER_AUG22_K3346':
+        name = 'audi-a4'
     profile = dict(PROFILES[name]) if name else dict(
         title='MHI2', keyboard=13, touch=True, train='', mu='',
         oscillator_12mhz=False, metadata='')
@@ -72,6 +78,8 @@ def current():
     metadata = common_metadata()
     brand = PROFILES[name]['brand'] if name else 'auto'
     profile = select_profile(metadata, brand)
+    if name:
+        profile.update(PROFILES[name], name=name, release=metadata.get('release', ''))
     path = os.environ.get('MHI2_FIRMWARE_META') or os.environ.get('MHI2_METADATA')
     if path:
         profile['metadata'] = path
@@ -86,8 +94,8 @@ def configure(name, media=None):
     os.environ['MHI2_FIRMWARE'] = name
     profile = dict(PROFILES[name])
     os.environ['MHI2_OSCILLATOR_12MHZ'] = str(int(profile['oscillator_12mhz']))
-    if name == 'porsche' and not media:
-        raise ValueError('Porsche requires --media with prepared Porsche images')
+    if name in ('porsche', 'audi-a4') and not media:
+        raise ValueError(profile['title'] + ' requires --media with prepared matching images')
     if name == 'audi-a3' or media:
         directory = Path(media or '/home/iscle/mhi2-audi-port/media/audi-a3').resolve()
         import json

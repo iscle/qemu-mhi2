@@ -23,4 +23,7 @@ echo UI_DIAGNOSTIC_SHELL_READY
 (sleep 27; slay -P 25r mhi2-pcm-endpoint) &
 (sleep 20; export LD_LIBRARY_PATH=/eso/lib:/armle/lib:/armle/usr/lib:/lib:/usr/lib; export IPL_CONFIG_DIR=/etc/eso/production; devp-iso-mmx-mib2 -T -S188 -i3 -B3 -P64 -Q18 -m/dev/mlb -MisoTX2 -v3 -p16) &
 GUEST
+if [[ -n "${MHI2_BOOT_COMMANDS:-}" ]]; then
+    cat "$MHI2_BOOT_COMMANDS" >> /tmp/mhi2-diag-commands.txt
+fi
 exec python3 tools/mhi2/launch_ui.py "$@"

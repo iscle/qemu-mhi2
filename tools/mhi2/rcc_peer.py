@@ -21,6 +21,7 @@ from rcc_services import Services
 from rcc_features import state_vector
 from audio_host import AudioEndpoint
 from pathlib import Path
+from mmi_touchpad import TouchDevice
 
 MAC = bytes.fromhex('000102030405')
 IP = socket.inet_aton('10.0.0.16')
@@ -49,6 +50,7 @@ class Peer:
         self.services = Services()
         self.feature_states = state_vector()  # Configuration applies at startup.
         self.profile = current()
+        self.touchpad = TouchDevice(self.profile.get('name') == 'audi-a4' and os.environ.get('MHI2_TOUCHPAD', '1') == '1')
         self.next_connect = time.monotonic() + 5
         self.local_port = 40000 + int(time.monotonic()) % 20000
         self.audio = AudioEndpoint()
@@ -120,6 +122,42 @@ class Peer:
             print('Registered',name,flush=True)
 
     def input_event(self, event):
+        if event.get('type') == 'joystick' and os.environ.get('MHI2_MAP_JOYSTICK') == '1':
+            if self.profile['brand'] != 'audi' or event.get('direction') not in ('up', 'right', 'down', 'left', 'neutral'):
+                raise ValueError('Invalid map joystick direction or firmware')
+            self.input_event(dict(type='cluster-map', instance=0, map_joystick=True,
+                                  direction=event['direction']))
+            return
+        if event.get('type') == 'touchpad':
+            if event.get('input_mode') == 'map' and os.environ.get('MHI2_MAP_JOYSTICK') == '1':
+                # Validate device mode/coordinates before commanding the native
+                # cursor. Character recognition keeps its keypanel path below.
+                try:
+                    self.touchpad.event(self.services, event)
+                except ValueError:
+                    # A context switch may invalidate the contact generation;
+                    # its release is still allowed to stop that same contact.
+                    if event.get('action') != 'release' or not any(
+                            f.get('touch_position') is not None and
+                            f.get('cursor_generation') == event.get('generation')
+                            for f in self.flows.values()):
+                        raise
+                self.input_event(dict(type='cluster-map', instance=0, map_joystick=True,
+                                      direction='neutral', touch_cursor=dict(event)))
+                return
+            flows = [(key, flow) for key, flow in self.flows.items() if 'keypanel_reply' in flow]
+            if not flows:
+                raise ValueError('MMI touch reply channel is not ready')
+            try:
+                method, payload = self.touchpad.event(self.services, event)
+                for key, flow in flows:
+                    self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], method) + payload)
+                if event['action'] == 'character':
+                    print('MMI touch character', event['character'], flush=True)
+            except (ValueError, KeyError, TypeError, struct.error) as exc:
+                self.touchpad.last_error = str(exc)
+                raise ValueError(str(exc)) from exc
+            return
         if event.get('type') == 'network':
             from native_network import start
             start(self, event)
@@ -147,6 +185,10 @@ class Peer:
                     old_flow['map_position'] = map_position
                     old_flow['cluster_context'] = int(event.get('context', 70))
                     old_flow['setup_only'] = event['type'] == 'cluster-setup'
+                    if event.get('map_joystick'):
+                        old_flow['map_joystick'] = True
+                        old_flow['joystick_direction'] = event['direction']
+                        old_flow['touch_cursor'] = event.get('touch_cursor')
                     if 'native_stub' in old_flow:
                         self.request_native_view(old_key, old_flow)
                     elif (not old_flow.get('connected') and
@@ -167,6 +209,10 @@ class Peer:
                   'map_instance':map_instance,'map_position':map_position,
                   'cluster_context':int(event.get('context',70)),'local_agent':499}
             self.flows[key]=flow;self.tcp(key,flow,2)
+            if event.get('map_joystick'):
+                flow['map_joystick'] = True
+                flow['joystick_direction'] = event['direction']
+                flow['touch_cursor'] = event.get('touch_cursor')
             return
         x, y = int(event.get('x', 0)), int(event.get('y', 0))
         if not 0 <= x < 800 or not 0 <= y < 480:
@@ -193,6 +239,16 @@ class Peer:
                     raise ValueError('Invalid encoder or tick count')
                 payload = struct.pack('!iiiii', self.profile['keyboard'], code, ticks, 0, 1)
                 method = 30
+            elif event['type'] == 'joystick':
+                codes = {'neutral': 23, 'up': 24, 'right': 26, 'down': 28, 'left': 30}
+                direction = event['direction']
+                if self.profile['brand'] != 'audi' or direction not in codes:
+                    raise ValueError('Invalid MMI joystick direction or firmware')
+                # KbdListener routes keyboard 5 to JoystickEvent. Releasing
+                # sends KEY_JOYSTICK_M, rather than releasing a direction key.
+                payload = struct.pack('!iiiii', 5, codes[direction],
+                                      0 if direction == 'neutral' else 1, now, 1)
+                method = 38
             else: raise ValueError('Unknown input type')
             self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], method) + payload)
             print('Production input', event, flush=True)
@@ -215,6 +271,51 @@ class Peer:
             if subscribe:
                 attrs = (1, 7, 9, 13, 15, 18)
                 call(69, struct.pack('!BI6i', 0, len(attrs), *attrs))
+            if flow.get('map_joystick'):
+                touch = flow.get('touch_cursor')
+                if touch is not None:
+                    point = (touch['x'], touch['y'])
+                    previous = flow.get('touch_position')
+                    width, height = self.profile.get('screen', (1024, 480))
+                    cursor = flow.get('cursor_xy', (width//2, height//2))
+                    visible = bool(flow.get('map_ready') and flow.get('map_visible') and self.touchpad.mode == 25)
+                    if touch['action'] == 'release' or not visible:
+                        call(102, b'')
+                        flow['touch_position'] = None
+                        if visible and touch['action'] == 'release':
+                            call(17, struct.pack('!Bii', 0, *cursor))
+                    else:
+                        if touch['action'] == 'press' or previous is None:
+                            call(102, b'')
+                            flow['cursor_generation'] = touch['generation']
+                        else:
+                            dx = round((point[0]-previous[0])*width/1000)
+                            dy = round((point[1]-previous[1])*height/1000)
+                            cursor = (max(12, min(width-12, cursor[0]+dx)),
+                                      max(12, min(height-40, cursor[1]+dy)))
+                        flow['touch_position'] = point
+                    flow['cursor_xy'] = cursor
+                    from mmi_touchpad import CURSOR_PATH
+                    state = dict(x=cursor[0], y=cursor[1], visible=visible,
+                                 generation=touch['generation'])
+                    temporary = CURSOR_PATH.with_suffix('.tmp')
+                    temporary.write_text(json.dumps(state))
+                    temporary.replace(CURSOR_PATH)
+                    print('NATIVE TOUCH CURSOR', touch['action'], point, flush=True)
+                    return
+                direction = flow.get('joystick_direction', 'neutral')
+                if direction == 'neutral' or not flow.get('map_visible'):
+                    call(102, b'')
+                    if flow.get('map_visible') is False:
+                        flow['joystick_direction'] = 'neutral'
+                elif flow.get('map_ready'):
+                    angle = {'up': 0, 'right': 90, 'down': 180, 'left': 270}[direction]
+                    # CtxCrosshairMap enters free map mode before scrolling;
+                    # vehicle-follow mode otherwise keeps recentering the map.
+                    call(62, struct.pack('!i', 2))
+                    call(99, struct.pack('!i', angle))
+                print('NATIVE MAP JOYSTICK', direction, 'visible', flow.get('map_visible', False), flush=True)
+                return
             if not flow.get('map_ready'):
                 return
             if flow['map_position'] is not None:
@@ -264,6 +365,9 @@ class Peer:
         for key, flow in list(self.flows.items()):
             if flow.get('active') and not flow.get('connected') and flow.get('client') != 'features':
                 self.flows.pop(key)
+        if self.profile['brand'] == 'audi' and os.environ.get('MHI2_MAP_JOYSTICK') == '1' and not any(
+                f.get('map_joystick') for f in self.flows.values()):
+            self.input_event(dict(type='joystick', direction='neutral'))
         # The attached MOST sink is H.264 capable before the HMI's first rate
         # request. Configure its display type and native map context as soon
         # as the DSI starts; rate and map visibility stay with the HMI/viewer.
@@ -322,6 +426,8 @@ class Peer:
                             self.request_native_view(key, flow)
                     elif mid == 142:
                         flow['map_visible'] = bool(msg[5]) and valid
+                        if flow.get('map_joystick'):
+                            self.request_native_view(key, flow)
                         if flow['map_visible'] and flow['map_instance'] == 3:
                             for dk, df in list(self.flows.items()):
                                 if df.get('client') == 'displaymanagement' and 'native_stub' in df:
@@ -403,16 +509,26 @@ class Peer:
                     for attr in attrs:
                         initial = {25: (38, (self.profile['keyboard'], 0, 0, 0, 129)),
                                    26: (43, (self.profile['keyboard'], 1, 129)),
-                                   19: (6, (1, 129)),
+                                   19: (self.profile.get('keyboard_type_mid', 6), (6 if self.touchpad.enabled else 1, 129)),  # Audi all-in-touch when enabled
                                    23: (30, (self.profile['keyboard'], 0, 0, 0, 129))}.get(attr)
                         if initial:
                             mid, values = initial
                             self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], mid) + struct.pack('!' + 'i' * len(values), *values))
+                        elif attr == 21 and self.touchpad.enabled:
+                            # Character listeners stay unconfirmed until the 0x80 ack.
+                            mid, payload = self.services.reply('DSIKeyPanel', 'updateCharacterEvent2', [9, [], [], 129])
+                            self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], mid) + payload)
+                        elif attr == 22 and self.touchpad.enabled:
+                            mid, payload = self.services.reply('DSIKeyPanel', 'updateRecognizerLanguage2', [9, self.touchpad.language, self.touchpad.language_code, 129])
+                            self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], mid) + payload)
                         elif attr == 20:
                             self.comm(key, flow, b'\x06' + struct.pack('!HHiiiBiiiiii', flow['keypanel_reply'], 42, self.profile['keyboard'], 0, 1, 0, 0, 0, 0, 0, 0, 129))
                 elif stub == 100:
                     try:
-                        for mid, payload in self.services.handle('DSIKeyPanel', method, msg[5:]):
+                        replies = self.touchpad.request(self.services, method, msg[5:])
+                        if replies is None:
+                            replies = self.services.handle('DSIKeyPanel', method, msg[5:])
+                        for mid, payload in replies:
                             self.comm(key, flow, b'\x06' + struct.pack('!HH', flow['keypanel_reply'], mid) + payload)
                     except (ValueError, KeyError, struct.error) as exc:
                         print('Keypanel request rejected', method, repr(exc), flush=True)
@@ -515,6 +631,7 @@ def main():
         buffer = bytearray()
         while True:
             peer.tick()
+            peer.touchpad.publish(any('keypanel_reply' in flow for flow in peer.flows.values()))
             try:
                 controls.extend(os.read(control, 4096))
                 if len(controls) > 16384: controls.clear()

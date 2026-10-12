@@ -1,0 +1,994 @@
+{
+  "services": {
+    "DSIDABTuner": {
+      "uuid": "4e6d98c1-b125-5f64-a76c-f426cb7fc6b5",
+      "key": "2353a90a-d497-50eb-ba55-5759f625317d",
+      "calls": {
+        "60": "selectService(int n, long l, int n2, int n3, int n4, int n5, long l2)",
+        "11": "seekService(int n)",
+        "27": "tuneEnsemble(int n, int n2, int n3, long l)",
+        "13": "selectDataService(int n, int n2, long l, int n3)",
+        "23": "switchDRC(boolean bl)",
+        "25": "switchLinking(int n)",
+        "26": "switchLinkingDeviceUsage(int n)",
+        "24": "switchFrequencyTable(int n)",
+        "10": "reset(int n)",
+        "5": "forceLMUpdate(int n)",
+        "8": "prepareTuning(int n, long l, int n2, int n3, int n4, int n5)",
+        "4": "enableRadioTextPlus(int[] nArray)",
+        "17": "setEpgMode(int n)",
+        "22": "setSlideShowMode(int n)",
+        "18": "setIntellitextMode(int n)",
+        "63": "getEPGDetailData(int n, int n2, long l, int n3)",
+        "67": "profileChange(int n)",
+        "70": "profileCopy(int n, int n2)",
+        "71": "profileReset(int n)",
+        "73": "profileResetAll()",
+        "20": "setNotification(int[] nArray)",
+        "21": "setNotification(int n)",
+        "19": "setNotification()",
+        "2": "clearNotification(int[] nArray)",
+        "3": "clearNotification(int n)",
+        "1": "clearNotification()",
+        "59": "yySet(String string, String string2)"
+      },
+      "replies": {
+        "52": {
+          "name": "updateSelectedEnsemble",
+          "types": [
+            "OptionalEnsembleInfo",
+            "Int32"
+          ]
+        },
+        "54": {
+          "name": "updateSelectedService",
+          "types": [
+            "OptionalServiceInfo",
+            "Int32"
+          ]
+        },
+        "51": {
+          "name": "updateSelectedComponent",
+          "types": [
+            "OptionalComponentInfo",
+            "Int32"
+          ]
+        },
+        "53": {
+          "name": "updateSelectedFrequency",
+          "types": [
+            "OptionalFrequencyInfo",
+            "Int32"
+          ]
+        },
+        "39": {
+          "name": "updateEnsembleList",
+          "types": [
+            "OptionalEnsembleInfoVarArray",
+            "Int32"
+          ]
+        },
+        "55": {
+          "name": "updateServiceList",
+          "types": [
+            "OptionalServiceInfoVarArray",
+            "Int32"
+          ]
+        },
+        "31": {
+          "name": "updateComponentList",
+          "types": [
+            "OptionalComponentInfoVarArray",
+            "Int32"
+          ]
+        },
+        "33": {
+          "name": "updateDataServiceList",
+          "types": [
+            "OptionalDataServiceInfoVarArray",
+            "Int32"
+          ]
+        },
+        "41": {
+          "name": "updateFrequencyList",
+          "types": [
+            "OptionalFrequencyInfoVarArray",
+            "Int32"
+          ]
+        },
+        "49": {
+          "name": "updateRadioText",
+          "types": [
+            "OptionalDABRadioText",
+            "Int32"
+          ]
+        },
+        "57": {
+          "name": "updateSyncStatus",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "47": {
+          "name": "updateQuality",
+          "types": [
+            "Int16",
+            "Int32"
+          ]
+        },
+        "32": {
+          "name": "updateDRCSwitchStatus",
+          "types": [
+            "Bool",
+            "Int32"
+          ]
+        },
+        "45": {
+          "name": "updateLinkingSwitchStatus",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "42": {
+          "name": "updateFrequencyTableSwitchStatus",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "44": {
+          "name": "updateLinkingStatus",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "46": {
+          "name": "updateLinkingUsageStatus",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "29": {
+          "name": "updateAudioStatus",
+          "types": [
+            "OptionalAudioStatus",
+            "Int32"
+          ]
+        },
+        "35": {
+          "name": "updateDetectedDevice",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "48": {
+          "name": "updateQualityInfo",
+          "types": [
+            "OptionalString",
+            "Int32"
+          ]
+        },
+        "16": {
+          "name": "selectServiceStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "12": {
+          "name": "seekServiceStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "28": {
+          "name": "tuneEnsembleStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "14": {
+          "name": "selectDataServiceStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "61": {
+          "name": "updateRadioTextPlusInfo",
+          "types": [
+            "OptionalDABRadioTextPlusInfo",
+            "Int32"
+          ]
+        },
+        "34": {
+          "name": "updateDecodedDataService",
+          "types": [
+            "OptionalDataServiceInfo",
+            "Bool",
+            "OptionalString",
+            "Int32"
+          ]
+        },
+        "6": {
+          "name": "forceLMUpdateStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "9": {
+          "name": "prepareTuningStatus",
+          "types": [
+            "Int32"
+          ]
+        },
+        "40": {
+          "name": "updateEpgLogo",
+          "types": [
+            "OptionalInt32VarArray",
+            "OptionalResourceLocatorVarArray",
+            "Int32"
+          ]
+        },
+        "66": {
+          "name": "updateEpgLogoList",
+          "types": [
+            "OptionalEPGLogoVarArray",
+            "Int32"
+          ]
+        },
+        "62": {
+          "name": "updateSlideShowInfo",
+          "types": [
+            "OptionalDABSlideShowInfo",
+            "Int32"
+          ]
+        },
+        "30": {
+          "name": "updateAvailability",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "43": {
+          "name": "updateIntellitext",
+          "types": [
+            "OptionalIntellitextMenuVarArray",
+            "Int32"
+          ]
+        },
+        "38": {
+          "name": "updateEPGMode",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "65": {
+          "name": "updateEPGListData",
+          "types": [
+            "OptionalEPGShortInfoVarArray",
+            "Int32"
+          ]
+        },
+        "64": {
+          "name": "updateEPGDetailData",
+          "types": [
+            "OptionalEPGFullInfo",
+            "Int32"
+          ]
+        },
+        "75": {
+          "name": "updateProfileState",
+          "types": [
+            "Int32",
+            "Int32",
+            "Int32"
+          ]
+        },
+        "68": {
+          "name": "profileChanged",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "69": {
+          "name": "profileCopied",
+          "types": [
+            "Int32",
+            "Int32",
+            "Int32"
+          ]
+        },
+        "72": {
+          "name": "profileReset",
+          "types": [
+            "Int32",
+            "Int32"
+          ]
+        },
+        "74": {
+          "name": "profileResetAll",
+          "types": [
+            "Int32"
+          ]
+        },
+        "0": {
+          "name": "asyncException",
+          "types": [
+            "Int32",
+            "OptionalString",
+            "Int32"
+          ]
+        },
+        "58": {
+          "name": "yyIndication",
+          "types": [
+            "OptionalString",
+            "OptionalString"
+          ]
+        }
+      },
+      "attrs": {
+        "1": "SELECTEDENSEMBLE",
+        "2": "SELECTEDSERVICE",
+        "3": "SELECTEDCOMPONENT",
+        "4": "SELECTEDFREQUENCY",
+        "5": "ENSEMBLELIST",
+        "6": "SERVICELIST",
+        "7": "COMPONENTLIST",
+        "8": "DATASERVICELIST",
+        "9": "FREQUENCYLIST",
+        "10": "RADIOTEXT",
+        "11": "SYNCSTATUS",
+        "12": "QUALITY",
+        "13": "DRCSWITCHSTATUS",
+        "14": "LINKINGSWITCHSTATUS",
+        "15": "FREQUENCYTABLESWITCHSTATUS",
+        "18": "LINKINGSTATUS",
+        "19": "LINKINGUSAGESTATUS",
+        "20": "AUDIOSTATUS",
+        "21": "DETECTEDDEVICE",
+        "22": "QUALITYINFO",
+        "24": "DECODEDDATASERVICE",
+        "25": "EPGLOGO",
+        "27": "AVAILABILITY",
+        "28": "INTELLITEXT",
+        "29": "EPGLISTDATA",
+        "30": "EPGDETAILDATA",
+        "31": "EPGMODE",
+        "32": "SLIDESHOWINFO",
+        "33": "RADIOTEXTPLUSINFO",
+        "34": "EPGLOGOLIST",
+        "35": "PROFILESTATE"
+      },
+      "request_ids": {
+        "60": 1000,
+        "11": 1001,
+        "27": 1002,
+        "13": 1003,
+        "23": 1004,
+        "25": 1005,
+        "26": 1006,
+        "24": 1007,
+        "10": 1008,
+        "5": 1009,
+        "8": 1010,
+        "4": 1011,
+        "17": 1012,
+        "22": 1013,
+        "18": 1014,
+        "63": 1015,
+        "67": 1016,
+        "70": 1017,
+        "71": 1018,
+        "73": 1019
+      }
+    }
+  },
+  "structs": {
+    "EPGShortProgramInfo": [
+      [
+        "programInfo",
+        "OptionalString"
+      ],
+      [
+        "startTime",
+        "OptionalDateTime"
+      ],
+      [
+        "endTime",
+        "OptionalDateTime"
+      ]
+    ],
+    "EPGLogoDescriptor": [
+      [
+        "logoType",
+        "OptionalString"
+      ],
+      [
+        "mimeType",
+        "OptionalString"
+      ],
+      [
+        "widthX",
+        "Int32"
+      ],
+      [
+        "heightY",
+        "Int32"
+      ],
+      [
+        "picture",
+        "OptionalResourceLocator"
+      ]
+    ],
+    "DABSlideShowInfo": [
+      [
+        "ensID",
+        "Int32"
+      ],
+      [
+        "ensECC",
+        "Int32"
+      ],
+      [
+        "sID",
+        "Int32"
+      ],
+      [
+        "sCIDI",
+        "Int32"
+      ],
+      [
+        "slideshowImage",
+        "OptionalResourceLocator"
+      ],
+      [
+        "category",
+        "Int32"
+      ]
+    ],
+    "UnifiedStation": [
+      [
+        "shortName",
+        "OptionalString"
+      ],
+      [
+        "longName",
+        "OptionalString"
+      ],
+      [
+        "frequency",
+        "Int64"
+      ],
+      [
+        "piSId",
+        "Int32"
+      ],
+      [
+        "ensId",
+        "Int32"
+      ],
+      [
+        "ecc",
+        "Int32"
+      ],
+      [
+        "sCIDI",
+        "Int32"
+      ],
+      [
+        "scrollingPS",
+        "Int32"
+      ],
+      [
+        "rds",
+        "Bool"
+      ],
+      [
+        "audioQuality",
+        "Int32"
+      ],
+      [
+        "tpAvailability",
+        "Int32"
+      ],
+      [
+        "radioText",
+        "Bool"
+      ],
+      [
+        "radioTextPlus",
+        "Bool"
+      ],
+      [
+        "enhancedRadioText",
+        "Bool"
+      ],
+      [
+        "slideshow",
+        "Bool"
+      ],
+      [
+        "stationLogo",
+        "OptionalResourceLocator"
+      ],
+      [
+        "coChannel",
+        "Bool"
+      ]
+    ],
+    "HdStationInfo": [
+      [
+        "artistName",
+        "OptionalString"
+      ],
+      [
+        "albumTitle",
+        "OptionalString"
+      ],
+      [
+        "songTitle",
+        "OptionalString"
+      ],
+      [
+        "genre",
+        "OptionalString"
+      ],
+      [
+        "stationArt",
+        "OptionalResourceLocator"
+      ],
+      [
+        "coverArt",
+        "OptionalResourceLocator"
+      ],
+      [
+        "language",
+        "OptionalString"
+      ],
+      [
+        "shortDescription",
+        "OptionalString"
+      ],
+      [
+        "contentField",
+        "OptionalString"
+      ],
+      [
+        "price",
+        "OptionalString"
+      ],
+      [
+        "validUntil",
+        "OptionalString"
+      ],
+      [
+        "contactURL",
+        "OptionalString"
+      ],
+      [
+        "receivedAs",
+        "Int16"
+      ],
+      [
+        "nameOfSeller",
+        "OptionalString"
+      ],
+      [
+        "comrDescription",
+        "OptionalString"
+      ],
+      [
+        "mimeType",
+        "OptionalString"
+      ],
+      [
+        "affiliateID",
+        "OptionalString"
+      ],
+      [
+        "iTunesID",
+        "OptionalString"
+      ],
+      [
+        "iTunesFrontID",
+        "Int32"
+      ],
+      [
+        "podcastFeedURL",
+        "Int32"
+      ],
+      [
+        "unknownData",
+        "OptionalString"
+      ],
+      [
+        "frequency",
+        "Int32"
+      ],
+      [
+        "pi",
+        "Int32"
+      ],
+      [
+        "serviceId",
+        "Int32"
+      ],
+      [
+        "stationURL",
+        "OptionalString"
+      ]
+    ],
+    "WavebandInfo": [
+      [
+        "waveband",
+        "Int32"
+      ],
+      [
+        "lowerLimit",
+        "Int64"
+      ],
+      [
+        "upperLimit",
+        "Int64"
+      ],
+      [
+        "stepWidth",
+        "Int64"
+      ],
+      [
+        "multiplier",
+        "Int64"
+      ]
+    ],
+    "Station": [
+      [
+        "name",
+        "OptionalString"
+      ],
+      [
+        "frequency",
+        "Int64"
+      ],
+      [
+        "pi",
+        "Int32"
+      ],
+      [
+        "receptionQuality",
+        "Int32"
+      ],
+      [
+        "ptyCode",
+        "Int32"
+      ],
+      [
+        "waveband",
+        "Int32"
+      ],
+      [
+        "rds",
+        "Bool"
+      ],
+      [
+        "tp",
+        "Bool"
+      ],
+      [
+        "ta",
+        "Bool"
+      ],
+      [
+        "tmc",
+        "Bool"
+      ],
+      [
+        "scrollingPS",
+        "Bool"
+      ],
+      [
+        "radioText",
+        "Bool"
+      ],
+      [
+        "realPS",
+        "OptionalString"
+      ],
+      [
+        "hd",
+        "Bool"
+      ],
+      [
+        "shortNameHD",
+        "OptionalString"
+      ],
+      [
+        "longNameHD",
+        "OptionalString"
+      ],
+      [
+        "fullDigital",
+        "Bool"
+      ],
+      [
+        "serviceId",
+        "Int32"
+      ],
+      [
+        "subscription",
+        "Int32"
+      ],
+      [
+        "eon",
+        "Bool"
+      ],
+      [
+        "coChannel",
+        "Bool"
+      ],
+      [
+        "stationArt",
+        "OptionalResourceLocator"
+      ]
+    ],
+    "ParkingSystemViewOptions": [
+      [
+        "pdcSystemOnOff",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcVolumeFront",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcFrequencyFront",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcVolumeRear",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcFrequencyRear",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcVolumeRight",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcFrequencyRight",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcVolumeLeft",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcFrequencyLeft",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcDefaultParkingMode",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcMute",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcAutoActivation",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSoundReproduction",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcFlankGuard",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSoundFront",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSoundRear",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSoundLeft",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSoundRight",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcOffroadMode",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcParkboxVisualisation",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcOPSVisualisationPosition",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPLAStatus",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPLABargraph",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPLAParkmodeSelection",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPLASystemState",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsSystemOnOff",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsColor",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsBrightness",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsContrast",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsFollowUpTime",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsOPSOverlay",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDynamicParkingMode",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDefaultView",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDefaultModeRV",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDefaultModeFV",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDefaultModeSV",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsDefaultModeBV",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsExtCamConfig",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsExtCamManActivation",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vps3DBirdview",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsSystemState",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcSetFactoryDefault",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsSetFactoryDefault",
+        "OptionalCarViewOption"
+      ],
+      [
+        "araCurrentTrailerAngle",
+        "OptionalCarViewOption"
+      ],
+      [
+        "araTargetTrailerAngle",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcConfiguration",
+        "OptionalPDCConfiguration"
+      ],
+      [
+        "vpsConfiguration",
+        "OptionalVPSConfiguration"
+      ],
+      [
+        "araTrailerConfiguration",
+        "OptionalARATrailerConfiguration"
+      ],
+      [
+        "pdcManeuverAssistConfig",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcManeuverAssist",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcContinueDrivingAssist",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcIpaConfig",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPiloPaSystemStatePP",
+        "OptionalCarViewOption"
+      ],
+      [
+        "pdcPiloPaSystemStateGP",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsCameraCleaning",
+        "OptionalCarViewOption"
+      ],
+      [
+        "vpsRimProtection",
+        "OptionalCarViewOption"
+      ]
+    ],
+    "CPacketCounter": [
+      [
+        "connectionDuration",
+        "Int32"
+      ],
+      [
+        "rxBytes",
+        "Int64"
+      ],
+      [
+        "rxBytesSinceReset",
+        "Int64"
+      ],
+      [
+        "txBytes",
+        "Int64"
+      ],
+      [
+        "txBytesSinceReset",
+        "Int64"
+      ],
+      [
+        "lastResetDate",
+        "OptionalDateTime"
+      ]
+    ]
+  }
+}

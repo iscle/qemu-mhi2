@@ -7,13 +7,14 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QPoint
-from PySide6.QtGui import QImage, QShortcut, QKeySequence
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QMessageBox
+from PySide6.QtCore import Qt, QTimer, QPoint, QPointF
+from PySide6.QtGui import QImage, QShortcut, QKeySequence, QPainter, QPainterPath, QPen, QColor
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, QMessageBox
 from firmware_profile import common_metadata, select_profile
 
 from firmware_profile import current
 from viewer_widgets import FrameView, fit_to_screen
+from mmi_touchpad import STATE_PATH, CURSOR_PATH
 
 # Firmware org.dsi.ifc.keypanel.Constants; profile selects ABT/FCC identity.
 LEFT_KEYS = [('RADIO', 15), ('MEDIA', 1), ('PHONE', 3), ('VOICE', 50)]
@@ -28,12 +29,15 @@ PORSCHE_KEYS = [(('TUNER', 15), ('SOURCE', 103)),
 
 class Panel(FrameView):
     def __init__(self, status, profile=None):
-        super().__init__(800, 480)
+        active = current() if profile is None else profile
+        self.screen_size = tuple(active.get('screen', (800, 480)))  # A4 MMI: 1024x480
+        super().__init__(*self.screen_size)
         self.status = status
-        self.touch_enabled = (current() if profile is None else profile)["touch"]
+        self.touch_enabled = active["touch"]
         self.frame = QImage()
         self.stamp = None
         self.pressed = None
+        self.map_cursor = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(50)
@@ -55,8 +59,8 @@ class Panel(FrameView):
 
     def guest_point(self, point):
         rect = self.frame_rect()
-        return QPoint(max(0, min(799, int((point.x() - rect.x()) * 800 / rect.width()))),
-                      max(0, min(479, int((point.y() - rect.y()) * 480 / rect.height()))))
+        return QPoint(max(0, min(self.screen_size[0] - 1, int((point.x() - rect.x()) * self.screen_size[0] / rect.width()))),
+                      max(0, min(self.screen_size[1] - 1, int((point.y() - rect.y()) * self.screen_size[1] / rect.height()))))
 
     def mousePressEvent(self, event):
         if (self.touch_enabled and event.button() == Qt.LeftButton and
@@ -77,6 +81,18 @@ class Panel(FrameView):
             self.pressed = None
 
     def refresh(self):
+        cursor = None
+        try:
+            state = json.loads(STATE_PATH.read_text())
+            point = json.loads(CURSOR_PATH.read_text())
+            if (state['ready'] and state['mode'] == 25 and time.time()-state['updated'] < 2
+                    and point['visible'] and point['generation'] == state['generation']):
+                cursor = (point['x'], point['y'])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        if cursor != self.map_cursor:
+            self.map_cursor = cursor
+            self.update()
         path = Path('/tmp/glhost_frame.ppm')
         try:
             stamp = path.stat().st_mtime_ns
@@ -84,7 +100,8 @@ class Panel(FrameView):
                 return
             # Validate the complete PPM before reading a concurrently written frame.
             data = path.read_bytes()
-            if not data.startswith(b'P6\n800 480\n255\n') or len(data) != 1152015:
+            header = 'P6\n%d %d\n255\n' % self.screen_size
+            if not data.startswith(header.encode()) or len(data) != len(header) + self.screen_size[0] * self.screen_size[1] * 3:
                 return
             frame = QImage.fromData(data, 'PPM')
             if not frame.isNull():
@@ -92,6 +109,22 @@ class Panel(FrameView):
                 self.update()
         except OSError:
             pass
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.map_cursor is None or self.frame.isNull():
+            return
+        rect = self.frame_rect()
+        scale = rect.width()/self.screen_size[0]
+        x = rect.x()+self.map_cursor[0]*scale
+        y = rect.y()+self.map_cursor[1]*scale
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        for color, width in [('#111111', 4), ('#ffffff', 2)]:
+            painter.setPen(QPen(QColor(color), width*scale))
+            painter.drawEllipse(QPointF(x,y), 7*scale, 7*scale)
+            for a,b,c,d in [(-17,0,-9,0),(9,0,17,0),(0,-17,0,-9),(0,9,0,17)]:
+                painter.drawLine(QPointF(x+a*scale,y+b*scale),QPointF(x+c*scale,y+d*scale))
 
 class RotaryButton(QPushButton):
     """A pressable physical knob; mouse wheel sends signed encoder ticks."""
@@ -236,6 +269,150 @@ def porsche_controls(panel):
     return controls
 
 
+class RotaryArrowButton(QPushButton):
+    """Curved encoder control framing the MMI Select knob."""
+    def __init__(self, ticks, panel):
+        super().__init__()
+        self.ticks = ticks
+        self.setObjectName(f'encoder_16_{ticks}')
+        self.setFixedSize(44, 160)
+        direction = 'clockwise' if ticks > 0 else 'counterclockwise'
+        self.setAccessibleName('Turn MMI Select ' + direction)
+        self.setToolTip('Turn MMI Select ' + direction + ' one step')
+        self.clicked.connect(lambda: panel.send(dict(type='encoder', code=16, ticks=ticks)))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = '#e56d74' if self.isDown() else '#ffffff' if self.underMouse() else '#c1c4c7'
+        painter.setPen(QPen(QColor(color), 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        # Left arc points upward (CW); right arc points upward (CCW).
+        left = self.ticks > 0
+        x = 36 if left else 8
+        bend = -5 if left else 49
+        path = QPainterPath(QPointF(x, 16))
+        path.cubicTo(bend, 48, bend, 112, x, 144)
+        painter.drawPath(path)
+        painter.drawLine(QPointF(x,16), QPointF(x + (-12 if left else 12),19))
+        painter.drawLine(QPointF(x,16), QPointF(x - (1 if left else -1),29))
+        if self.hasFocus():
+            painter.setPen(QPen(QColor('#ffffff'), 1, Qt.DotLine))
+            painter.drawRoundedRect(self.rect().adjusted(1,1,-1,-1), 8, 8)
+
+
+def audi_controls(panel):
+    """Audi MMI fascia; rocker halves retain the existing RCC key codes."""
+    housing = QWidget()
+    housing.setObjectName('audi_controller')
+    housing.setStyleSheet("""
+        QWidget#audi_controller { background: #242526; border: 2px solid #111213;
+                                  border-radius: 24px; }
+        QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                      stop:0 #383a3c,stop:1 #242527); border: 1px solid #56585b;
+                      border-radius: 9px; color: #f0f0f0; font-size: 14px; }
+        QPushButton:hover { border-color: #c8cace; background: #414345; }
+        QPushButton:focus { border-color: #f0f0f0; }
+        QPushButton:pressed { background: #701d24; border-color: #e56d74; }
+        QPushButton[rocker="true"] { color: #202124; border-radius: 5px;
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+            stop:0 #f1f2f3,stop:0.45 #bfc2c5,stop:0.55 #777c82,stop:1 #d9dcdf); }
+        QPushButton[rocker="true"]:hover { border-color: white; }
+        QPushButton[rocker="true"]:pressed { background: #8c9298; }
+        QPushButton#knob { border: 7px solid #c1c4c7; border-radius: 70px;
+            background: qradialgradient(cx:0.4,cy:0.3,radius:0.9,
+            stop:0 #383a3b,stop:1 #171819); font-size: 16px; }
+        QPushButton#knob:focus { border-color: white; }
+        QPushButton#knob:pressed { background: #701d24; }
+    """)
+    row = QHBoxLayout(housing)
+    row.setContentsMargins(24, 16, 24, 16)
+    row.setSpacing(20)
+
+    def button(label, name, code, height=44):
+        key = QPushButton(label)
+        key.setObjectName(name)
+        key.setMinimumSize(100, height)
+        connect_key(key, code, panel)
+        return key
+
+    def rocker(upper, lower):
+        column = QVBoxLayout()
+        column.setSpacing(0)
+        for label, name, code, arrow in [(*upper, '▲'), (*lower, '▼')]:
+            key = button(arrow + '  ' + label, name, code)
+            key.setProperty('rocker', True)
+            key.setToolTip('Rocker up: ' + label if arrow == '▲' else 'Rocker down: ' + label)
+            column.addWidget(key)
+        return column
+
+    left = QVBoxLayout()
+    left.addLayout(rocker(('NAV/MAP', 'nav', 4), ('TEL', 'tel', 3)))
+    left.addWidget(button('LEFT', 'left', 98, height=64))
+    row.addLayout(left)
+    center = QVBoxLayout()
+    top = QHBoxLayout()
+    top.addWidget(button('MENU', 'menu', 78))
+    top.addWidget(button('↶  BACK', 'back', 13))
+    center.addLayout(top)
+    knob = RotaryButton('MMI\nSELECT', 16, panel)
+    knob.setFixedSize(140, 140)
+    joystick = QGridLayout()
+    joystick.setSpacing(3)
+    joystick.addWidget(knob, 1, 1)
+    for direction, label, y, x in [('up', '▲', 0, 1), ('left', '◀', 1, 0),
+                                    ('right', '▶', 1, 2), ('down', '▼', 2, 1)]:
+        key = QPushButton(label)
+        key.setObjectName('joystick_' + direction)
+        key.setFixedSize(36, 36)
+        key.setAccessibleName('MMI Select joystick ' + direction)
+        key.setToolTip('Hold to move MMI Select ' + direction)
+        key.pressed.connect(lambda direction=direction:
+                            panel.send(dict(type='joystick', direction=direction)))
+        key.released.connect(lambda: panel.send(dict(type='joystick', direction='neutral')))
+        joystick.addWidget(key, y, x, Qt.AlignCenter)
+    turns = QHBoxLayout()
+    turns.setSpacing(2)
+    turns.addWidget(RotaryArrowButton(1, panel))
+    turns.addLayout(joystick)
+    turns.addWidget(RotaryArrowButton(-1, panel))
+    center.addLayout(turns)
+    row.addLayout(center)
+    right = QVBoxLayout()
+    right.addLayout(rocker(('RADIO', 'radio', 15), ('MEDIA', 'media', 1)))
+    right.addWidget(button('RIGHT', 'right', 97, height=64))
+    row.addLayout(right)
+    auxiliary = QHBoxLayout()
+    auxiliary.addStretch()
+    if panel.screen_size == (1024, 480):
+        from mmi_touch_widget import TouchpadWidget
+        auxiliary.addWidget(TouchpadWidget(panel))
+        auxiliary.addSpacing(12)
+    extras = QVBoxLayout()
+    for label, name, code in [('CAR', 'car', 6), ('VOICE', 'voice', 50), ('TRAFFIC', 'traffic', 5)]:
+        extras.addWidget(button(label, name, code))
+    auxiliary.addLayout(extras)
+    auxiliary.addSpacing(20)
+    auxiliary.addWidget(housing)
+    auxiliary.addSpacing(20)
+    volume = QVBoxLayout()
+    volume.setSpacing(8)
+    volume.addStretch()
+    volume.addWidget(RotaryButton('POWER\nVOLUME', 17, panel), alignment=Qt.AlignHCenter)
+    volume_turns = QHBoxLayout()
+    for label, ticks in [('−', -1), ('+', 1)]:
+        key = QPushButton(label)
+        key.setObjectName(f'encoder_17_{ticks}')
+        key.setMinimumSize(44, 44)
+        key.setToolTip('Volume down one step' if ticks < 0 else 'Volume up one step')
+        key.clicked.connect(lambda checked=False, ticks=ticks: panel.send(dict(type='encoder', code=17, ticks=ticks)))
+        volume_turns.addWidget(key)
+    volume.addLayout(volume_turns)
+    volume.addStretch()
+    auxiliary.addLayout(volume)
+    auxiliary.addStretch()
+    return auxiliary
+
+
 def create_window(profile=None):
     profile = current() if profile is None else profile
     porsche = profile['brand'] == 'porsche'
@@ -278,21 +455,7 @@ def create_window(profile=None):
         layout.addLayout(porsche_controls(panel))
     if not profile['touch']:
         status.setText('Use the MMI controller: turn to browse, press to select. Arrow keys, Enter and Esc also work.')
-        shortcuts = QHBoxLayout()
-        for name, code in [('RADIO',15), ('MEDIA',1), ('NAV',4), ('TEL',3), ('CAR',6), ('MENU',78)]:
-            button = QPushButton(name)
-            button.setObjectName(name.lower())
-            button.setMinimumHeight(42)
-            connect_key(button, code, panel)
-            shortcuts.addWidget(button)
-        layout.addLayout(shortcuts)
-        controller = QHBoxLayout()
-        controller.addLayout(control_column([('TOP\nLEFT',8), ('BOTTOM\nLEFT',9)], 'VOLUME',17,panel))
-        controller.addStretch()
-        controller.addLayout(control_column([], 'SELECT',16,panel))
-        controller.addStretch()
-        controller.addLayout(control_column([('TOP\nRIGHT',11), ('BOTTOM\nRIGHT',12), ('BACK',13)], None,None,panel))
-        layout.addLayout(controller)
+        layout.addLayout(audi_controls(panel))
         def tap(code):
             panel.send(dict(type='key',code=code,pressed=1))
             QTimer.singleShot(60, lambda: panel.send(dict(type='key',code=code,pressed=0)))
